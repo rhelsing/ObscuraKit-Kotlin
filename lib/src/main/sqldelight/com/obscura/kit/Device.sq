@@ -1,0 +1,46 @@
+CREATE TABLE IF NOT EXISTS Device (
+    device_id TEXT NOT NULL PRIMARY KEY,
+    device_name TEXT NOT NULL,
+    user_id TEXT,
+    signal_identity_key BLOB,
+    is_own INTEGER NOT NULL DEFAULT 0,
+    created_at INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS DeviceIdentity (
+    id INTEGER NOT NULL PRIMARY KEY DEFAULT 1,
+    device_id TEXT NOT NULL,
+    user_id TEXT NOT NULL,
+    username TEXT NOT NULL,
+    token TEXT NOT NULL,
+    p2p_public_key BLOB,
+    p2p_private_key BLOB,
+    recovery_public_key BLOB,
+    recovery_private_key BLOB
+);
+
+selectOwnDevices:
+SELECT * FROM Device WHERE is_own = 1;
+
+selectDeviceById:
+SELECT * FROM Device WHERE device_id = ?;
+
+insertDevice:
+INSERT OR REPLACE INTO Device(device_id, device_name, user_id, signal_identity_key, is_own, created_at)
+VALUES (?, ?, ?, ?, ?, ?);
+
+deleteDevice:
+DELETE FROM Device WHERE device_id = ?;
+
+selectIdentity:
+SELECT * FROM DeviceIdentity WHERE id = 1;
+
+insertIdentity:
+INSERT OR REPLACE INTO DeviceIdentity(id, device_id, user_id, username, token, p2p_public_key, p2p_private_key, recovery_public_key, recovery_private_key)
+VALUES (1, ?, ?, ?, ?, ?, ?, ?, ?);
+
+deleteIdentity:
+DELETE FROM DeviceIdentity WHERE id = 1;
+
+deleteAllDevices:
+DELETE FROM Device;

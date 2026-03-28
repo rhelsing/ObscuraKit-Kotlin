@@ -1,0 +1,27 @@
+CREATE TABLE IF NOT EXISTS Message (
+    id TEXT NOT NULL PRIMARY KEY,
+    conversation_id TEXT NOT NULL,
+    author_device_id TEXT NOT NULL,
+    content TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    type TEXT NOT NULL DEFAULT 'text'
+);
+
+selectByConversation:
+SELECT * FROM Message
+WHERE conversation_id = ?
+ORDER BY timestamp DESC
+LIMIT ? OFFSET ?;
+
+insert:
+INSERT OR REPLACE INTO Message(id, conversation_id, author_device_id, content, timestamp, type)
+VALUES (?, ?, ?, ?, ?, ?);
+
+deleteByAuthorDevice:
+DELETE FROM Message WHERE author_device_id = ?;
+
+migrateConversation:
+UPDATE Message SET conversation_id = ? WHERE conversation_id = ?;
+
+deleteAll:
+DELETE FROM Message;

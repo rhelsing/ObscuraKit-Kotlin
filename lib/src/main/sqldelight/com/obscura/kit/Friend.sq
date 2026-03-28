@@ -1,0 +1,27 @@
+CREATE TABLE IF NOT EXISTS Friend (
+    user_id TEXT NOT NULL PRIMARY KEY,
+    username TEXT NOT NULL,
+    status TEXT NOT NULL DEFAULT 'pending',
+    devices TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+);
+
+selectAll:
+SELECT * FROM Friend;
+
+selectByStatus:
+SELECT * FROM Friend WHERE status = ?;
+
+selectById:
+SELECT * FROM Friend WHERE user_id = ?;
+
+insert:
+INSERT OR REPLACE INTO Friend(user_id, username, status, devices, created_at, updated_at)
+VALUES (?, ?, ?, ?, ?, ?);
+
+deleteById:
+DELETE FROM Friend WHERE user_id = ?;
+
+deleteAll:
+DELETE FROM Friend;

@@ -1,0 +1,57 @@
+CREATE TABLE IF NOT EXISTS ModelEntry (
+    model_name TEXT NOT NULL,
+    entry_id TEXT NOT NULL,
+    data TEXT NOT NULL,
+    timestamp INTEGER NOT NULL,
+    author_device_id TEXT NOT NULL,
+    signature BLOB,
+    deleted INTEGER NOT NULL DEFAULT 0,
+    ttl_expires_at INTEGER,
+    PRIMARY KEY (model_name, entry_id)
+);
+
+CREATE TABLE IF NOT EXISTS ModelAssociation (
+    model_name TEXT NOT NULL,
+    entry_id TEXT NOT NULL,
+    belongs_to_model TEXT NOT NULL,
+    belongs_to_id TEXT NOT NULL,
+    PRIMARY KEY (model_name, entry_id, belongs_to_model, belongs_to_id)
+);
+
+selectByModel:
+SELECT * FROM ModelEntry WHERE model_name = ? AND deleted = 0;
+
+selectByModelAndId:
+SELECT * FROM ModelEntry WHERE model_name = ? AND entry_id = ?;
+
+selectByModelWhere:
+SELECT * FROM ModelEntry WHERE model_name = ? AND deleted = 0 AND data LIKE ?;
+
+selectExpired:
+SELECT * FROM ModelEntry WHERE ttl_expires_at IS NOT NULL AND ttl_expires_at < ?;
+
+insertEntry:
+INSERT OR REPLACE INTO ModelEntry(model_name, entry_id, data, timestamp, author_device_id, signature, deleted, ttl_expires_at)
+VALUES (?, ?, ?, ?, ?, ?, ?, ?);
+
+markDeleted:
+UPDATE ModelEntry SET deleted = 1, timestamp = ? WHERE model_name = ? AND entry_id = ?;
+
+deleteExpired:
+DELETE FROM ModelEntry WHERE ttl_expires_at IS NOT NULL AND ttl_expires_at < ?;
+
+-- Associations
+selectAssociations:
+SELECT me.* FROM ModelEntry me
+INNER JOIN ModelAssociation ma ON me.model_name = ma.model_name AND me.entry_id = ma.entry_id
+WHERE ma.belongs_to_model = ? AND ma.belongs_to_id = ? AND me.deleted = 0;
+
+insertAssociation:
+INSERT OR REPLACE INTO ModelAssociation(model_name, entry_id, belongs_to_model, belongs_to_id)
+VALUES (?, ?, ?, ?);
+
+deleteAllEntries:
+DELETE FROM ModelEntry;
+
+deleteAllAssociations:
+DELETE FROM ModelAssociation;
