@@ -195,6 +195,12 @@ class ObscuraClient(
                 envelopeJob?.cancel()
                 gateway.disconnect()
                 _connectionState.value = ConnectionState.DISCONNECTED
+                // Data stays — logout is not a wipe. Login again restores full state.
+            },
+            onWipeDevice = {
+                envelopeJob?.cancel()
+                gateway.disconnect()
+                _connectionState.value = ConnectionState.DISCONNECTED
                 db.friendQueries.deleteAll()
                 db.messageQueries.deleteAll()
                 db.deviceQueries.deleteAllDevices()
@@ -284,6 +290,7 @@ class ObscuraClient(
 
     fun hasSession(): Boolean = authManager.hasSession()
     suspend fun logout() = authManager.logout()
+    suspend fun wipeDevice() = authManager.wipeDevice()
     suspend fun ensureFreshToken(): Boolean = authManager.ensureFreshToken()
 
     suspend fun connect() {

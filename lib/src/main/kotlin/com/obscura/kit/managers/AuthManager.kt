@@ -21,7 +21,8 @@ internal class AuthManager(
     private val setAuthState: (AuthState) -> Unit,
     private val setDisconnected: () -> Unit,
     private val loggerProvider: () -> ObscuraLogger,
-    private val onLogout: suspend () -> Unit
+    private val onLogout: suspend () -> Unit,
+    private val onWipeDevice: suspend () -> Unit
 ) {
     private val session get() = ctx.session
     private val api get() = ctx.api
@@ -176,6 +177,19 @@ internal class AuthManager(
         session.deviceId = null
         session.username = null
         session.refreshToken = null
+        setAuthState(AuthState.LOGGED_OUT)
+    }
+
+    suspend fun wipeDevice() {
+        tokenRefreshJob?.cancel()
+        onWipeDevice()
+        api.token = null
+        session.userId = null
+        session.deviceId = null
+        session.username = null
+        session.refreshToken = null
+        session.recoveryPhrase = null
+        session.recoveryPublicKey = null
         setAuthState(AuthState.LOGGED_OUT)
     }
 
