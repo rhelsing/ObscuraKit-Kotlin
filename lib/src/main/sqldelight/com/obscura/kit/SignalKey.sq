@@ -97,3 +97,15 @@ INSERT OR REPLACE INTO SignalSenderKey(address, record) VALUES (?, ?);
 -- Cleanup
 deleteAllSignalData:
 DELETE FROM SignalIdentity;
+
+deleteAllPreKeys:
+DELETE FROM SignalPreKey;
+
+deleteAllSignedPreKeys:
+DELETE FROM SignalSignedPreKey;
+
+deleteAllSessions:
+DELETE FROM SignalSession;
+
+deleteAllSenderKeys:
+DELETE FROM SignalSenderKey;

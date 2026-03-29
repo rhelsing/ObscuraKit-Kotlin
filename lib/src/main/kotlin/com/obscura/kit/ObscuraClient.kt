@@ -199,7 +199,12 @@ class ObscuraClient(
                 db.messageQueries.deleteAll()
                 db.deviceQueries.deleteAllDevices()
                 db.deviceQueries.deleteIdentity()
+                db.signalKeyQueries.deleteLocalIdentity()
                 db.signalKeyQueries.deleteAllSignalData()
+                db.signalKeyQueries.deleteAllPreKeys()
+                db.signalKeyQueries.deleteAllSignedPreKeys()
+                db.signalKeyQueries.deleteAllSessions()
+                db.signalKeyQueries.deleteAllSenderKeys()
                 db.modelEntryQueries.deleteAllEntries()
                 db.modelEntryQueries.deleteAllAssociations()
             }
