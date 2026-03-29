@@ -49,6 +49,14 @@ class MessengerDomain internal constructor(
         return deviceMap.entries.filter { it.value.first == userId }.map { it.key }
     }
 
+    fun rebuildDeviceMap(friends: List<FriendData>) {
+        for (friend in friends) {
+            for (device in friend.devices) {
+                deviceMap[device.deviceId] = Pair(friend.userId, device.registrationId)
+            }
+        }
+    }
+
     suspend fun queueMessage(targetDeviceId: String, message: ClientMessage, userId: String? = null) =
         withContext(dispatcher) {
             val mapped = deviceMap[targetDeviceId]
@@ -117,11 +125,13 @@ class MessengerDomain internal constructor(
         val isPreKey = encMsg.type == EncryptedMessage.Type.TYPE_PREKEY_MESSAGE
         val content = encMsg.content.toByteArray()
 
-        // Try known registrationIds + own regId + default
+        // Try known registrationIds + own regId + default + sessions from SQLite
         val candidates = mutableSetOf(1, signalStore.getLocalRegistrationId())
         for ((_, info) in deviceMap) {
             if (info.first == senderId) candidates.add(info.second)
         }
+        // Scan persisted sessions for this sender (survives restart even if deviceMap is empty)
+        candidates.addAll(signalStore.getAllSessionRegistrationIds(senderId))
 
         // For PreKey messages, try addresses WITHOUT sessions first
         val withSession = mutableListOf<Int>()

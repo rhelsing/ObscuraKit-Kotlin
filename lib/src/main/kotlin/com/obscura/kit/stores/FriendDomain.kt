@@ -35,6 +35,7 @@ data class FriendDeviceInfo(
     val deviceUuid: String,
     val deviceId: String,
     val deviceName: String,
+    val registrationId: Int = 1,
     val signalIdentityKey: ByteArray? = null
 )
 
@@ -51,6 +52,7 @@ class FriendDomain internal constructor(private val db: ObscuraDatabase) {
                     put("deviceUuid", d.deviceUuid)
                     put("deviceId", d.deviceId)
                     put("deviceName", d.deviceName)
+                    put("registrationId", d.registrationId)
                 }
             }).toString()
 
@@ -93,6 +95,7 @@ class FriendDomain internal constructor(private val db: ObscuraDatabase) {
                 put("deviceUuid", d.deviceUuid)
                 put("deviceId", d.deviceId)
                 put("deviceName", d.deviceName)
+                put("registrationId", d.registrationId)
             }
         }).toString()
         db.friendQueries.insert(userId, friend.username, friend.status, devicesJson, friend.created_at, System.currentTimeMillis())
@@ -147,7 +150,8 @@ class FriendDomain internal constructor(private val db: ObscuraDatabase) {
                 FriendDeviceInfo(
                     deviceUuid = obj.optString("deviceUuid", ""),
                     deviceId = obj.optString("deviceId", ""),
-                    deviceName = obj.optString("deviceName", "")
+                    deviceName = obj.optString("deviceName", ""),
+                    registrationId = obj.optInt("registrationId", 1)
                 )
             }
         } catch (e: Exception) {

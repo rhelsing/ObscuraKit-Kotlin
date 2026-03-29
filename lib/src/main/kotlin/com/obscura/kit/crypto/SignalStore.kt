@@ -163,7 +163,14 @@ class SignalStore(
         return allSessions
             .filter { it.address.startsWith("$name.") }
             .mapNotNull { it.address.substringAfterLast(".").toIntOrNull() }
-            .filter { it != 1 } // Exclude main device
+            .filter { it != 1 }
+    }
+
+    fun getAllSessionRegistrationIds(name: String): List<Int> {
+        val allSessions = db.signalKeyQueries.selectAllSessions().executeAsList()
+        return allSessions
+            .filter { it.address.startsWith("$name.") }
+            .mapNotNull { it.address.substringAfterLast(".").toIntOrNull() }
     }
 
     override fun storeSession(address: SignalProtocolAddress, record: SessionRecord) {

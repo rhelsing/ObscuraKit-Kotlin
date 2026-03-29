@@ -283,6 +283,8 @@ class ObscuraClient(
 
     suspend fun connect() {
         _connectionState.value = ConnectionState.CONNECTING
+        // Rebuild in-memory deviceMap from persisted friend devices (survives restart)
+        messenger.rebuildDeviceMap(friends.getAccepted())
         gateway.connect()
         _connectionState.value = ConnectionState.CONNECTED
         startEnvelopeLoop()
