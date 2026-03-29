@@ -11,25 +11,38 @@ import com.obscura.kit.ObscuraConfig
 import com.obscura.kit.db.ObscuraDatabase
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 import kotlinx.coroutines.*
+import kotlinx.coroutines.flow.MutableStateFlow
+import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.collectLatest
 
 /**
- * Application singleton — owns ObscuraClient for the process lifetime.
- * Session credentials stored in EncryptedSharedPreferences (Android Keystore-backed).
- * Signal protocol state stored in SQLite database (survives restarts).
+ * Application singleton — manages per-user ObscuraClient instances.
+ *
+ * Each username gets its own encrypted SQLite database (obscura_{username}.db)
+ * with its own Keystore-sealed encryption key. Bob can't read Alice's DB.
+ *
+ * Flow:
+ *   1. App opens → check for saved username in prefs
+ *   2. If saved → openClientForUser(username) → restoreSession → connect
+ *   3. If not → show login screen, wait for username
+ *   4. On login/register → openClientForUser(username) → auth → save username
+ *   5. On logout → disconnect, drop client, clear saved username
  */
 class ObscuraApp : Application() {
 
-    lateinit var client: ObscuraClient
+    var client: ObscuraClient? = null
         private set
+
+    private val _currentUsername = MutableStateFlow<String?>(null)
+    val currentUsername: StateFlow<String?> = _currentUsername
 
     private lateinit var securePrefs: SharedPreferences
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+    private var authObserverJob: Job? = null
 
     override fun onCreate() {
         super.onCreate()
 
-        // Encrypted storage for auth credentials
         val masterKey = MasterKeys.getOrCreate(MasterKeys.AES256_GCM_SPEC)
         securePrefs = EncryptedSharedPreferences.create(
             "obscura_secure_prefs",
@@ -39,20 +52,44 @@ class ObscuraApp : Application() {
             EncryptedSharedPreferences.PrefValueEncryptionScheme.AES256_GCM
         )
 
-        // Load SQLCipher native library
         System.loadLibrary("sqlcipher")
 
-        // Encrypted SQLite database (Signal's pattern: random key sealed by Keystore)
-        val dbSecret = DatabaseSecretProvider.getOrCreate(applicationContext)
+        // Auto-restore last user if saved
+        val savedUsername = securePrefs.getString("username", null)
+        if (savedUsername != null) {
+            openClientForUser(savedUsername)
+            val savedToken = securePrefs.getString("token", null)
+            val savedUserId = securePrefs.getString("userId", null)
+            if (savedToken != null && savedUserId != null) {
+                client!!.restoreSession(
+                    token = savedToken,
+                    refreshToken = securePrefs.getString("refreshToken", null),
+                    userId = savedUserId,
+                    deviceId = securePrefs.getString("deviceId", null),
+                    username = savedUsername,
+                    registrationId = securePrefs.getInt("registrationId", 0)
+                )
+                scope.launch {
+                    try { client!!.connect() } catch (_: Exception) {}
+                }
+            }
+        }
+    }
+
+    fun openClientForUser(username: String) {
+        // Tear down previous client if switching users
+        authObserverJob?.cancel()
+        client?.disconnect()
+
+        val dbSecret = DatabaseSecretProvider.getOrCreate(applicationContext, username)
         val factory = SupportOpenHelperFactory(dbSecret, null, false)
         val driver = AndroidSqliteDriver(
             schema = ObscuraDatabase.Schema,
             context = applicationContext,
-            name = "obscura.db",
+            name = "obscura_${username}.db",
             factory = factory,
             callback = object : AndroidSqliteDriver.Callback(ObscuraDatabase.Schema) {
                 override fun onOpen(db: androidx.sqlite.db.SupportSQLiteDatabase) {
-                    // Match Signal: KDF iter = 1 since key is already 256-bit random
                     db.query("PRAGMA cipher_default_kdf_iter = 1;").close()
                     db.query("PRAGMA cipher_default_page_size = 4096;").close()
                     super.onOpen(db)
@@ -65,49 +102,35 @@ class ObscuraApp : Application() {
             externalDriver = driver
         )
 
-        // Restore session if saved
-        val savedToken = securePrefs.getString("token", null)
-        val savedUserId = securePrefs.getString("userId", null)
+        _currentUsername.value = username
 
-        if (savedToken != null && savedUserId != null) {
-            client.restoreSession(
-                token = savedToken,
-                refreshToken = securePrefs.getString("refreshToken", null),
-                userId = savedUserId,
-                deviceId = securePrefs.getString("deviceId", null),
-                username = securePrefs.getString("username", null),
-                registrationId = securePrefs.getInt("registrationId", 0)
-            )
-            // Auto-reconnect WebSocket
-            scope.launch {
-                try { client.connect() } catch (_: Exception) {}
-            }
-        }
-
-        // Auto-save session whenever auth state changes
-        scope.launch {
-            client.authState.collectLatest { state ->
+        // Auto-save session on auth state changes
+        authObserverJob = scope.launch {
+            client!!.authState.collectLatest { state ->
                 if (state == AuthState.AUTHENTICATED) {
-                    saveSession()
-                } else {
-                    clearSession()
+                    saveSession(username)
                 }
             }
         }
     }
 
-    fun saveSession() {
+    private fun saveSession(username: String) {
+        val c = client ?: return
         securePrefs.edit()
-            .putString("token", client.token)
-            .putString("refreshToken", client.refreshToken)
-            .putString("userId", client.userId)
-            .putString("deviceId", client.deviceId)
-            .putString("username", client.username)
-            .putInt("registrationId", client.registrationId)
+            .putString("username", username)
+            .putString("token", c.token)
+            .putString("refreshToken", c.refreshToken)
+            .putString("userId", c.userId)
+            .putString("deviceId", c.deviceId)
+            .putInt("registrationId", c.registrationId)
             .apply()
     }
 
     fun clearSession() {
+        authObserverJob?.cancel()
+        client?.disconnect()
+        client = null
+        _currentUsername.value = null
         securePrefs.edit().clear().apply()
     }
 }

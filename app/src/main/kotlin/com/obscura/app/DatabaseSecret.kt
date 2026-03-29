@@ -25,46 +25,51 @@ import javax.crypto.spec.GCMParameterSpec
  */
 object DatabaseSecretProvider {
 
-    private const val KEYSTORE_ALIAS = "ObscuraDatabaseSecret"
-    private const val PREFS_NAME = "obscura_db_secret"
-    private const val PREF_KEY_IV = "sealed_iv"
-    private const val PREF_KEY_DATA = "sealed_data"
+    private const val KEYSTORE_ALIAS_PREFIX = "ObscuraDB_"
+    private const val PREFS_NAME = "obscura_db_secrets"
 
-    fun getOrCreate(context: Context): ByteArray {
+    /**
+     * Per-user DB encryption key. Each username gets its own random key,
+     * sealed with its own Keystore alias. Bob can't derive Alice's key.
+     */
+    fun getOrCreate(context: Context, username: String): ByteArray {
         val prefs = context.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
-        val sealedIv = prefs.getString(PREF_KEY_IV, null)
-        val sealedData = prefs.getString(PREF_KEY_DATA, null)
+        val ivKey = "${username}_iv"
+        val dataKey = "${username}_data"
+        val sealedIv = prefs.getString(ivKey, null)
+        val sealedData = prefs.getString(dataKey, null)
 
         if (sealedIv != null && sealedData != null) {
             return unseal(
+                username,
                 Base64.getDecoder().decode(sealedIv),
                 Base64.getDecoder().decode(sealedData)
             )
         }
 
-        // First launch — generate and seal
         val secret = ByteArray(32)
         SecureRandom().nextBytes(secret)
 
-        val (iv, encrypted) = seal(secret)
+        val (iv, encrypted) = seal(username, secret)
         prefs.edit()
-            .putString(PREF_KEY_IV, Base64.getEncoder().encodeToString(iv))
-            .putString(PREF_KEY_DATA, Base64.getEncoder().encodeToString(encrypted))
+            .putString(ivKey, Base64.getEncoder().encodeToString(iv))
+            .putString(dataKey, Base64.getEncoder().encodeToString(encrypted))
             .apply()
 
         return secret
     }
 
-    private fun getOrCreateKeystoreKey(): SecretKey {
+    private fun getOrCreateKeystoreKey(username: String): SecretKey {
+        val alias = KEYSTORE_ALIAS_PREFIX + username
         val keyStore = KeyStore.getInstance("AndroidKeyStore")
         keyStore.load(null)
 
-        keyStore.getEntry(KEYSTORE_ALIAS, null)?.let {
+        keyStore.getEntry(alias, null)?.let {
             return (it as KeyStore.SecretKeyEntry).secretKey
         }
 
         val spec = KeyGenParameterSpec.Builder(
-            KEYSTORE_ALIAS,
+            alias,
             KeyProperties.PURPOSE_ENCRYPT or KeyProperties.PURPOSE_DECRYPT
         )
             .setBlockModes(KeyProperties.BLOCK_MODE_GCM)
@@ -77,15 +82,15 @@ object DatabaseSecretProvider {
         return generator.generateKey()
     }
 
-    private fun seal(data: ByteArray): Pair<ByteArray, ByteArray> {
+    private fun seal(username: String, data: ByteArray): Pair<ByteArray, ByteArray> {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKeystoreKey())
+        cipher.init(Cipher.ENCRYPT_MODE, getOrCreateKeystoreKey(username))
         return Pair(cipher.iv, cipher.doFinal(data))
     }
 
-    private fun unseal(iv: ByteArray, encrypted: ByteArray): ByteArray {
+    private fun unseal(username: String, iv: ByteArray, encrypted: ByteArray): ByteArray {
         val cipher = Cipher.getInstance("AES/GCM/NoPadding")
-        cipher.init(Cipher.DECRYPT_MODE, getOrCreateKeystoreKey(), GCMParameterSpec(128, iv))
+        cipher.init(Cipher.DECRYPT_MODE, getOrCreateKeystoreKey(username), GCMParameterSpec(128, iv))
         return cipher.doFinal(encrypted)
     }
 }
