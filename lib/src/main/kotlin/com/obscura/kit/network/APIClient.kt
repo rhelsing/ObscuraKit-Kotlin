@@ -17,7 +17,10 @@ import java.util.*
 class APIClient(private val baseUrl: String) {
 
     private val httpClient = OkHttpClient.Builder()
-        .connectionSpecs(listOf(ConnectionSpec.MODERN_TLS)) // TLS 1.2+ only, no cleartext
+        .connectionSpecs(listOf(ConnectionSpec.MODERN_TLS))
+        .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
+        .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
         .build()
     private val JSON_MEDIA = "application/json".toMediaType()
     private val PROTOBUF_MEDIA = "application/x-protobuf".toMediaType()

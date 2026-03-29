@@ -27,7 +27,10 @@ object FriendCode {
     }
 
     fun decode(code: String): Decoded {
-        val json = JSONObject(String(code.fromBase64()))
+        val normalized = code.trim()
+            .replace('-', '+')
+            .replace('_', '/')
+        val json = JSONObject(String(normalized.fromBase64()))
         val userId = json.optString("u", "")
         val username = json.optString("n", "")
         require(userId.isNotEmpty() && username.isNotEmpty()) { "Invalid friend code" }
