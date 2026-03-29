@@ -1,132 +1,112 @@
 package scenarios
 
+import com.obscura.kit.AuthState
+import com.obscura.kit.ConnectionState
 import com.obscura.kit.ObscuraClient
 import com.obscura.kit.ObscuraConfig
+import com.obscura.kit.stores.FriendStatus
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Assumptions.assumeTrue
-import org.junit.jupiter.api.BeforeAll
-import org.junit.jupiter.api.MethodOrderer
-import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.TestMethodOrder
 import java.io.File
 
 /**
- * Server queue drain after simulated restart.
- *
- * The server is a dumb queue — it holds encrypted envelopes until a device
- * connects and ACKs them. These tests prove the client survives losing all
- * in-memory state and still drains the queue correctly.
- *
- * Key chain that must work after restart:
- * 1. Valid token (or refresh it)
- * 2. Get gateway ticket
- * 3. Connect WebSocket
- * 4. Decrypt every envelope (needs persisted Signal session state)
- * 5. Route each message (needs rebuilt deviceMap from persisted friends)
- * 6. ACK so server deletes them
+ * Persistence: file-backed DB survives simulated restart, queued messages
+ * are drained, Signal sessions still work after restore.
+ * All E2E against live server using ObscuraClient public API only.
  */
-@TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class PersistenceTests {
 
-    companion object {
-        private val API = "https://obscura.barrelmaker.dev"
-        private var serverUp = false
+    @Test
+    fun `Messages received after restart with file-backed DB`() = runBlocking {
+        assumeTrue(checkServer())
 
-        // File-backed DB so a second ObscuraClient can read the same state
-        private val bobDbPath = File.createTempFile("obscura_bob_", ".db").absolutePath
+        val bobDbPath = File.createTempFile("obscura_bob_", ".db").absolutePath
 
-        // Alice (stays in memory — she's the sender)
-        private var alice: ObscuraClient? = null
+        // Alice: in-memory, stays alive
+        val alice = registerAndConnect("pe_a")
+        assertEquals(AuthState.AUTHENTICATED, alice.authState.value)
 
-        // Bob's credentials for restore
-        private var bobToken: String? = null
-        private var bobRefreshToken: String? = null
-        private var bobUserId: String? = null
-        private var bobDeviceId: String? = null
-        private var bobUsername: String? = null
-        private var bobRegId: Int = 0
-
-        @BeforeAll @JvmStatic fun setup() {
-            serverUp = try {
-                java.net.URL("$API/openapi.yaml").openConnection().apply {
-                    connectTimeout = 5000; readTimeout = 5000
-                }.getInputStream().close(); true
-            } catch (e: Exception) { false }
-        }
-    }
-
-    private fun need() = assumeTrue(serverUp)
-
-    @Test @Order(1)
-    fun `Scenario E - Friend request arrives while offline, received after restart`() = runBlocking {
-        need()
-
-        // Register Alice (in-memory DB, stays alive)
-        alice = ObscuraClient(ObscuraConfig(API))
-        alice!!.register("kt_pe_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
-        alice!!.connect()
-
-        // Register Bob with file-backed DB
+        // Bob: file-backed DB
         val bob1 = ObscuraClient(ObscuraConfig(API, databasePath = bobDbPath))
-        bob1.register("kt_pe2_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
+        bob1.register(uniqueName("pe_b"), TEST_PASSWORD)
+        assertEquals(AuthState.AUTHENTICATED, bob1.authState.value)
+        assertNotNull(bob1.userId)
+        assertNotNull(bob1.deviceId)
         bob1.connect()
+        assertEquals(ConnectionState.CONNECTED, bob1.connectionState.value)
 
-        // Save Bob's credentials for later restore
-        bobToken = bob1.token
-        bobRefreshToken = bob1.refreshToken
-        bobUserId = bob1.userId
-        bobDeviceId = bob1.deviceId
-        bobUsername = bob1.username
-        bobRegId = bob1.registrationId
+        // Save Bob's credentials for restore
+        val bobToken = bob1.token!!
+        val bobRefreshToken = bob1.refreshToken
+        val bobUserId = bob1.userId!!
+        val bobDeviceId = bob1.deviceId
+        val bobUsername = bob1.username
+        val bobRegId = bob1.registrationId
 
-        // Establish friendship (creates Signal sessions on both sides)
-        alice!!.befriend(bobUserId!!, bobUsername!!)
-        bob1.waitForMessage()
-        bob1.acceptFriend(alice!!.userId!!, alice!!.username!!)
-        alice!!.waitForMessage()
+        // Establish friendship with state verification
+        becomeFriends(alice, bob1)
+        assertTrue(alice.friendList.value.any { it.userId == bobUserId && it.status == FriendStatus.ACCEPTED })
+        assertTrue(bob1.friendList.value.any { it.userId == alice.userId && it.status == FriendStatus.ACCEPTED })
 
         // Exchange a message to prove sessions work
-        alice!!.send(bobUsername!!, "before restart")
-        val msg = bob1.waitForMessage()
-        assertEquals("before restart", msg.text)
+        sendAndVerify(alice, bob1, "before restart")
 
-        // Bob disconnects (simulates app being killed)
+        val bob1Msgs = bob1.getMessages(alice.userId!!)
+        assertTrue(bob1Msgs.any { it.content == "before restart" },
+            "Bob1 conversations should contain pre-restart message")
+
+        // Bob disconnects (simulates app killed)
         bob1.disconnect()
+        assertEquals(ConnectionState.DISCONNECTED, bob1.connectionState.value)
 
-        // Alice sends a friend-visible message while Bob is offline
-        // Server queues it
-        alice!!.send(bobUsername!!, "while you were gone")
+        // Alice sends while Bob is offline — server queues it
+        alice.send(bobUsername!!, "while you were gone")
+        delay(1000)
 
-        // Simulate restart: create NEW ObscuraClient with SAME file-backed DB
+        // Simulate restart: new ObscuraClient, same file-backed DB
         val bob2 = ObscuraClient(ObscuraConfig(API, databasePath = bobDbPath))
-
-        // Restore session (token + userId, NOT re-registering)
         bob2.restoreSession(
-            token = bobToken!!,
+            token = bobToken,
             refreshToken = bobRefreshToken,
-            userId = bobUserId!!,
+            userId = bobUserId,
             deviceId = bobDeviceId,
             username = bobUsername,
             registrationId = bobRegId
         )
 
-        // Connect — should drain the server's queue
+        // Connect — should drain the server queue
         bob2.connect()
+        assertEquals(ConnectionState.CONNECTED, bob2.connectionState.value,
+            "Bob2 should be CONNECTED after restore + connect")
 
-        // Bob should receive the message sent while offline
-        val received = bob2.waitForMessage()
+        // Receive the queued message
+        val received = bob2.waitForMessage(20_000)
         assertEquals("TEXT", received.type)
         assertEquals("while you were gone", received.text)
-        assertEquals(alice!!.userId, received.sourceUserId)
+        assertEquals(alice.userId, received.sourceUserId)
+        delay(300)
 
-        // Prove bidirectional works after restart too
-        bob2.send(alice!!.username!!, "I'm back")
-        val reply = alice!!.waitForMessage()
+        // Verify in Bob2's conversations
+        val bob2Msgs = bob2.getMessages(alice.userId!!)
+        assertTrue(bob2Msgs.any { it.content == "while you were gone" },
+            "Bob2 conversations should contain the offline message after restart")
+
+        // Prove bidirectional works after restart
+        bob2.send(alice.username!!, "I'm back")
+        val reply = alice.waitForMessage()
+        assertEquals("TEXT", reply.type)
         assertEquals("I'm back", reply.text)
+        assertEquals(bobUserId, reply.sourceUserId)
+        delay(300)
 
-        alice!!.disconnect()
-        bob2.disconnect()
+        // Verify Alice's conversations
+        val aliceMsgs = alice.getMessages(bobUserId)
+        assertTrue(aliceMsgs.any { it.content == "I'm back" },
+            "Alice's conversations should contain Bob's reply after restart")
+
+        alice.disconnect(); bob2.disconnect()
     }
 }

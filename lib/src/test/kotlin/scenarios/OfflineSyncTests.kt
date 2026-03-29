@@ -1,82 +1,86 @@
 package scenarios
 
-import com.obscura.kit.ObscuraClient
-import com.obscura.kit.ObscuraConfig
+import com.obscura.kit.ConnectionState
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Assumptions.assumeTrue
-import org.junit.jupiter.api.BeforeAll
-import org.junit.jupiter.api.MethodOrderer
-import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.TestMethodOrder
 
 /**
- * Offline sync: Bob1 disconnects, Alice sends, Bob1 reconnects and gets queued messages.
- * Covers: test-scenario16.js
+ * Offline sync: Bob disconnects, Alice sends multiple messages,
+ * Bob reconnects and receives all queued messages.
+ * All E2E against live server using ObscuraClient public API only.
  */
-@TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class OfflineSyncTests {
 
-    companion object {
-        private val API = "https://obscura.barrelmaker.dev"
-        private var serverUp = false
-        private var alice: ObscuraClient? = null
-        private var bob: ObscuraClient? = null
+    @Test
+    fun `Multiple messages queued while offline, all received on reconnect`() = runBlocking {
+        assumeTrue(checkServer())
 
-        @BeforeAll @JvmStatic fun setup() {
-            serverUp = try {
-                java.net.URL("$API/openapi.yaml").openConnection().apply {
-                    connectTimeout = 5000; readTimeout = 5000
-                }.getInputStream().close(); true
-            } catch (e: Exception) { false }
-
-            if (serverUp) runBlocking {
-                alice = ObscuraClient(ObscuraConfig(API))
-                alice!!.register("kt_os_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
-                bob = ObscuraClient(ObscuraConfig(API))
-                bob!!.register("kt_os2_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
-
-                alice!!.connect(); bob!!.connect()
-                alice!!.befriend(bob!!.userId!!, bob!!.username!!)
-                bob!!.waitForMessage()
-                bob!!.acceptFriend(alice!!.userId!!, alice!!.username!!)
-                alice!!.waitForMessage()
-            }
-        }
-    }
-
-    private fun need() = assumeTrue(serverUp && alice != null)
-
-    @Test @Order(1)
-    fun `Messages queued while offline, received on reconnect`() = runBlocking {
-        need()
+        val alice = registerAndConnect("os_a")
+        val bob = registerAndConnect("os_b")
+        becomeFriends(alice, bob)
 
         // Bob disconnects
-        bob!!.disconnect()
+        bob.disconnect()
+        assertEquals(ConnectionState.DISCONNECTED, bob.connectionState.value,
+            "Bob should be DISCONNECTED")
         delay(1000)
 
-        // Alice sends while Bob is offline
-        alice!!.send(bob!!.username!!, "You were offline!")
-
+        // Alice sends 2 messages while Bob offline
+        alice.send(bob.username!!, "Offline message 1")
+        delay(500)
+        alice.send(bob.username!!, "Offline message 2")
         delay(1000)
 
-        // Bob reconnects — should receive queued message
-        bob!!.connect()
-        val msg = bob!!.waitForMessage(20_000)
-        assertEquals("TEXT", msg.type)
-        assertEquals("You were offline!", msg.text)
+        // Bob reconnects — should receive both queued messages
+        bob.connect()
+        assertEquals(ConnectionState.CONNECTED, bob.connectionState.value,
+            "Bob should be CONNECTED after reconnect")
+
+        val msg1 = bob.waitForMessage(20_000)
+        assertEquals("TEXT", msg1.type)
+        assertEquals(alice.userId, msg1.sourceUserId)
+
+        val msg2 = bob.waitForMessage(20_000)
+        assertEquals("TEXT", msg2.type)
+        assertEquals(alice.userId, msg2.sourceUserId)
+
+        delay(300)
+
+        // Verify Bob's conversations has both messages
+        val bobMsgs = bob.getMessages(alice.userId!!)
+        assertTrue(bobMsgs.any { it.content == "Offline message 1" },
+            "Bob's conversations should contain 'Offline message 1'")
+        assertTrue(bobMsgs.any { it.content == "Offline message 2" },
+            "Bob's conversations should contain 'Offline message 2'")
+
+        alice.disconnect(); bob.disconnect()
     }
 
-    @Test @Order(2)
-    fun `Can message normally after reconnect`() = runBlocking {
-        need()
+    @Test
+    fun `Normal messaging works after reconnect`() = runBlocking {
+        assumeTrue(checkServer())
 
-        alice!!.send(bob!!.username!!, "Welcome back!")
-        val msg = bob!!.waitForMessage()
-        assertEquals("Welcome back!", msg.text)
+        val alice = registerAndConnect("os_c")
+        val bob = registerAndConnect("os_d")
+        becomeFriends(alice, bob)
 
-        bob!!.disconnect(); alice!!.disconnect()
+        // Bob disconnects and reconnects
+        bob.disconnect()
+        delay(1000)
+        bob.connect()
+        assertEquals(ConnectionState.CONNECTED, bob.connectionState.value)
+
+        // Send after reconnect works normally
+        sendAndVerify(alice, bob, "Welcome back!")
+
+        // Verify conversations
+        val bobMsgs = bob.getMessages(alice.userId!!)
+        assertTrue(bobMsgs.any { it.content == "Welcome back!" },
+            "Bob's conversations should contain post-reconnect message")
+
+        alice.disconnect(); bob.disconnect()
     }
 }

@@ -1,63 +1,66 @@
 package scenarios
 
-import com.obscura.kit.ObscuraClient
-import com.obscura.kit.ObscuraConfig
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Assumptions.assumeTrue
-import org.junit.jupiter.api.BeforeAll
-import org.junit.jupiter.api.MethodOrderer
-import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.TestMethodOrder
 
-@TestMethodOrder(MethodOrderer.OrderAnnotation::class)
+/**
+ * Session reset: reset single session, message after reset, reset all sessions.
+ * All E2E against live server using ObscuraClient public API only.
+ */
 class SessionResetTests {
 
-    companion object {
-        private val API = "https://obscura.barrelmaker.dev"
-        private var serverUp = false
-        private var alice: ObscuraClient? = null
-        private var bob: ObscuraClient? = null
+    @Test
+    fun `Session reset sends SESSION_RESET and messaging continues`() = runBlocking {
+        assumeTrue(checkServer())
 
-        @BeforeAll @JvmStatic fun setup() {
-            serverUp = try {
-                java.net.URL("$API/openapi.yaml").openConnection().apply {
-                    connectTimeout = 5000; readTimeout = 5000
-                }.getInputStream().close(); true
-            } catch (e: Exception) { false }
+        val alice = registerAndConnect("sr_a")
+        val bob = registerAndConnect("sr_b")
+        becomeFriends(alice, bob)
 
-            if (serverUp) runBlocking {
-                alice = ObscuraClient(ObscuraConfig(API))
-                alice!!.register("kt_sr_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
-                bob = ObscuraClient(ObscuraConfig(API))
-                bob!!.register("kt_sr2_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
-                alice!!.connect(); bob!!.connect()
-                alice!!.befriend(bob!!.userId!!, bob!!.username!!)
-                bob!!.waitForMessage()
-                bob!!.acceptFriend(alice!!.userId!!, alice!!.username!!)
-                alice!!.waitForMessage()
-            }
-        }
+        // Exchange a message first to confirm session works
+        sendAndVerify(alice, bob, "Before reset")
+
+        val bobMsgsBefore = bob.getMessages(alice.userId!!)
+        assertTrue(bobMsgsBefore.any { it.content == "Before reset" },
+            "Bob's conversations should contain pre-reset message")
+
+        // Alice resets session with Bob
+        alice.resetSessionWith(bob.userId!!, "test reset")
+
+        val resetMsg = bob.waitForMessage()
+        assertEquals("SESSION_RESET", resetMsg.type,
+            "Bob should receive SESSION_RESET")
+        delay(300)
+
+        // Send after reset — should still work (new session auto-built)
+        sendAndVerify(alice, bob, "After reset")
+
+        val bobMsgsAfter = bob.getMessages(alice.userId!!)
+        assertTrue(bobMsgsAfter.any { it.content == "After reset" },
+            "Bob's conversations should contain post-reset message")
+
+        alice.disconnect(); bob.disconnect()
     }
 
-    private fun need() = assumeTrue(serverUp && alice != null)
-
-    @Test @Order(1)
-    fun `Session reset sends SESSION_RESET to friend`() = runBlocking {
-        need()
-        alice!!.resetSessionWith(bob!!.userId!!, "test reset")
-
-        val msg = bob!!.waitForMessage()
-        assertEquals("SESSION_RESET", msg.type)
-    }
-
-    @Test @Order(2)
+    @Test
     fun `Reset all sessions completes without error`() = runBlocking {
-        need()
-        // Should not throw — resets sessions for all friends
-        alice!!.resetAllSessions("test bulk reset")
-        // Bob may or may not receive depending on session state,
-        // but the call should complete successfully
+        assumeTrue(checkServer())
+
+        val alice = registerAndConnect("sr_c")
+        val bob = registerAndConnect("sr_d")
+        becomeFriends(alice, bob)
+
+        // Exchange a message to establish session
+        sendAndVerify(alice, bob, "Pre bulk reset")
+
+        // Reset all sessions — should not throw
+        alice.resetAllSessions("test bulk reset")
+        delay(500)
+
+        // No crash = success. Bob may or may not receive depending on session state.
+        alice.disconnect(); bob.disconnect()
     }
 }

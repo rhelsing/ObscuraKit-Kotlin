@@ -239,7 +239,7 @@ class ObscuraClient(
 
     private fun startDatabaseObservation() {
         scope.launch {
-            db.friendQueries.selectByStatus(FriendStatus.ACCEPTED.value)
+            db.friendQueries.selectAll()
                 .asFlow()
                 .mapToList(Dispatchers.IO)
                 .map { rows -> rows.map { it.toFriendData() } }

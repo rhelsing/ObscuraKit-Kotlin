@@ -1,11 +1,11 @@
 package scenarios
 
-import com.obscura.kit.ObscuraClient
-import com.obscura.kit.ObscuraConfig
+import com.obscura.kit.AuthState
+import com.obscura.kit.ConnectionState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Assumptions.assumeTrue
-import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.MethodOrderer
 import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
@@ -13,70 +13,93 @@ import org.junit.jupiter.api.TestMethodOrder
 
 /**
  * Scenario 9: Pix flow E2E.
- * Upload image, send as attachment to friend, friend downloads.
+ * Full lifecycle: register, befriend, upload JPEG, send as attachment, friend downloads, verify JPEG header.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class PixFlowTests {
 
-    companion object {
-        private val API = "https://obscura.barrelmaker.dev"
-        private var serverUp = false
-        private var alice: ObscuraClient? = null
-        private var bob: ObscuraClient? = null
-
-        @BeforeAll @JvmStatic fun setup() {
-            serverUp = try {
-                java.net.URL("$API/openapi.yaml").openConnection().apply {
-                    connectTimeout = 5000; readTimeout = 5000
-                }.getInputStream().close(); true
-            } catch (e: Exception) { false }
-
-            if (serverUp) runBlocking {
-                alice = ObscuraClient(ObscuraConfig(API))
-                alice!!.register("kt_p9_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
-                bob = ObscuraClient(ObscuraConfig(API))
-                bob!!.register("kt_p9b_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
-                alice!!.connect(); bob!!.connect()
-                alice!!.befriend(bob!!.userId!!, bob!!.username!!)
-                bob!!.waitForMessage()
-                bob!!.acceptFriend(alice!!.userId!!, alice!!.username!!)
-                alice!!.waitForMessage()
-            }
-        }
-    }
-
-    private fun need() = assumeTrue(serverUp && alice != null)
-
     @Test @Order(1)
-    fun `9-1 - Upload pix, send to friend, friend downloads`() = runBlocking {
-        need()
+    fun `9-1 - Upload JPEG, send to friend, friend downloads and verifies JPEG header`() = runBlocking {
+        assumeTrue(checkServer())
+
+        val alice = registerAndConnect("p9a")
+        val bob = registerAndConnect("p9b")
+        assertEquals(AuthState.AUTHENTICATED, alice.authState.value)
+        assertEquals(AuthState.AUTHENTICATED, bob.authState.value)
+
+        becomeFriends(alice, bob)
+
+        // Alice uploads JPEG with proper header
         val jpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte(), 0xFF.toByte(), 0xE0.toByte()) + ByteArray(300)
-        val (attId, _) = alice!!.uploadAttachment(jpeg)
+        val (attId, _) = alice.uploadAttachment(jpeg)
+        assertTrue(attId.isNotEmpty(), "Attachment ID should be returned")
 
-        alice!!.sendAttachment(bob!!.username!!, attId, ByteArray(32), ByteArray(12), "image/jpeg", jpeg.size.toLong())
+        // Alice sends to bob
+        alice.sendAttachment(bob.username!!, attId, ByteArray(32), ByteArray(12), "image/jpeg", jpeg.size.toLong())
 
-        val msg = bob!!.waitForMessage()
+        // Bob receives CONTENT_REFERENCE
+        val msg = bob.waitForMessage()
         assertEquals("CONTENT_REFERENCE", msg.type)
+        assertEquals(alice.userId, msg.sourceUserId)
 
-        val downloaded = bob!!.downloadAttachment(msg.raw!!.contentReference.attachmentId)
-        assertEquals(0xFF.toByte(), downloaded[0])
-        assertEquals(0xD8.toByte(), downloaded[1])
-        assertEquals(jpeg.size, downloaded.size)
+        // Bob downloads and verifies JPEG header bytes
+        val downloaded = bob.downloadAttachment(msg.raw!!.contentReference.attachmentId)
+        assertEquals(jpeg.size, downloaded.size, "Size must match")
+        assertEquals(0xFF.toByte(), downloaded[0], "First byte should be 0xFF (JPEG SOI)")
+        assertEquals(0xD8.toByte(), downloaded[1], "Second byte should be 0xD8 (JPEG SOI)")
+        assertArrayEquals(jpeg, downloaded, "Full content must match")
+
+        alice.disconnect()
+        bob.disconnect()
     }
 
     @Test @Order(2)
-    fun `9-2 - Bidirectional pix exchange`() = runBlocking {
-        need()
-        val j1 = byteArrayOf(0xFF.toByte(), 0xD8.toByte()) + ByteArray(100)
-        val (a1, _) = alice!!.uploadAttachment(j1)
-        alice!!.sendAttachment(bob!!.username!!, a1, ByteArray(32), ByteArray(12), "image/jpeg", j1.size.toLong())
-        val m1 = bob!!.waitForMessage()
-        assertEquals("CONTENT_REFERENCE", m1.type)
+    fun `9-2 - Bidirectional pix exchange with JPEG verification`() = runBlocking {
+        assumeTrue(checkServer())
 
-        val j2 = byteArrayOf(0xFF.toByte(), 0xD8.toByte()) + ByteArray(150)
-        val (a2, _) = bob!!.uploadAttachment(j2)
-        bob!!.sendAttachment(alice!!.username!!, a2, ByteArray(32), ByteArray(12), "image/jpeg", j2.size.toLong())
-        val m2 = alice!!.waitForMessage()
-        assertEquals("CONTENT_REFERENCE", m2.type)
+        val alice = registerAndConnect("p9ba")
+        val bob = registerAndConnect("p9bb")
+        becomeFriends(alice, bob)
+
+        // Alice sends image to Bob
+        val aliceJpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte()) + ByteArray(100) { 0xAA.toByte() }
+        val (aliceAttId, _) = alice.uploadAttachment(aliceJpeg)
+        alice.sendAttachment(bob.username!!, aliceAttId, ByteArray(32), ByteArray(12), "image/jpeg", aliceJpeg.size.toLong())
+
+        val bobMsg = bob.waitForMessage()
+        assertEquals("CONTENT_REFERENCE", bobMsg.type)
+        assertEquals(alice.userId, bobMsg.sourceUserId)
+
+        // Bob downloads alice's image and verifies JPEG header
+        val bobDownloaded = bob.downloadAttachment(bobMsg.raw!!.contentReference.attachmentId)
+        assertEquals(0xFF.toByte(), bobDownloaded[0])
+        assertEquals(0xD8.toByte(), bobDownloaded[1])
+        assertEquals(aliceJpeg.size, bobDownloaded.size)
+
+        // Bob sends image back to Alice
+        val bobJpeg = byteArrayOf(0xFF.toByte(), 0xD8.toByte()) + ByteArray(150) { 0xBB.toByte() }
+        val (bobAttId, _) = bob.uploadAttachment(bobJpeg)
+        bob.sendAttachment(alice.username!!, bobAttId, ByteArray(32), ByteArray(12), "image/jpeg", bobJpeg.size.toLong())
+
+        val aliceMsg = alice.waitForMessage()
+        assertEquals("CONTENT_REFERENCE", aliceMsg.type)
+        assertEquals(bob.userId, aliceMsg.sourceUserId)
+
+        // Alice downloads bob's image and verifies JPEG header
+        val aliceDownloaded = alice.downloadAttachment(aliceMsg.raw!!.contentReference.attachmentId)
+        assertEquals(0xFF.toByte(), aliceDownloaded[0])
+        assertEquals(0xD8.toByte(), aliceDownloaded[1])
+        assertEquals(bobJpeg.size, aliceDownloaded.size)
+
+        // Verify conversations updated for both sides
+        delay(300)
+        val bobConvos = bob.getMessages(alice.userId!!)
+        assertTrue(bobConvos.isNotEmpty(), "Bob should have messages from alice")
+
+        val aliceConvos = alice.getMessages(bob.userId!!)
+        assertTrue(aliceConvos.isNotEmpty(), "Alice should have messages from bob")
+
+        alice.disconnect()
+        bob.disconnect()
     }
 }

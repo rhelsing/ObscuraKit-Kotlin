@@ -1,7 +1,7 @@
 package scenarios
 
-import com.obscura.kit.ObscuraClient
-import com.obscura.kit.ObscuraConfig
+import com.obscura.kit.AuthState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -12,78 +12,66 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestMethodOrder
 
 /**
- * Scenario 5: Multi-device E2E.
- * Verify device listing, friend flow + text from different user pairs.
+ * Multi-device linking: verify device listing, befriend + messaging.
+ * Uses only public API + shared helpers.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class MultiDeviceLinkingTests {
 
     companion object {
-        private val API = "https://obscura.barrelmaker.dev"
         private var serverUp = false
 
         @BeforeAll @JvmStatic fun check() {
-            serverUp = try {
-                java.net.URL("$API/openapi.yaml").openConnection().apply {
-                    connectTimeout = 5000; readTimeout = 5000
-                }.getInputStream().close(); true
-            } catch (e: Exception) { false }
+            serverUp = checkServer()
         }
     }
 
     private fun need() = assumeTrue(serverUp)
-    private fun name() = "kt_${System.currentTimeMillis()}_${(1000..9999).random()}"
 
     @Test @Order(1)
-    fun `5-1 - Register shows 1 device on server`() = runBlocking {
+    fun `Register shows 1 device on server`() = runBlocking {
         need()
-        val client = ObscuraClient(ObscuraConfig(API))
-        client.register(name(), "testpass123!xyz")
-
+        val client = registerAndConnect("mdl_single")
         val devices = client.api.listDevices()
-        assertEquals(1, devices.length())
+        assertEquals(1, devices.length(), "Newly registered user should have 1 device")
+        client.disconnect()
     }
 
     @Test @Order(2)
-    fun `5-2 - Two users exchange messages after befriend`() = runBlocking {
+    fun `Two users befriend and exchange messages`() = runBlocking {
         need()
-        val alice = ObscuraClient(ObscuraConfig(API))
-        alice.register(name(), "testpass123!xyz")
-        val bob = ObscuraClient(ObscuraConfig(API))
-        bob.register(name(), "testpass123!xyz")
+        val alice = registerAndConnect("mdl_alice")
+        val bob = registerAndConnect("mdl_bob")
 
-        alice.connect(); bob.connect()
-        alice.befriend(bob.userId!!, bob.username!!)
-        bob.waitForMessage() // FRIEND_REQUEST
-        bob.acceptFriend(alice.userId!!, alice.username!!)
-        alice.waitForMessage() // FRIEND_RESPONSE
-
-        // Verify messaging works through the abstraction
-        alice.send(bob.username!!, "Multi-device test msg")
-        val msg = bob.waitForMessage()
-        assertEquals("Multi-device test msg", msg.text)
+        becomeFriends(alice, bob)
+        sendAndVerify(alice, bob, "Hello from Alice!")
+        sendAndVerify(bob, alice, "Hello from Bob!")
 
         alice.disconnect(); bob.disconnect()
     }
 
     @Test @Order(3)
-    fun `5-3 - Friend fan-out targets populated after befriend`() = runBlocking {
+    fun `Messaging works after befriend - verify conversations state`() = runBlocking {
         need()
-        val alice = ObscuraClient(ObscuraConfig(API))
-        alice.register(name(), "testpass123!xyz")
-        val bob = ObscuraClient(ObscuraConfig(API))
-        bob.register(name(), "testpass123!xyz")
+        val alice = registerAndConnect("mdl_conv_a")
+        val bob = registerAndConnect("mdl_conv_b")
 
-        alice.connect(); bob.connect()
-        alice.befriend(bob.userId!!, bob.username!!)
+        becomeFriends(alice, bob)
+
+        alice.send(bob.username!!, "Test message 1")
         bob.waitForMessage()
-        bob.acceptFriend(alice.userId!!, alice.username!!)
-        alice.waitForMessage()
+        delay(300)
 
-        // Verify messenger knows Bob's devices
-        val bobDevices = alice.messenger.getDeviceIdsForUser(bob.userId!!)
-        assertTrue(bobDevices.isNotEmpty(), "Should know at least 1 Bob device")
-        assertTrue(bobDevices.contains(bob.deviceId), "Should contain Bob's deviceId")
+        alice.send(bob.username!!, "Test message 2")
+        bob.waitForMessage()
+        delay(300)
+
+        // Verify Bob's conversations contain both messages
+        val bobMsgs = bob.getMessages(alice.userId!!)
+        assertTrue(bobMsgs.any { it.content == "Test message 1" },
+            "Bob should have first message in conversations")
+        assertTrue(bobMsgs.any { it.content == "Test message 2" },
+            "Bob should have second message in conversations")
 
         alice.disconnect(); bob.disconnect()
     }

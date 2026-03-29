@@ -1,75 +1,74 @@
 package scenarios
 
-import com.obscura.kit.ObscuraClient
-import com.obscura.kit.ObscuraConfig
+import com.obscura.kit.ConnectionState
+import com.obscura.kit.stores.FriendStatus
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Assumptions.assumeTrue
-import org.junit.jupiter.api.BeforeAll
-import org.junit.jupiter.api.MethodOrderer
-import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
-import org.junit.jupiter.api.TestMethodOrder
 
-@TestMethodOrder(MethodOrderer.OrderAnnotation::class)
+/**
+ * Session reconnect: Signal session survives disconnect/reconnect, self-friend rejection.
+ * All E2E against live server using ObscuraClient public API only.
+ */
 class SessionReconnectTests {
 
-    companion object {
-        private val API = "https://obscura.barrelmaker.dev"
-        private var serverUp = false
-        private var alice: ObscuraClient? = null
-        private var bob: ObscuraClient? = null
-
-        @BeforeAll @JvmStatic fun setup() {
-            serverUp = try {
-                java.net.URL("$API/openapi.yaml").openConnection().apply {
-                    connectTimeout = 5000; readTimeout = 5000
-                }.getInputStream().close(); true
-            } catch (e: Exception) { false }
-
-            if (serverUp) runBlocking {
-                alice = ObscuraClient(ObscuraConfig(API))
-                alice!!.register("kt_rc_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
-                bob = ObscuraClient(ObscuraConfig(API))
-                bob!!.register("kt_rc2_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
-                alice!!.connect(); bob!!.connect()
-                alice!!.befriend(bob!!.userId!!, bob!!.username!!)
-                bob!!.waitForMessage()
-                bob!!.acceptFriend(alice!!.userId!!, alice!!.username!!)
-                alice!!.waitForMessage()
-            }
-        }
-    }
-
-    private fun need() = assumeTrue(serverUp && alice != null)
-
-    @Test @Order(1)
+    @Test
     fun `Signal session survives disconnect and reconnect`() = runBlocking {
-        need()
-        alice!!.send(bob!!.username!!, "before disconnect")
-        val first = bob!!.waitForMessage()
-        assertEquals("TEXT", first.type)
-        assertEquals("before disconnect", first.text)
+        assumeTrue(checkServer())
 
-        bob!!.disconnect()
-        Thread.sleep(1000)
-        bob!!.connect()
+        val alice = registerAndConnect("rc_a")
+        val bob = registerAndConnect("rc_b")
 
-        alice!!.send(bob!!.username!!, "after reconnect")
-        val second = bob!!.waitForMessage()
-        assertEquals("TEXT", second.type)
-        assertEquals("after reconnect", second.text)
-        assertEquals(alice!!.userId, second.sourceUserId)
+        assertEquals(ConnectionState.CONNECTED, alice.connectionState.value)
+        assertEquals(ConnectionState.CONNECTED, bob.connectionState.value)
+
+        becomeFriends(alice, bob)
+
+        // Verify friend state
+        assertTrue(alice.friendList.value.any { it.userId == bob.userId && it.status == FriendStatus.ACCEPTED })
+        assertTrue(bob.friendList.value.any { it.userId == alice.userId && it.status == FriendStatus.ACCEPTED })
+
+        // Send before disconnect
+        sendAndVerify(alice, bob, "before disconnect")
+
+        val bobMsgsBefore = bob.getMessages(alice.userId!!)
+        assertTrue(bobMsgsBefore.any { it.content == "before disconnect" },
+            "Bob's conversations should contain pre-disconnect message")
+
+        // Bob disconnects and reconnects
+        bob.disconnect()
+        assertEquals(ConnectionState.DISCONNECTED, bob.connectionState.value)
+        delay(1000)
+        bob.connect()
+        assertEquals(ConnectionState.CONNECTED, bob.connectionState.value,
+            "Bob should be CONNECTED after reconnect")
+
+        // Send after reconnect — Signal session should still work
+        sendAndVerify(alice, bob, "after reconnect")
+
+        val bobMsgsAfter = bob.getMessages(alice.userId!!)
+        assertTrue(bobMsgsAfter.any { it.content == "after reconnect" },
+            "Bob's conversations should contain post-reconnect message")
+        assertTrue(bobMsgsAfter.any { it.content == "before disconnect" },
+            "Bob's conversations should still contain pre-disconnect message")
+
+        alice.disconnect(); bob.disconnect()
     }
 
-    @Test @Order(2)
+    @Test
     fun `Self-friend rejection`() = runBlocking {
-        need()
-        val ex = assertThrows(IllegalArgumentException::class.java) {
-            runBlocking { alice!!.befriend(alice!!.userId!!, alice!!.username!!) }
-        }
-        assertTrue(ex.message!!.contains("Cannot befriend yourself"))
+        assumeTrue(checkServer())
 
-        alice!!.disconnect(); bob!!.disconnect()
+        val alice = registerAndConnect("rc_c")
+
+        val ex = assertThrows(IllegalArgumentException::class.java) {
+            runBlocking { alice.befriend(alice.userId!!, alice.username!!) }
+        }
+        assertTrue(ex.message!!.contains("Cannot befriend yourself"),
+            "Should reject self-befriend with clear message")
+
+        alice.disconnect()
     }
 }

@@ -1,97 +1,137 @@
 package scenarios
 
-import com.obscura.kit.ObscuraClient
-import com.obscura.kit.ObscuraConfig
-import com.obscura.kit.network.HttpException
+import com.obscura.kit.AuthState
+import com.obscura.kit.ConnectionState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import org.json.JSONObject
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Assumptions.assumeTrue
-import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.MethodOrderer
 import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestMethodOrder
 
 /**
- * Edge cases: attachment limits, verify codes, profile ORM sync.
- * Covers: test-attachment-size.js, test-verify-persistence.js, test-profile-pictures.js
+ * Edge cases: attachment size limits, verify code stability, profile ORM sync.
+ * Full lifecycle with state verification after every mutation.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class EdgeCaseTests {
 
-    companion object {
-        private val API = "https://obscura.barrelmaker.dev"
-        private var serverUp = false
-        private var alice: ObscuraClient? = null
-        private var bob: ObscuraClient? = null
-
-        @BeforeAll @JvmStatic fun setup() {
-            serverUp = try {
-                java.net.URL("$API/openapi.yaml").openConnection().apply {
-                    connectTimeout = 5000; readTimeout = 5000
-                }.getInputStream().close(); true
-            } catch (e: Exception) { false }
-
-            if (serverUp) runBlocking {
-                alice = ObscuraClient(ObscuraConfig(API))
-                alice!!.register("kt_ec_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
-                bob = ObscuraClient(ObscuraConfig(API))
-                bob!!.register("kt_ec2_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
-
-                alice!!.connect(); bob!!.connect()
-                alice!!.befriend(bob!!.userId!!, bob!!.username!!)
-                bob!!.waitForMessage()
-                bob!!.acceptFriend(alice!!.userId!!, alice!!.username!!)
-                alice!!.waitForMessage()
-            }
-        }
-    }
-
-    private fun need() = assumeTrue(serverUp && alice != null)
-
     @Test @Order(1)
-    fun `Small attachment upload succeeds`() = runBlocking {
-        need()
+    fun `EC-1 - Small attachment upload and download`() = runBlocking {
+        assumeTrue(checkServer())
+
+        val alice = registerAndConnect("eca")
+        assertEquals(AuthState.AUTHENTICATED, alice.authState.value)
+        assertEquals(ConnectionState.CONNECTED, alice.connectionState.value)
+
         val small = ByteArray(100) { it.toByte() }
-        val (id, _) = alice!!.uploadAttachment(small)
-        assertTrue(id.isNotEmpty())
+        val (id, expiresAt) = alice.uploadAttachment(small)
+        assertTrue(id.isNotEmpty(), "Attachment ID should be non-empty")
+        assertTrue(expiresAt > 0, "Expiration should be positive")
+
+        val downloaded = alice.downloadAttachment(id)
+        assertArrayEquals(small, downloaded, "Downloaded content must match uploaded")
+
+        alice.disconnect()
+        assertEquals(ConnectionState.DISCONNECTED, alice.connectionState.value)
     }
 
     @Test @Order(2)
-    fun `Medium attachment upload succeeds`() = runBlocking {
-        need()
-        val medium = ByteArray(500 * 1024) { (it % 256).toByte() } // 500KB
-        val (id, _) = alice!!.uploadAttachment(medium)
-        assertTrue(id.isNotEmpty())
+    fun `EC-2 - Medium attachment upload, download, and size verification`() = runBlocking {
+        assumeTrue(checkServer())
 
-        val downloaded = alice!!.downloadAttachment(id)
-        assertEquals(medium.size, downloaded.size)
+        val alice = registerAndConnect("ecm")
+        assertEquals(AuthState.AUTHENTICATED, alice.authState.value)
+
+        val medium = ByteArray(500 * 1024) { (it % 256).toByte() } // 500KB
+        val (id, _) = alice.uploadAttachment(medium)
+        assertTrue(id.isNotEmpty(), "Attachment ID should be non-empty")
+
+        val downloaded = alice.downloadAttachment(id)
+        assertEquals(medium.size, downloaded.size, "Downloaded size should match 500KB")
+        assertArrayEquals(medium, downloaded, "Downloaded content must match uploaded")
+
+        alice.disconnect()
     }
 
     @Test @Order(3)
-    fun `Verify code is stable for same recovery phrase`() {
-        need()
-        alice!!.generateRecoveryPhrase()
-        val code1 = alice!!.getVerifyCode()
-        val code2 = alice!!.getVerifyCode()
-        assertNotNull(code1)
-        assertEquals(code1, code2, "Verify code should be deterministic")
+    fun `EC-3 - Verify code is stable for same recovery phrase`() = runBlocking {
+        assumeTrue(checkServer())
+
+        val alice = registerAndConnect("ecv")
+        assertEquals(AuthState.AUTHENTICATED, alice.authState.value)
+
+        alice.generateRecoveryPhrase()
+        val code1 = alice.getVerifyCode()
+        val code2 = alice.getVerifyCode()
+        assertNotNull(code1, "Verify code should not be null")
+        assertNotNull(code2, "Verify code should not be null on second call")
+        assertEquals(code1, code2, "Verify code should be deterministic for same recovery phrase")
+
+        alice.disconnect()
     }
 
     @Test @Order(4)
-    fun `Profile data syncs via MODEL_SYNC`() = runBlocking {
-        need()
-        alice!!.sendModelSync(bob!!.username!!, "profile", "profile_${alice!!.userId}",
+    fun `EC-4 - Profile data syncs via MODEL_SYNC with full lifecycle`() = runBlocking {
+        assumeTrue(checkServer())
+
+        val alice = registerAndConnect("ecpa")
+        val bob = registerAndConnect("ecpb")
+        assertEquals(AuthState.AUTHENTICATED, alice.authState.value)
+        assertEquals(AuthState.AUTHENTICATED, bob.authState.value)
+
+        becomeFriends(alice, bob)
+
+        // Alice sends profile MODEL_SYNC
+        alice.sendModelSync(bob.username!!, "profile", "profile_${alice.userId}",
             data = mapOf("displayName" to "Alice Display", "avatarUrl" to "att-avatar-123"))
 
-        val msg = bob!!.waitForMessage()
-        assertEquals("MODEL_SYNC", msg.type)
-        assertEquals("profile", msg.raw!!.modelSync.model)
+        // Bob receives and verifies
+        val msg = bob.waitForMessage()
+        assertEquals("MODEL_SYNC", msg.type, "Message type should be MODEL_SYNC")
+        assertEquals(alice.userId, msg.sourceUserId, "Source should be alice")
+        assertEquals("profile", msg.raw!!.modelSync.model, "Model should be 'profile'")
 
-        val data = org.json.JSONObject(String(msg.raw!!.modelSync.data.toByteArray()))
-        assertEquals("Alice Display", data.getString("displayName"))
-        assertEquals("att-avatar-123", data.getString("avatarUrl"))
+        val data = JSONObject(String(msg.raw!!.modelSync.data.toByteArray()))
+        assertEquals("Alice Display", data.getString("displayName"), "Display name should match")
+        assertEquals("att-avatar-123", data.getString("avatarUrl"), "Avatar URL should match")
 
-        alice!!.disconnect(); bob!!.disconnect()
+        alice.disconnect()
+        bob.disconnect()
+        assertEquals(ConnectionState.DISCONNECTED, alice.connectionState.value)
+        assertEquals(ConnectionState.DISCONNECTED, bob.connectionState.value)
+    }
+
+    @Test @Order(5)
+    fun `EC-5 - Attachment sent to friend with size check`() = runBlocking {
+        assumeTrue(checkServer())
+
+        val alice = registerAndConnect("ecsa")
+        val bob = registerAndConnect("ecsb")
+        becomeFriends(alice, bob)
+
+        // Upload varying sizes and send to friend
+        val payload = ByteArray(1024) { (it % 256).toByte() }
+        val (attId, _) = alice.uploadAttachment(payload)
+        assertTrue(attId.isNotEmpty())
+
+        alice.sendAttachment(bob.username!!, attId, ByteArray(32), ByteArray(12), "application/octet-stream", payload.size.toLong())
+
+        val msg = bob.waitForMessage()
+        assertEquals("CONTENT_REFERENCE", msg.type)
+        assertEquals(alice.userId, msg.sourceUserId)
+
+        val ref = msg.raw!!.contentReference
+        assertEquals(payload.size.toLong(), ref.sizeBytes, "Size in reference should match uploaded size")
+
+        val downloaded = bob.downloadAttachment(ref.attachmentId)
+        assertEquals(payload.size, downloaded.size, "Downloaded size should match")
+        assertArrayEquals(payload, downloaded, "Content should match exactly")
+
+        alice.disconnect()
+        bob.disconnect()
     }
 }

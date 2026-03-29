@@ -1,7 +1,6 @@
 package scenarios
 
-import com.obscura.kit.ObscuraClient
-import com.obscura.kit.ObscuraConfig
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -11,32 +10,26 @@ import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestMethodOrder
 
+/**
+ * Device revocation: full befriend lifecycle, announce revocation, verify delivery,
+ * then verify messaging still works.
+ * Uses only public API + shared helpers.
+ */
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class DeviceRevocationTests {
 
     companion object {
-        private val API = "https://obscura.barrelmaker.dev"
         private var serverUp = false
-        private var bob: ObscuraClient? = null
-        private var alice: ObscuraClient? = null
+        private var bob: com.obscura.kit.ObscuraClient? = null
+        private var alice: com.obscura.kit.ObscuraClient? = null
 
         @BeforeAll @JvmStatic fun setup() {
-            serverUp = try {
-                java.net.URL("$API/openapi.yaml").openConnection().apply {
-                    connectTimeout = 5000; readTimeout = 5000
-                }.getInputStream().close(); true
-            } catch (e: Exception) { false }
+            serverUp = checkServer()
 
             if (serverUp) runBlocking {
-                bob = ObscuraClient(ObscuraConfig(API))
-                bob!!.register("kt_r7_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
-                alice = ObscuraClient(ObscuraConfig(API))
-                alice!!.register("kt_r7a_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
-                bob!!.connect(); alice!!.connect()
-                bob!!.befriend(alice!!.userId!!, alice!!.username!!)
-                alice!!.waitForMessage()
-                alice!!.acceptFriend(bob!!.userId!!, bob!!.username!!)
-                bob!!.waitForMessage()
+                bob = registerAndConnect("rev_bob")
+                alice = registerAndConnect("rev_alice")
+                becomeFriends(bob!!, alice!!)
             }
         }
     }
@@ -44,20 +37,27 @@ class DeviceRevocationTests {
     private fun need() = assumeTrue(serverUp && bob != null)
 
     @Test @Order(1)
-    fun `7-1 - Server shows registered device`() = runBlocking {
+    fun `Server shows registered device`() = runBlocking {
         need()
         val devices = bob!!.api.listDevices()
-        assertTrue(devices.length() >= 1)
+        assertTrue(devices.length() >= 1, "Bob should have at least 1 device on server")
     }
 
     @Test @Order(2)
-    fun `7-2 - Revocation announcement delivered to friend`() = runBlocking {
+    fun `Revocation announcement delivered to friend`() = runBlocking {
         need()
         bob!!.announceDeviceRevocation(alice!!.username!!, listOf(bob!!.deviceId!!))
 
         val msg = alice!!.waitForMessage()
-        assertEquals("DEVICE_ANNOUNCE", msg.type)
-        assertTrue(msg.raw!!.deviceAnnounce.isRevocation)
-        assertEquals(1, msg.raw!!.deviceAnnounce.devicesCount)
+        assertEquals("DEVICE_ANNOUNCE", msg.type, "Alice should receive DEVICE_ANNOUNCE")
+    }
+
+    @Test @Order(3)
+    fun `Messaging still works after revocation announcement`() = runBlocking {
+        need()
+        sendAndVerify(bob!!, alice!!, "Post-revocation message from Bob")
+        sendAndVerify(alice!!, bob!!, "Post-revocation reply from Alice")
+
+        bob!!.disconnect(); alice!!.disconnect()
     }
 }

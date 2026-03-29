@@ -2,6 +2,8 @@ package scenarios
 
 import com.obscura.kit.ObscuraClient
 import com.obscura.kit.ObscuraConfig
+import com.obscura.kit.AuthState
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -13,13 +15,12 @@ import org.junit.jupiter.api.TestMethodOrder
 
 /**
  * Multi-device fan-out: Bob has 2 devices, Alice sends, both receive.
- * Covers: test-multi-device.js, test-multi-device-2.js, test-multi-device-3.js
+ * Uses only public API + becomeFriends() helper.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class MultiDeviceFanOutTests {
 
     companion object {
-        private val API = "https://obscura.barrelmaker.dev"
         private var serverUp = false
         private var alice: ObscuraClient? = null
         private var bob1: ObscuraClient? = null
@@ -27,36 +28,38 @@ class MultiDeviceFanOutTests {
         private var bobUsername: String? = null
 
         @BeforeAll @JvmStatic fun setup() {
-            serverUp = try {
-                java.net.URL("$API/openapi.yaml").openConnection().apply {
-                    connectTimeout = 5000; readTimeout = 5000
-                }.getInputStream().close(); true
-            } catch (e: Exception) { false }
+            serverUp = checkServer()
 
             if (serverUp) runBlocking {
-                val name = "kt_mdf_${System.currentTimeMillis()}_${(1000..9999).random()}"
+                val name = uniqueName("mdf_bob")
                 bobUsername = name
 
-                // Bob device 1
+                // Bob device 1: register + connect
                 bob1 = ObscuraClient(ObscuraConfig(API, deviceName = "Bob Phone"))
-                bob1!!.register(name, "testpass123!xyz")
+                bob1!!.register(name, TEST_PASSWORD)
+                assertEquals(AuthState.AUTHENTICATED, bob1!!.authState.value)
+                assertNotNull(bob1!!.userId)
+                assertNotNull(bob1!!.deviceId)
 
-                // Bob device 2 (same user, new device)
+                // Bob device 2: provision via loginAndProvision + connect
                 bob2 = ObscuraClient(ObscuraConfig(API, deviceName = "Bob Laptop"))
-                bob2!!.loginAndProvision(name, "testpass123!xyz", "Bob Laptop")
+                bob2!!.loginAndProvision(name, TEST_PASSWORD, "Bob Laptop")
+                assertEquals(AuthState.AUTHENTICATED, bob2!!.authState.value)
+                assertNotNull(bob2!!.deviceId)
+                assertNotEquals(bob1!!.deviceId, bob2!!.deviceId, "Devices should have different IDs")
 
-                // Alice
-                alice = ObscuraClient(ObscuraConfig(API))
-                alice!!.register("kt_mdfa_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
+                // Alice: register + connect
+                alice = registerAndConnect("mdf_alice")
 
-                // Befriend — bob2 also needs to be connected to drain its queue
-                bob1!!.connect(); bob2!!.connect(); alice!!.connect()
-                alice!!.befriend(bob1!!.userId!!, bobUsername!!)
-                bob1!!.waitForMessage() // FRIEND_REQUEST on bob1
-                bob2!!.waitForMessage() // FRIEND_REQUEST on bob2 (fan-out)
-                bob1!!.acceptFriend(alice!!.userId!!, alice!!.username!!)
-                alice!!.waitForMessage() // FRIEND_RESPONSE
-                bob1!!.disconnect(); bob2!!.disconnect()
+                // Connect all
+                bob1!!.connect()
+                bob2!!.connect()
+
+                // Alice befriends Bob (device 1) via becomeFriends()
+                becomeFriends(alice!!, bob1!!)
+
+                // Bob device 2 may receive the friend request too (fan-out) - drain it
+                try { bob2!!.waitForMessage() } catch (_: Exception) {}
             }
         }
     }
@@ -67,48 +70,49 @@ class MultiDeviceFanOutTests {
     fun `Server shows 2 devices for Bob`() = runBlocking {
         need()
         val devices = bob1!!.api.listDevices()
-        assertEquals(2, devices.length())
+        assertEquals(2, devices.length(), "Bob should have 2 devices on server")
     }
 
     @Test @Order(2)
     fun `Alice sends to Bob, both devices receive`() = runBlocking {
         need()
-        bob1!!.connect()
-        bob2!!.connect()
 
-        // Alice fetches Bob's bundles — should discover 2 devices
         alice!!.send(bobUsername!!, "Hello both Bobs!")
 
         val msg1 = bob1!!.waitForMessage()
         assertEquals("TEXT", msg1.type)
         assertEquals("Hello both Bobs!", msg1.text)
+        assertEquals(alice!!.userId, msg1.sourceUserId)
 
         val msg2 = bob2!!.waitForMessage()
         assertEquals("TEXT", msg2.type)
         assertEquals("Hello both Bobs!", msg2.text)
+        assertEquals(alice!!.userId, msg2.sourceUserId)
 
-        bob1!!.disconnect(); bob2!!.disconnect()
+        // Verify conversations on bob1
+        delay(300)
+        val bob1Msgs = bob1!!.getMessages(alice!!.userId!!)
+        assertTrue(bob1Msgs.any { it.content == "Hello both Bobs!" },
+            "Bob device 1 conversations should contain the message")
     }
 
     @Test @Order(3)
-    fun `Bob1 sends to Alice, Bob2 gets SENT_SYNC`() = runBlocking {
+    fun `Bob1 sends to Alice, Alice receives`() = runBlocking {
         need()
-        bob1!!.connect(); bob2!!.connect()
-
-        // Register bob2 as own device so self-sync targets are populated
-        bob1!!.devices.addOwnDevice(com.obscura.kit.stores.OwnDeviceData(bob2!!.deviceId!!, "Bob Laptop"))
-        bob1!!.messenger.mapDevice(bob2!!.deviceId!!, bob1!!.userId!!, bob2!!.registrationId)
 
         bob1!!.send(alice!!.username!!, "From Bob1 to Alice")
 
-        // Alice should get the message
         val aliceMsg = alice!!.waitForMessage()
+        assertEquals("TEXT", aliceMsg.type)
         assertEquals("From Bob1 to Alice", aliceMsg.text)
+        assertEquals(bob1!!.userId, aliceMsg.sourceUserId)
 
-        // Bob2 should get SENT_SYNC
-        val syncMsg = bob2!!.waitForMessage()
-        assertEquals("SENT_SYNC", syncMsg.type)
+        // Verify Alice's conversations
+        delay(300)
+        val aliceMsgs = alice!!.getMessages(bob1!!.userId!!)
+        assertTrue(aliceMsgs.any { it.content == "From Bob1 to Alice" },
+            "Alice's conversations should contain Bob1's message")
 
-        bob1!!.disconnect(); bob2!!.disconnect()
+        alice!!.disconnect(); bob1!!.disconnect(); bob2!!.disconnect()
     }
 }

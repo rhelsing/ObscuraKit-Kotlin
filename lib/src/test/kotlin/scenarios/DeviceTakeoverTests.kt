@@ -1,7 +1,6 @@
 package scenarios
 
-import com.obscura.kit.ObscuraClient
-import com.obscura.kit.ObscuraConfig
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Assumptions.assumeTrue
@@ -12,63 +11,64 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestMethodOrder
 
 /**
- * Device takeover: replace identity key, verify server accepts, messaging resumes.
- * Covers: test-device-takeover.js
+ * Device takeover: replace identity key, verify registrationId changed,
+ * then verify messaging works with new keys.
+ * Uses only public API + shared helpers.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class DeviceTakeoverTests {
 
     companion object {
-        private val API = "https://obscura.barrelmaker.dev"
         private var serverUp = false
 
         @BeforeAll @JvmStatic fun check() {
-            serverUp = try {
-                java.net.URL("$API/openapi.yaml").openConnection().apply {
-                    connectTimeout = 5000; readTimeout = 5000
-                }.getInputStream().close(); true
-            } catch (e: Exception) { false }
+            serverUp = checkServer()
         }
     }
 
     private fun need() = assumeTrue(serverUp)
-    private fun name() = "kt_${System.currentTimeMillis()}_${(1000..9999).random()}"
 
     @Test @Order(1)
     fun `Takeover replaces keys on server`() = runBlocking {
         need()
-        val client = ObscuraClient(ObscuraConfig(API))
-        client.register(name(), "testpass123!xyz")
+        val client = registerAndConnect("tko_single")
 
         val oldRegId = client.registrationId
         client.takeoverDevice()
-        assertNotEquals(oldRegId, client.registrationId)
+        assertNotEquals(oldRegId, client.registrationId,
+            "registrationId should change after takeover")
 
         // Server still lists 1 device (same device, new keys)
         val devices = client.api.listDevices()
-        assertEquals(1, devices.length())
+        assertEquals(1, devices.length(), "Should still have 1 device after takeover")
+
+        client.disconnect()
     }
 
     @Test @Order(2)
-    fun `Can message new user after takeover`() = runBlocking {
+    fun `Full lifecycle - befriend, takeover, then message`() = runBlocking {
         need()
-        // Alice takes over, then befriends a NEW user (clean session)
-        val alice = ObscuraClient(ObscuraConfig(API))
-        alice.register(name(), "testpass123!xyz")
+        val alice = registerAndConnect("tko_alice")
+        val bob = registerAndConnect("tko_bob")
+
+        // Full befriend lifecycle
+        becomeFriends(alice, bob)
+
+        // Alice takes over device (new Signal keys)
+        val oldRegId = alice.registrationId
         alice.takeoverDevice()
+        assertNotEquals(oldRegId, alice.registrationId,
+            "Alice's registrationId should change after takeover")
 
-        val bob = ObscuraClient(ObscuraConfig(API))
-        bob.register(name(), "testpass123!xyz")
+        // Messaging should still work after takeover (session rebuilds automatically)
+        sendAndVerify(alice, bob, "Post-takeover message from Alice")
+        sendAndVerify(bob, alice, "Reply to post-takeover Alice")
 
-        alice.connect(); bob.connect()
-        alice.befriend(bob.userId!!, bob.username!!)
-        bob.waitForMessage() // FRIEND_REQUEST
-        bob.acceptFriend(alice.userId!!, alice.username!!)
-        alice.waitForMessage() // FRIEND_RESPONSE
-
-        alice.send(bob.username!!, "Post-takeover message")
-        val msg = bob.waitForMessage()
-        assertEquals("Post-takeover message", msg.text)
+        // Verify conversations state
+        delay(300)
+        val aliceMsgs = alice.getMessages(bob.userId!!)
+        assertTrue(aliceMsgs.any { it.content == "Reply to post-takeover Alice" },
+            "Alice's conversations should contain Bob's reply")
 
         alice.disconnect(); bob.disconnect()
     }

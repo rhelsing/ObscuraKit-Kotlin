@@ -18,6 +18,7 @@ import androidx.compose.ui.platform.LocalContext
 import androidx.compose.ui.text.AnnotatedString
 import androidx.compose.ui.unit.dp
 import com.obscura.kit.*
+import com.obscura.kit.FriendCode
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -118,7 +119,6 @@ fun ConnectedScreen(
     pending: List<com.obscura.kit.stores.FriendData>
 ) {
     val scope = rememberCoroutineScope()
-    var targetUserId by remember { mutableStateOf("") }
     var messageText by remember { mutableStateOf("") }
     var selectedFriend by remember { mutableStateOf<String?>(null) }
     var statusText by remember { mutableStateOf("") }
@@ -150,45 +150,59 @@ fun ConnectedScreen(
 
         val clipboardManager = LocalClipboardManager.current
         val context = LocalContext.current
-        val userId = client.userId ?: ""
-        @OptIn(ExperimentalFoundationApi::class)
-        Text(
-            "User: ${client.username} ($userId)",
-            style = MaterialTheme.typography.titleMedium,
-            modifier = Modifier.combinedClickable(
-                onClick = {},
-                onLongClick = {
-                    clipboardManager.setText(AnnotatedString(userId))
-                    Toast.makeText(context, "userId copied", Toast.LENGTH_SHORT).show()
-                }
-            )
-        )
+        val myCode = remember(client.userId, client.username) {
+            if (client.userId != null && client.username != null)
+                FriendCode.encode(client.userId!!, client.username!!)
+            else ""
+        }
 
+        Text("${client.username}", style = MaterialTheme.typography.titleMedium)
+
+        // My friend code — tap to copy
+        OutlinedButton(onClick = {
+            clipboardManager.setText(AnnotatedString(myCode))
+            Toast.makeText(context, "Friend code copied!", Toast.LENGTH_SHORT).show()
+        }) {
+            Text("Copy my friend code", style = MaterialTheme.typography.bodySmall)
+        }
+
+        // Paste friend code to add
+        var friendCode by remember { mutableStateOf("") }
         Row(
             modifier = Modifier.fillMaxWidth(),
             horizontalArrangement = Arrangement.spacedBy(4.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
             OutlinedTextField(
-                value = targetUserId,
-                onValueChange = { targetUserId = it },
-                label = { Text("Friend userId") },
+                value = friendCode,
+                onValueChange = { friendCode = it },
+                label = { Text("Paste friend code") },
                 modifier = Modifier.weight(1f),
                 singleLine = true
             )
             Button(onClick = {
                 scope.launch {
                     try {
-                        withContext(Dispatchers.IO) { client.befriend(targetUserId, "friend") }
-                        targetUserId = ""
-                        statusText = "Friend request sent!"
+                        val decoded = FriendCode.decode(friendCode)
+                        withContext(Dispatchers.IO) { client.befriend(decoded.userId, decoded.username) }
+                        friendCode = ""
+                        statusText = "Request sent to ${decoded.username}"
                     } catch (e: Exception) { statusText = "Error: ${e.message}" }
                 }
             }) { Text("Add") }
         }
 
+        // Outgoing requests (you sent, waiting for them to accept)
+        val sentRequests = friends.filter { it.status == com.obscura.kit.stores.FriendStatus.PENDING_SENT }
+        if (sentRequests.isNotEmpty()) {
+            sentRequests.forEach { req ->
+                Text("${req.username} (pending)", style = MaterialTheme.typography.bodyMedium,
+                    color = MaterialTheme.colorScheme.outline)
+            }
+        }
+
+        // Incoming requests (they sent, waiting for you to accept)
         if (pending.isNotEmpty()) {
-            Text("Pending (${pending.size}):", style = MaterialTheme.typography.labelLarge)
             pending.forEach { req ->
                 Row(Modifier.fillMaxWidth(), horizontalArrangement = Arrangement.SpaceBetween) {
                     Text(req.username)
@@ -202,8 +216,9 @@ fun ConnectedScreen(
             }
         }
 
-        Text("Friends (${friends.size}):", style = MaterialTheme.typography.labelLarge)
-        friends.forEach { friend ->
+        val acceptedFriends = friends.filter { it.status == com.obscura.kit.stores.FriendStatus.ACCEPTED }
+        Text("Friends (${acceptedFriends.size}):", style = MaterialTheme.typography.labelLarge)
+        acceptedFriends.forEach { friend ->
             TextButton(onClick = { selectedFriend = friend.username }) {
                 Text(if (friend.username == selectedFriend) "> ${friend.username}" else friend.username)
             }

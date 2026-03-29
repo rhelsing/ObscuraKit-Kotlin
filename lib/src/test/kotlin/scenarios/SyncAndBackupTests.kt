@@ -1,7 +1,5 @@
 package scenarios
 
-import com.obscura.kit.ObscuraClient
-import com.obscura.kit.ObscuraConfig
 import com.obscura.kit.crypto.Bip39
 import com.obscura.kit.crypto.RecoveryKeys
 import kotlinx.coroutines.runBlocking
@@ -13,39 +11,50 @@ import org.junit.jupiter.api.Order
 import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestMethodOrder
 
+/**
+ * Sync and backup tests. Server tests use full befriend lifecycle.
+ * Crypto unit tests (BIP39, RecoveryKeys) kept as-is.
+ */
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class SyncAndBackupTests {
 
     companion object {
-        private val API = "https://obscura.barrelmaker.dev"
         private var serverUp = false
-        private var client: ObscuraClient? = null
+        private var alice: com.obscura.kit.ObscuraClient? = null
+        private var bob: com.obscura.kit.ObscuraClient? = null
 
         @BeforeAll @JvmStatic fun setup() {
-            serverUp = try {
-                java.net.URL("$API/openapi.yaml").openConnection().apply {
-                    connectTimeout = 5000; readTimeout = 5000
-                }.getInputStream().close(); true
-            } catch (e: Exception) { false }
+            serverUp = checkServer()
 
             if (serverUp) runBlocking {
-                client = ObscuraClient(ObscuraConfig(API))
-                client!!.register("kt_sb_${System.currentTimeMillis()}_${(1000..9999).random()}", "testpass123!xyz")
+                alice = registerAndConnect("sab_alice")
+                bob = registerAndConnect("sab_bob")
+                becomeFriends(alice!!, bob!!)
             }
         }
     }
 
-    private fun need() = assumeTrue(serverUp && client != null)
+    private fun need() = assumeTrue(serverUp && alice != null)
 
     @Test @Order(1)
     fun `Backup upload and check`() = runBlocking {
         need()
-        client!!.uploadBackup()
+        alice!!.uploadBackup()
 
-        // Verify backup exists on server
-        val (exists, _, _) = client!!.checkBackup()
+        val (exists, _, _) = alice!!.checkBackup()
         assertTrue(exists, "Backup should exist after upload")
     }
+
+    @Test @Order(2)
+    fun `Messaging works after backup upload`() = runBlocking {
+        need()
+        sendAndVerify(alice!!, bob!!, "Message after backup")
+        sendAndVerify(bob!!, alice!!, "Reply after backup")
+
+        alice!!.disconnect(); bob!!.disconnect()
+    }
+
+    // --- Crypto unit tests (no server needed) ---
 
     @Test @Order(3)
     fun `BIP39 mnemonic generates and validates`() {
@@ -75,8 +84,8 @@ class SyncAndBackupTests {
     @Test @Order(6)
     fun `Verify code generates 4-digit code`() {
         need()
-        client!!.generateRecoveryPhrase()
-        val code = client!!.getVerifyCode()
+        alice!!.generateRecoveryPhrase()
+        val code = alice!!.getVerifyCode()
         assertNotNull(code)
         assertEquals(4, code!!.length)
         assertTrue(code.all { it.isDigit() })
@@ -85,9 +94,9 @@ class SyncAndBackupTests {
     @Test @Order(7)
     fun `Recovery phrase is one-time read`() {
         need()
-        val phrase = client!!.generateRecoveryPhrase()
+        val phrase = alice!!.generateRecoveryPhrase()
         assertNotNull(phrase)
-        assertEquals(phrase, client!!.getRecoveryPhrase())
-        assertNull(client!!.getRecoveryPhrase()) // second read returns null
+        assertEquals(phrase, alice!!.getRecoveryPhrase())
+        assertNull(alice!!.getRecoveryPhrase(), "Second read should return null")
     }
 }
