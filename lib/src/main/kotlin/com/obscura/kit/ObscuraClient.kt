@@ -6,8 +6,10 @@ import com.obscura.kit.crypto.SignalStore
 import com.obscura.kit.crypto.toBase64
 import com.obscura.kit.db.ObscuraDatabase
 import com.obscura.kit.managers.*
+import com.obscura.kit.managers.SignalKeyUtils.toApiJson
 import com.obscura.kit.network.APIClient
 import com.obscura.kit.network.GatewayConnection
+import com.obscura.kit.network.UploadDeviceKeysRequest
 import com.obscura.kit.orm.ModelStore
 import com.obscura.kit.orm.ModelSyncData
 import com.obscura.kit.orm.SyncManager
@@ -23,8 +25,6 @@ import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import obscura.v2.Client.ClientMessage
-import org.json.JSONArray
-import org.json.JSONObject
 import org.signal.libsignal.protocol.ecc.Curve
 import java.util.*
 
@@ -368,23 +368,14 @@ class ObscuraClient(
             val highestId = signalStore.getHighestPreKeyId().toInt()
             val newPreKeys = SignalKeyUtils.generateOneTimePreKeys(signalStore, highestId + 1, PREKEY_REPLENISH_COUNT)
 
-            val identityKeyB64 = signalStore.getIdentityKeyPair().publicKey.serialize().toBase64()
-
             val spkRecord = signalStore.loadSignedPreKey(1)
-            val spkJson = JSONObject().apply {
-                put("keyId", spkRecord.id)
-                put("publicKey", spkRecord.keyPair.publicKey.serialize().toBase64())
-                put("signature", spkRecord.signature.toBase64())
-            }
 
-            val otpJsonArr = JSONArray(newPreKeys.map { pk ->
-                JSONObject().apply {
-                    put("keyId", pk.id)
-                    put("publicKey", pk.keyPair.publicKey.serialize().toBase64())
-                }
-            })
-
-            api.uploadDeviceKeys(identityKeyB64, signalStore.getLocalRegistrationId(), spkJson, otpJsonArr)
+            api.uploadDeviceKeys(UploadDeviceKeysRequest(
+                identityKey = signalStore.getIdentityKeyPair().publicKey.serialize().toBase64(),
+                registrationId = signalStore.getLocalRegistrationId(),
+                signedPreKey = spkRecord.toApiJson(),
+                oneTimePreKeys = newPreKeys.toApiJson()
+            ))
         } catch (e: Exception) {
             logger.preKeyReplenishFailed(e.message ?: "unknown")
         }

@@ -5,14 +5,14 @@ import com.obscura.kit.ObscuraConfig
 import com.obscura.kit.ObscuraLogger
 import com.obscura.kit.crypto.SignalStore
 import com.obscura.kit.crypto.toBase64
+import com.obscura.kit.managers.SignalKeyUtils.toApiJson
 import com.obscura.kit.network.APIClient
 import com.obscura.kit.network.GatewayConnection
+import com.obscura.kit.network.ProvisionDeviceRequest
 import com.obscura.kit.stores.DeviceDomain
 import com.obscura.kit.stores.DeviceIdentityData
 import com.obscura.kit.stores.MessengerDomain
 import kotlinx.coroutines.*
-import org.json.JSONArray
-import org.json.JSONObject
 
 /**
  * Handles register, login, loginAndProvision, logout, session restore, and token refresh.
@@ -48,26 +48,13 @@ internal class AuthManager(
         val regResult = api.registerUser(username, password)
         api.token = regResult.getString("token")
 
-        val identityKeyB64 = identityKeyPair.publicKey.serialize().toBase64()
-        val spkJson = JSONObject().apply {
-            put("keyId", signedPreKey.id)
-            put("publicKey", signedPreKey.keyPair.publicKey.serialize().toBase64())
-            put("signature", signedPreKey.signature.toBase64())
-        }
-        val otpJsonArr = JSONArray(oneTimePreKeys.map { pk ->
-            JSONObject().apply {
-                put("keyId", pk.id)
-                put("publicKey", pk.keyPair.publicKey.serialize().toBase64())
-            }
-        })
-
-        val provResult = api.provisionDevice(
+        val provResult = api.provisionDevice(ProvisionDeviceRequest(
             name = config.deviceName,
-            identityKey = identityKeyB64,
+            identityKey = identityKeyPair.publicKey.serialize().toBase64(),
             registrationId = regId,
-            signedPreKey = spkJson,
-            oneTimePreKeys = otpJsonArr
-        )
+            signedPreKey = signedPreKey.toApiJson(),
+            oneTimePreKeys = oneTimePreKeys.toApiJson()
+        ))
 
         val deviceToken = provResult.getString("token")
         api.token = deviceToken
@@ -130,26 +117,13 @@ internal class AuthManager(
         val signedPreKey = SignalKeyUtils.generateSignedPreKey(signalStore, identityKeyPair, 1)
         val oneTimePreKeys = SignalKeyUtils.generateOneTimePreKeys(signalStore, 1, 100)
 
-        val identityKeyB64 = identityKeyPair.publicKey.serialize().toBase64()
-        val spkJson = JSONObject().apply {
-            put("keyId", signedPreKey.id)
-            put("publicKey", signedPreKey.keyPair.publicKey.serialize().toBase64())
-            put("signature", signedPreKey.signature.toBase64())
-        }
-        val otpJsonArr = JSONArray(oneTimePreKeys.map { pk ->
-            JSONObject().apply {
-                put("keyId", pk.id)
-                put("publicKey", pk.keyPair.publicKey.serialize().toBase64())
-            }
-        })
-
-        val provResult = api.provisionDevice(
+        val provResult = api.provisionDevice(ProvisionDeviceRequest(
             name = deviceName,
-            identityKey = identityKeyB64,
+            identityKey = identityKeyPair.publicKey.serialize().toBase64(),
             registrationId = regId,
-            signedPreKey = spkJson,
-            oneTimePreKeys = otpJsonArr
-        )
+            signedPreKey = signedPreKey.toApiJson(),
+            oneTimePreKeys = oneTimePreKeys.toApiJson()
+        ))
 
         val deviceToken = provResult.getString("token")
         api.token = deviceToken

@@ -1,15 +1,15 @@
 package com.obscura.kit.managers
 
 import com.obscura.kit.crypto.SignalStore
+import com.obscura.kit.crypto.toBase64
+import com.obscura.kit.managers.SignalKeyUtils.toApiJson
 import com.obscura.kit.network.APIClient
+import com.obscura.kit.network.UploadDeviceKeysRequest
 import com.obscura.kit.stores.DeviceDomain
 import com.obscura.kit.stores.FriendDomain
 import com.obscura.kit.stores.MessageDomain
 import com.obscura.kit.stores.MessengerDomain
-import com.obscura.kit.crypto.toBase64
 import obscura.v2.Client.ClientMessage
-import org.json.JSONArray
-import org.json.JSONObject
 
 /**
  * Device announce, revocation, approve link, takeover.
@@ -145,20 +145,12 @@ internal class DeviceManager(
         val signedPreKey = SignalKeyUtils.generateSignedPreKey(signalStore, identityKeyPair, 1)
         val oneTimePreKeys = SignalKeyUtils.generateOneTimePreKeys(signalStore, 1, 100)
 
-        val identityKeyB64 = identityKeyPair.publicKey.serialize().toBase64()
-        val spkJson = JSONObject().apply {
-            put("keyId", signedPreKey.id)
-            put("publicKey", signedPreKey.keyPair.publicKey.serialize().toBase64())
-            put("signature", signedPreKey.signature.toBase64())
-        }
-        val otpJsonArr = JSONArray(oneTimePreKeys.map { pk ->
-            JSONObject().apply {
-                put("keyId", pk.id)
-                put("publicKey", pk.keyPair.publicKey.serialize().toBase64())
-            }
-        })
-
-        api.uploadDeviceKeys(identityKeyB64, regId, spkJson, otpJsonArr)
+        api.uploadDeviceKeys(UploadDeviceKeysRequest(
+            identityKey = identityKeyPair.publicKey.serialize().toBase64(),
+            registrationId = regId,
+            signedPreKey = signedPreKey.toApiJson(),
+            oneTimePreKeys = oneTimePreKeys.toApiJson()
+        ))
         messenger.mapDevice(
             requireNotNull(session.deviceId) { "deviceId not set - call register/login first" },
             requireNotNull(session.userId) { "userId not set - call register/login first" },

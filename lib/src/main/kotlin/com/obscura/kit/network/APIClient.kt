@@ -8,7 +8,6 @@ import org.json.JSONObject
 import java.io.IOException
 import java.net.URLEncoder
 import com.obscura.kit.crypto.fromBase64Url
-import java.security.MessageDigest
 import java.util.*
 
 /**
@@ -34,57 +33,35 @@ class APIClient(private val baseUrl: String) {
      * Register a new user. Returns JSON with token.
      */
     suspend fun registerUser(username: String, password: String): JSONObject {
-        return postJson("/v1/users", JSONObject().apply {
-            put("username", username)
-            put("password", password)
-        }, auth = false)
+        return postJson("/v1/users", RegisterUserRequest(username, password).toJson(), auth = false)
     }
 
     /**
      * Provision a device with Signal keys. Returns device-scoped JWT.
      */
-    suspend fun provisionDevice(
-        name: String,
-        identityKey: String,
-        registrationId: Int,
-        signedPreKey: JSONObject,
-        oneTimePreKeys: JSONArray
-    ): JSONObject {
-        return postJson("/v1/devices", JSONObject().apply {
-            put("name", name)
-            put("identityKey", identityKey)
-            put("registrationId", registrationId)
-            put("signedPreKey", signedPreKey)
-            put("oneTimePreKeys", oneTimePreKeys)
-        })
+    suspend fun provisionDevice(request: ProvisionDeviceRequest): JSONObject {
+        return postJson("/v1/devices", request.toJson())
     }
 
     /**
      * Login with optional deviceId for device-scoped token.
      */
     suspend fun loginWithDevice(username: String, password: String, deviceId: String? = null): JSONObject {
-        return postJson("/v1/sessions", JSONObject().apply {
-            put("username", username)
-            put("password", password)
-            if (deviceId != null) put("deviceId", deviceId)
-        }, auth = false)
+        return postJson("/v1/sessions", LoginRequest(username, password, deviceId).toJson(), auth = false)
     }
 
     /**
      * Logout (invalidate refresh token).
      */
     suspend fun logout(refreshToken: String): String {
-        val body = JSONObject().apply { put("refreshToken", refreshToken) }
-        return deleteWithBody("/v1/sessions", body)
+        return deleteWithBody("/v1/sessions", LogoutRequest(refreshToken).toJson())
     }
 
     /**
      * Refresh session token.
      */
     suspend fun refreshSession(refreshToken: String): JSONObject {
-        return postJson("/v1/sessions/refresh", JSONObject().apply {
-            put("refreshToken", refreshToken)
-        }, auth = false)
+        return postJson("/v1/sessions/refresh", RefreshTokenRequest(refreshToken).toJson(), auth = false)
     }
 
     // ============================================================
@@ -107,25 +84,14 @@ class APIClient(private val baseUrl: String) {
     /**
      * Upload PreKeys for the authenticated device.
      */
-    suspend fun uploadDeviceKeys(
-        identityKey: String,
-        registrationId: Int,
-        signedPreKey: JSONObject,
-        oneTimePreKeys: JSONArray
-    ) {
-        val body = JSONObject().apply {
-            put("identityKey", identityKey)
-            put("registrationId", registrationId)
-            put("signedPreKey", signedPreKey)
-            put("oneTimePreKeys", oneTimePreKeys)
-        }
-        val request = Request.Builder()
+    suspend fun uploadDeviceKeys(request: UploadDeviceKeysRequest) {
+        val httpRequest = Request.Builder()
             .url("$baseUrl/v1/devices/keys")
-            .post(body.toString().toRequestBody(JSON_MEDIA))
+            .post(request.toJson().toString().toRequestBody(JSON_MEDIA))
             .addHeader("Content-Type", "application/json")
             .addHeader("Authorization", "Bearer ${token ?: throw IllegalStateException("No token")}")
             .build()
-        executeString(request) // ignore empty response body
+        executeString(httpRequest) // ignore empty response body
     }
 
     /**
