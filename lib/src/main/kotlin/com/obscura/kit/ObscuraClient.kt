@@ -139,6 +139,29 @@ class ObscuraClient(
     // Test convenience — single-consumer channel
     val incomingMessages = Channel<ReceivedMessage>(capacity = 1000)
 
+    /** Debug log — ring buffer of last 200 events. Thread-safe. */
+    val debugLog = java.util.concurrent.ConcurrentLinkedDeque<String>()
+    private fun log(msg: String) {
+        val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
+        debugLog.addFirst("[$ts] $msg")
+        while (debugLog.size > 200) debugLog.removeLast()
+    }
+
+    /** Dump debug log + current status as a single string for clipboard/paste. */
+    fun dumpDebugLog(): String {
+        val status = buildString {
+            appendLine("=== ObscuraKit Debug Dump ===")
+            appendLine("user: $username ($userId)")
+            appendLine("device: $deviceId")
+            appendLine("auth: ${_authState.value}")
+            appendLine("connection: ${_connectionState.value}")
+            appendLine("friends: ${friendList.value.size} (${friendList.value.count { it.status == com.obscura.kit.stores.FriendStatus.ACCEPTED }} accepted)")
+            appendLine("prekeys: ${try { signalStore.getPreKeyCount() } catch (_: Exception) { "?" }}")
+            appendLine("---")
+        }
+        return status + debugLog.joinToString("\n")
+    }
+
     private var envelopeJob: Job? = null
 
     // M13: Decrypt rate limiting per sender
@@ -384,17 +407,19 @@ class ObscuraClient(
     suspend fun ensureFreshToken(): Boolean = authManager.ensureFreshToken()
 
     suspend fun connect() {
+        log("CONNECT start")
         _connectionState.value = ConnectionState.CONNECTING
-        // Rebuild in-memory deviceMap from persisted friend devices (survives restart)
         messenger.rebuildDeviceMap(friends.getAccepted())
         gateway.connect()
         _connectionState.value = ConnectionState.CONNECTED
+        log("CONNECT ok — websocket open")
         startEnvelopeLoop()
         authManager.startTokenRefresh()
         startPreKeyStatusListener()
     }
 
     fun disconnect() {
+        log("DISCONNECT")
         authManager.tokenRefreshJob?.cancel()
         envelopeJob?.cancel()
         gateway.disconnect()
@@ -448,6 +473,7 @@ class ObscuraClient(
                 } catch (_: Exception) { "unknown" }
 
                 if (isDecryptRateLimited(senderId)) {
+                    log("RECV BLOCKED rate-limited sender=$senderId")
                     try { gateway.ack(listOf(envelope.id)) } catch (_: Exception) { }
                     continue
                 }
@@ -455,6 +481,7 @@ class ObscuraClient(
                 try {
                     val decrypted = messenger.decrypt(envelope)
                     val msg = decrypted.clientMessage
+                    log("RECV ${msg.type.name} from=${decrypted.sourceUserId.take(8)} text=${msg.text.take(40)}")
                     routeMessage(msg, decrypted.sourceUserId, decrypted.senderDeviceId)
 
                     decryptFailures.remove(decrypted.sourceUserId)
@@ -474,6 +501,7 @@ class ObscuraClient(
 
                     checkAndReplenishPreKeys()
                 } catch (e: Exception) {
+                    log("RECV FAIL decrypt sender=$senderId err=${e.message?.take(60)}")
                     trackDecryptFailure(senderId)
                     logger.decryptFailed(senderId, e.message ?: "unknown")
                 }
@@ -728,6 +756,7 @@ class ObscuraClient(
      * Falls back to legacy TEXT if directMessage model is not defined.
      */
     suspend fun send(friendUsername: String, text: String) {
+        log("SEND to=$friendUsername text=${text.take(40)}")
         val directMessage = orm.modelOrNull("directMessage")
         if (directMessage != null) {
             val friendData = friends.getAccepted().find { it.username == friendUsername }

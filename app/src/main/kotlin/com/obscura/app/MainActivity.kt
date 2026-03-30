@@ -675,11 +675,16 @@ fun TypingBubble() {
     }
 }
 
-// ─── Settings Tab (typed ORM, private) ────────────────────────
+// ─── Settings Tab (typed ORM, private, debug) ────────────────
 
 @Composable
 fun SettingsTab(client: ObscuraClient, app: ObscuraApp) {
     val scope = rememberCoroutineScope()
+    val clipboardManager = LocalClipboardManager.current
+    val context = LocalContext.current
+    val connectionState by client.connectionState.collectAsState()
+    val authState by client.authState.collectAsState()
+    val friends by client.friendList.collectAsState()
 
     val settingsModel = remember(client) {
         TypedModel(client.orm.model("settings"), AppSettings.serializer())
@@ -690,10 +695,25 @@ fun SettingsTab(client: ObscuraClient, app: ObscuraApp) {
     val currentTheme = current?.theme ?: "system"
     val notificationsEnabled = current?.notificationsEnabled ?: true
 
+    var showLog by remember { mutableStateOf(false) }
+
     Column(Modifier.fillMaxSize().padding(16.dp)) {
         Text("Settings", style = MaterialTheme.typography.titleLarge)
         Spacer(Modifier.height(16.dp))
 
+        // Status
+        Surface(tonalElevation = 1.dp, shape = MaterialTheme.shapes.small, modifier = Modifier.fillMaxWidth()) {
+            Column(Modifier.padding(12.dp)) {
+                Text("Status", style = MaterialTheme.typography.labelLarge)
+                Text("${client.username} — $connectionState — $authState",
+                    style = MaterialTheme.typography.bodySmall)
+                Text("${friends.count { it.status == FriendStatus.ACCEPTED }} friends",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.outline)
+            }
+        }
+
+        Spacer(Modifier.height(16.dp))
         Text("Theme", style = MaterialTheme.typography.labelLarge)
         Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
             listOf("light", "dark", "system").forEach { theme ->
@@ -739,7 +759,32 @@ fun SettingsTab(client: ObscuraClient, app: ObscuraApp) {
             color = MaterialTheme.colorScheme.outline
         )
 
-        Spacer(Modifier.height(32.dp))
+        Spacer(Modifier.height(24.dp))
+
+        // Debug
+        Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+            OutlinedButton(onClick = {
+                val dump = client.dumpDebugLog()
+                clipboardManager.setText(AnnotatedString(dump))
+                Toast.makeText(context, "Debug log copied (${client.debugLog.size} events)", Toast.LENGTH_SHORT).show()
+            }) { Text("Copy Debug Log") }
+
+            OutlinedButton(onClick = { showLog = !showLog }) {
+                Text(if (showLog) "Hide Log" else "Show Log")
+            }
+        }
+
+        if (showLog) {
+            Spacer(Modifier.height(8.dp))
+            LazyColumn(Modifier.weight(1f)) {
+                items(client.debugLog.toList()) { line ->
+                    Text(line, style = MaterialTheme.typography.bodySmall,
+                        modifier = Modifier.padding(vertical = 1.dp))
+                }
+            }
+        }
+
+        Spacer(Modifier.height(24.dp))
 
         OutlinedButton(onClick = {
             scope.launch {
