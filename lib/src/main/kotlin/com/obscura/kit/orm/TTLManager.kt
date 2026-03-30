@@ -49,14 +49,11 @@ class TTLManager(private val store: ModelStore) {
     }
 
     fun getTimeRemaining(modelName: String, id: String): Long? {
-        // Look up the TTL from the store
-        val entry = store.find(modelName, id) ?: return null
-        // TTL is stored in the database row
+        // Query the raw DB row directly — don't use store.find() which filters expired entries
         val row = try {
-            val q = store.db.modelEntryQueries.selectByModelAndId(modelName, id).executeAsOneOrNull()
-            q?.ttl_expires_at
-        } catch (e: Exception) { null }
-        if (row == null) return null
-        return maxOf(0, row - System.currentTimeMillis())
+            store.db.modelEntryQueries.selectByModelAndId(modelName, id).executeAsOneOrNull()
+        } catch (e: Exception) { return null }
+        val expiresAt = row?.ttl_expires_at ?: return null
+        return maxOf(0, expiresAt - System.currentTimeMillis())
     }
 }

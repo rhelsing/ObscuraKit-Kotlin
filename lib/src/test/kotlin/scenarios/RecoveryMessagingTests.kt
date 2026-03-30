@@ -28,7 +28,8 @@ class RecoveryMessagingTests {
             serverUp = checkServer()
 
             if (serverUp) runBlocking {
-                alice = registerAndConnect("rec_alice")
+                val recoveryConfig = com.obscura.kit.ObscuraConfig(API, enableRecoveryPhrase = true)
+                alice = registerAndConnect("rec_alice", recoveryConfig)
                 bob = registerAndConnect("rec_bob")
 
                 // Generate recovery phrase before befriending

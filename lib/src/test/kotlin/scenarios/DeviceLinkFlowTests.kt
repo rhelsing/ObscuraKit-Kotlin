@@ -17,9 +17,11 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestMethodOrder
 
 /**
- * Device link flow: provision second device via loginAndProvision,
- * verify server shows both devices.
- * Uses only public API + shared helpers.
+ * Device link flow: provision second device, approve via link code,
+ * verify server shows both devices, messages fan out.
+ *
+ * Device approval is enforced — loginAndProvision puts the device in
+ * PENDING_APPROVAL state until an existing device approves via link code.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class DeviceLinkFlowTests {
@@ -35,67 +37,76 @@ class DeviceLinkFlowTests {
     private fun need() = assumeTrue(serverUp)
 
     @Test @Order(1)
-    fun `Provision second device and verify server shows both`() = runBlocking {
+    fun `loginAndProvision puts device in PENDING_APPROVAL`() = runBlocking {
         need()
 
-        val username = uniqueName("dlf_user")
+        val username = uniqueName("dlf_pend")
         val device1 = ObscuraClient(ObscuraConfig(API, deviceName = "Device 1"))
         device1.register(username, TEST_PASSWORD)
         assertEquals(AuthState.AUTHENTICATED, device1.authState.value)
-        assertNotNull(device1.deviceId)
 
-        // Provision device 2 via loginAndProvision
         val device2 = ObscuraClient(ObscuraConfig(API, deviceName = "Device 2"))
         device2.loginAndProvision(username, TEST_PASSWORD, "Device 2")
-        assertEquals(AuthState.AUTHENTICATED, device2.authState.value)
+        assertEquals(AuthState.PENDING_APPROVAL, device2.authState.value,
+            "New device must be PENDING_APPROVAL until existing device approves")
         assertNotNull(device2.deviceId)
-        assertNotEquals(device1.deviceId, device2.deviceId,
-            "Devices should have different IDs")
+        assertNotEquals(device1.deviceId, device2.deviceId)
 
-        // Verify server shows both devices
+        // Server shows both devices even before approval (device is provisioned, just not approved)
         val devices = device1.api.listDevices()
         assertEquals(2, devices.length(), "Server should show 2 devices")
     }
 
     @Test @Order(2)
-    fun `Provisioned device can connect and receive messages`() = runBlocking {
+    fun `Full link code approval flow — PENDING to AUTHENTICATED`() = runBlocking {
+        need()
+
+        val username = uniqueName("dlf_approve")
+        val device1 = ObscuraClient(ObscuraConfig(API, deviceName = "Device 1"))
+        device1.register(username, TEST_PASSWORD)
+        device1.connect()
+
+        // Provision + approve via helper
+        val device2 = provisionAndApprove(device1, username, "Device 2")
+        assertEquals(AuthState.AUTHENTICATED, device2.authState.value)
+
+        device1.disconnect()
+        device2.disconnect()
+    }
+
+    @Test @Order(3)
+    fun `Approved device can receive messages from friends`() = runBlocking {
         need()
 
         val username = uniqueName("dlf_recv")
         val device1 = ObscuraClient(ObscuraConfig(API, deviceName = "Device 1"))
         device1.register(username, TEST_PASSWORD)
+        device1.connect()
 
-        val device2 = ObscuraClient(ObscuraConfig(API, deviceName = "Device 2"))
-        device2.loginAndProvision(username, TEST_PASSWORD, "Device 2")
+        val device2 = provisionAndApprove(device1, username, "Device 2")
 
-        // Befriend a third user to test message delivery to provisioned device
         val carol = registerAndConnect("dlf_carol")
-        device1.connect(); device2.connect()
-
         becomeFriends(device1, carol)
 
-        // Device2 may have queued friend sync messages — drain them
-        try {
-            while (true) { device2.waitForMessage(2_000) }
-        } catch (_: Exception) { /* drained */ }
+        // Drain any sync messages on device2
+        try { while (true) { device2.waitForMessage(2_000) } } catch (_: Exception) {}
 
-        // Carol sends to user - both devices should receive
-        carol.send(username, "Message for both devices")
+        // Carol sends — both devices should receive
+        carol.send(username, "Hello both devices")
 
         val msg1 = device1.waitForMessage()
         assertEquals("TEXT", msg1.type)
-        assertEquals("Message for both devices", msg1.text)
+        assertEquals("Hello both devices", msg1.text)
 
         val msg2 = device2.waitForMessage()
         assertEquals("TEXT", msg2.type)
-        assertEquals("Message for both devices", msg2.text)
+        assertEquals("Hello both devices", msg2.text)
 
         device1.disconnect(); device2.disconnect(); carol.disconnect()
     }
 
-    @Test @Order(3)
+    @Test @Order(4)
     fun `SyncBlob export includes messages`() {
-        // Local test - verify serialization includes messages (no server needed)
         val friends = listOf(FriendData(
             userId = "u1", username = "alice",
             status = FriendStatus.ACCEPTED

@@ -27,7 +27,8 @@ class SyncAndBackupTests {
             serverUp = checkServer()
 
             if (serverUp) runBlocking {
-                alice = registerAndConnect("sab_alice")
+                val recoveryConfig = com.obscura.kit.ObscuraConfig(API, enableRecoveryPhrase = true)
+                alice = registerAndConnect("sab_alice", recoveryConfig)
                 bob = registerAndConnect("sab_bob")
                 becomeFriends(alice!!, bob!!)
             }

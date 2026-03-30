@@ -126,6 +126,10 @@ internal class DeviceManager(
                 friendsExport = com.google.protobuf.ByteString.copyFrom(friendsExportStr.toByteArray())
             }).build()
 
+        // Ensure we can encrypt for the new device (fetch its prekey bundle)
+        if (messenger.deviceMap(newDeviceId) == null) {
+            messenger.fetchPreKeyBundles(requireNotNull(session.userId))
+        }
         messenger.queueMessage(newDeviceId, msg, session.userId)
         messenger.flushMessages()
 

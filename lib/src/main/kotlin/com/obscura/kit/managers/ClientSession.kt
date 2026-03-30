@@ -13,4 +13,5 @@ class ClientSession {
     var registrationId: Int = 0
     var recoveryPhrase: String? = null
     var recoveryPublicKey: ByteArray? = null
+    var pendingLinkChallenge: ByteArray? = null // set during generateLinkCode(), verified on approval
 }

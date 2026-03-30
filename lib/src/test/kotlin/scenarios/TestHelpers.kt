@@ -19,8 +19,35 @@ fun checkServer(): Boolean = try {
 fun uniqueName(prefix: String): String =
     "kt_${prefix}_${System.currentTimeMillis()}_${(1000..9999).random()}"
 
-suspend fun registerAndConnect(prefix: String): ObscuraClient {
-    val client = ObscuraClient(ObscuraConfig(API))
+/**
+ * Provision a second device and approve it from the first device.
+ * Returns the second device in AUTHENTICATED state.
+ */
+suspend fun provisionAndApprove(existingDevice: ObscuraClient, username: String, deviceName: String = "Device 2"): ObscuraClient {
+    val device2 = ObscuraClient(ObscuraConfig(API, deviceName = deviceName))
+    device2.loginAndProvision(username, TEST_PASSWORD, deviceName)
+    assertEquals(AuthState.PENDING_APPROVAL, device2.authState.value)
+
+    // Device 2 connects and generates link code
+    device2.connect()
+    val linkCode = device2.generateLinkCode()
+
+    // Existing device validates and approves
+    existingDevice.validateAndApproveLink(linkCode)
+
+    // Device 2 receives the approval — drain messages until state changes
+    val deadline = System.currentTimeMillis() + 15_000
+    while (device2.authState.value == AuthState.PENDING_APPROVAL && System.currentTimeMillis() < deadline) {
+        try { device2.waitForMessage(2_000) } catch (_: Exception) {}
+    }
+    assertEquals(AuthState.AUTHENTICATED, device2.authState.value,
+        "Device should be AUTHENTICATED after approval")
+
+    return device2
+}
+
+suspend fun registerAndConnect(prefix: String, config: ObscuraConfig = ObscuraConfig(API)): ObscuraClient {
+    val client = ObscuraClient(config)
     client.register(uniqueName(prefix), TEST_PASSWORD)
     assertEquals(AuthState.AUTHENTICATED, client.authState.value)
     assertNotNull(client.userId)

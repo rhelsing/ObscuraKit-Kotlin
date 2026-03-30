@@ -107,6 +107,20 @@ class ModelStore(internal val db: ObscuraDatabase) {
         }
     }
 
+    fun getAssociated(belongsToModel: String, belongsToId: String, childModelName: String): List<OrmEntry> {
+        return db.modelEntryQueries.selectAssociations(belongsToModel, belongsToId).executeAsList()
+            .filter { it.model_name == childModelName }
+            .map { row ->
+                OrmEntry(
+                    id = row.entry_id,
+                    data = parseJsonMap(row.data_),
+                    timestamp = row.timestamp,
+                    authorDeviceId = row.author_device_id,
+                    signature = row.signature ?: ByteArray(0)
+                )
+            }
+    }
+
     private fun parseJsonMap(json: String): Map<String, Any?> {
         val obj = JSONObject(json)
         val map = mutableMapOf<String, Any?>()

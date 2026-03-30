@@ -40,7 +40,7 @@ data class ReceivedMessage(
 
 enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED }
 
-enum class AuthState { LOGGED_OUT, AUTHENTICATED }
+enum class AuthState { LOGGED_OUT, PENDING_APPROVAL, AUTHENTICATED }
 
 /**
  * Create with default JVM in-memory driver (for tests).
@@ -218,6 +218,54 @@ class ObscuraClient(
 
         messageSender = MessageSender(messenger, authManager)
         ctx.messageSender = messageSender
+
+        // Wire ORM auto-sync: model.create() → encrypt → fan out → flush
+        syncManager.getSelfSyncTargets = { devices.getSelfSyncTargets() }
+        syncManager.getFriendTargets = {
+            val accepted = friends.getAccepted()
+            val targets = mutableListOf<String>()
+            for (f in accepted) {
+                var deviceIds = messenger.getDeviceIdsForUser(f.userId)
+                if (deviceIds.isEmpty()) {
+                    // Discover devices via prekey bundle fetch (same as MessageSender)
+                    try { messenger.fetchPreKeyBundles(f.userId) } catch (_: Exception) {}
+                    deviceIds = messenger.getDeviceIdsForUser(f.userId)
+                }
+                targets.addAll(deviceIds)
+            }
+            targets
+        }
+        syncManager.queueModelSync = { targetDeviceId, modelSync ->
+            val msg = obscura.v2.Client.ClientMessage.newBuilder()
+                .setType(obscura.v2.Client.ClientMessage.Type.MODEL_SYNC)
+                .setTimestamp(System.currentTimeMillis())
+                .setModelSync(obscura.v2.modelSync {
+                    model = modelSync.model; id = modelSync.id
+                    op = obscura.v2.Client.ModelSync.Op.forNumber(modelSync.op)
+                        ?: obscura.v2.Client.ModelSync.Op.CREATE
+                    timestamp = modelSync.timestamp
+                    data = com.google.protobuf.ByteString.copyFrom(modelSync.data)
+                    authorDeviceId = modelSync.authorDeviceId
+                    signature = com.google.protobuf.ByteString.copyFrom(modelSync.signature)
+                }).build()
+            val mapped = messenger.deviceMap(targetDeviceId)
+            messenger.queueMessage(targetDeviceId, msg, mapped?.first)
+        }
+        syncManager.getDevicesForUsername = { username ->
+            val friend = friends.getAccepted().find { it.username == username }
+            if (friend != null) {
+                var deviceIds = messenger.getDeviceIdsForUser(friend.userId)
+                if (deviceIds.isEmpty()) {
+                    try { messenger.fetchPreKeyBundles(friend.userId) } catch (_: Exception) {}
+                    deviceIds = messenger.getDeviceIdsForUser(friend.userId)
+                }
+                deviceIds
+            } else emptyList()
+        }
+        syncManager.flushQueue = {
+            authManager.ensureFreshToken()
+            messenger.flushMessages()
+        }
 
         recoveryManager = RecoveryManager(ctx = ctx, config = config)
 
@@ -424,6 +472,7 @@ class ObscuraClient(
             ClientMessage.Type.SENT_SYNC -> handleSentSync(msg)
             ClientMessage.Type.SESSION_RESET -> signalStore.deleteAllSessions(sourceUserId)
             ClientMessage.Type.FRIEND_SYNC -> handleFriendSync(msg, sourceUserId)
+            ClientMessage.Type.DEVICE_LINK_APPROVAL -> handleLinkApproval(msg, sourceUserId)
             else -> { }
         }
     }
@@ -472,11 +521,30 @@ class ObscuraClient(
 
     private suspend fun handleModelSync(msg: ClientMessage, sourceUserId: String) {
         val sync = msg.modelSync
-        orm.handleSync(ModelSyncData(
+        val syncData = ModelSyncData(
             model = sync.model, id = sync.id, op = sync.op.number,
             timestamp = sync.timestamp, data = sync.data.toByteArray(),
             authorDeviceId = sync.authorDeviceId, signature = sync.signature.toByteArray()
-        ), sourceUserId)
+        )
+        orm.handleSync(syncData, sourceUserId)
+
+        // DirectMessage MODEL_SYNC → also route to conversations for chat UI
+        if (sync.model == "directMessage") {
+            try {
+                val json = org.json.JSONObject(String(sync.data.toByteArray()))
+                val content = json.optString("content", "")
+                // File under the sender's userId — that's who we're chatting with
+                val conversationWith = sourceUserId
+                val msgData = MessageData(
+                    id = sync.id, conversationId = conversationWith,
+                    authorDeviceId = sync.authorDeviceId,
+                    content = content, timestamp = sync.timestamp,
+                    type = "text"
+                )
+                messagesDomain.add(conversationWith, msgData)
+                refreshConversation(conversationWith)
+            } catch (_: Exception) {}
+        }
     }
 
     private suspend fun handleSyncBlob(msg: ClientMessage, sourceUserId: String) {
@@ -506,6 +574,52 @@ class ObscuraClient(
         }
     }
 
+    private suspend fun handleLinkApproval(msg: ClientMessage, sourceUserId: String) {
+        // Only accept approval from our own account
+        if (sourceUserId != userId) return
+        // Only process if we're actually waiting for approval
+        if (_authState.value != AuthState.PENDING_APPROVAL) return
+
+        val approval = msg.deviceLinkApproval
+
+        // Verify challenge matches the one we generated in our link code
+        val pendingChallenge = session.pendingLinkChallenge
+        if (pendingChallenge != null && approval.challengeResponse.size() > 0) {
+            val received = approval.challengeResponse.toByteArray()
+            if (!com.obscura.kit.crypto.LinkCode.verifyChallenge(pendingChallenge, received)) {
+                logger.decryptFailed(sourceUserId, "Link approval challenge mismatch")
+                return
+            }
+        }
+
+        // Import device list from approval
+        val approvedDevices = approval.ownDevicesList.map { d ->
+            FriendDeviceInfo(d.deviceUuid, d.deviceId, d.deviceName)
+        }
+        if (approvedDevices.isNotEmpty()) {
+            devices.setOwnDevices(approvedDevices)
+        }
+
+        // Store identity keys from approval
+        val identity = devices.getIdentity()
+        if (identity != null) {
+            devices.storeIdentity(identity.copy(
+                p2pPublicKey = approval.p2PPublicKey?.toByteArray()?.takeIf { it.isNotEmpty() },
+                recoveryPublicKey = approval.recoveryPublicKey?.toByteArray()?.takeIf { it.isNotEmpty() }
+            ))
+        }
+
+        // Import friend data from approval
+        if (approval.friendsExport.size() > 0) {
+            try {
+                friends.importAll(String(approval.friendsExport.toByteArray()))
+            } catch (_: Exception) {}
+        }
+
+        session.pendingLinkChallenge = null
+        _authState.value = AuthState.AUTHENTICATED
+    }
+
     private suspend fun refreshConversation(conversationId: String) {
         val msgs = messagesDomain.getMessages(conversationId)
         val current = _conversations.value.toMutableMap()
@@ -521,7 +635,33 @@ class ObscuraClient(
         return msgs
     }
 
-    suspend fun send(friendUsername: String, text: String) = messagingManager.send(friendUsername, text)
+    /**
+     * Send a text message via ORM (MODEL_SYNC). Interoperable with iOS DirectMessage.
+     * Falls back to legacy TEXT if directMessage model is not defined.
+     */
+    suspend fun send(friendUsername: String, text: String) {
+        val directMessage = orm.modelOrNull("directMessage")
+        if (directMessage != null) {
+            val friendData = friends.getAccepted().find { it.username == friendUsername }
+                ?: throw IllegalStateException("Not friends with $friendUsername")
+            // Create via ORM — auto-syncs to friend via MODEL_SYNC
+            val entry = directMessage.create(mapOf(
+                "conversationId" to friendData.userId,
+                "content" to text,
+                "senderUsername" to (username ?: "")
+            ))
+            // Also persist locally to conversations
+            messagesDomain.add(friendData.userId, MessageData(
+                id = entry.id, conversationId = friendData.userId,
+                authorDeviceId = deviceId ?: "self",
+                content = text, timestamp = entry.timestamp, type = "text"
+            ))
+            refreshConversation(friendData.userId)
+        } else {
+            // Legacy path — sends TEXT (type 0) instead of MODEL_SYNC
+            messagingManager.send(friendUsername, text)
+        }
+    }
     suspend fun sendAttachment(friendUsername: String, attachmentId: String, contentKey: ByteArray, nonce: ByteArray, mimeType: String, sizeBytes: Long) =
         messagingManager.sendAttachment(friendUsername, attachmentId, contentKey, nonce, mimeType, sizeBytes)
     suspend fun sendEncryptedAttachment(friendUsername: String, plaintext: ByteArray, mimeType: String = "application/octet-stream") =
@@ -540,20 +680,62 @@ class ObscuraClient(
     suspend fun announceDevices() = deviceManager.announceDevices()
     suspend fun announceDeviceRevocation(friendUsername: String, remainingDeviceIds: List<String>) =
         deviceManager.announceDeviceRevocation(friendUsername, remainingDeviceIds)
-    suspend fun revokeDevice(recoveryPhrase: String, targetDeviceId: String) =
+    suspend fun revokeDevice(recoveryPhrase: String, targetDeviceId: String) {
+        requireRecoveryEnabled("revokeDevice")
         deviceManager.revokeDevice(recoveryPhrase, targetDeviceId)
+    }
+    /**
+     * Generate a link code for this device. Display as QR code or copyable text.
+     * The existing device scans this and calls validateAndApproveLink().
+     */
+    fun generateLinkCode(): String {
+        val did = deviceId ?: throw IllegalStateException("Not provisioned — call loginAndProvision first")
+        val identityKey = signalStore.getIdentityKeyPair().publicKey.serialize()
+        val generated = com.obscura.kit.crypto.LinkCode.generate(did, did, identityKey)
+        session.pendingLinkChallenge = generated.challenge
+        return generated.code
+    }
+
+    /**
+     * Validate a link code and approve the new device. Called by the EXISTING device
+     * after scanning QR or receiving pasted code from the new device.
+     */
+    suspend fun validateAndApproveLink(linkCode: String) {
+        val result = com.obscura.kit.crypto.LinkCode.validate(linkCode)
+        require(result.valid) { result.error ?: "Invalid link code" }
+        val data = result.data!!
+        deviceManager.approveLink(data.deviceId, data.challenge)
+    }
+
+    /**
+     * Low-level approve — use validateAndApproveLink() instead for the full flow.
+     */
     suspend fun approveLink(newDeviceId: String, challengeResponse: ByteArray) =
         deviceManager.approveLink(newDeviceId, challengeResponse)
     suspend fun takeoverDevice() = deviceManager.takeoverDevice()
 
-    fun generateRecoveryPhrase(): String = recoveryManager.generateRecoveryPhrase()
-    fun getRecoveryPhrase(): String? = recoveryManager.getRecoveryPhrase()
+    fun generateRecoveryPhrase(): String {
+        requireRecoveryEnabled("generateRecoveryPhrase")
+        return recoveryManager.generateRecoveryPhrase()
+    }
+    fun getRecoveryPhrase(): String? {
+        requireRecoveryEnabled("getRecoveryPhrase")
+        return recoveryManager.getRecoveryPhrase()
+    }
     fun getVerifyCode(): String? = recoveryManager.getVerifyCode()
-    suspend fun announceRecovery(recoveryPhrase: String, isFullRecovery: Boolean = true) =
+    suspend fun announceRecovery(recoveryPhrase: String, isFullRecovery: Boolean = true) {
+        requireRecoveryEnabled("announceRecovery")
         recoveryManager.announceRecovery(recoveryPhrase, isFullRecovery)
+    }
     suspend fun uploadBackup(): String? = recoveryManager.uploadBackup()
     suspend fun downloadBackup(recoveryPhrase: String? = null): ParsedSyncBlob? = recoveryManager.downloadBackup(recoveryPhrase)
     suspend fun checkBackup(): Triple<Boolean, String?, Long?> = recoveryManager.checkBackup()
+
+    private fun requireRecoveryEnabled(method: String) {
+        require(config.enableRecoveryPhrase) {
+            "$method requires ObscuraConfig(enableRecoveryPhrase = true)"
+        }
+    }
 
     suspend fun resetSessionWith(targetUserId: String, reason: String = "manual") =
         clientSyncManager.resetSessionWith(targetUserId, reason)

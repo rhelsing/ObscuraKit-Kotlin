@@ -188,7 +188,9 @@ internal class AuthManager(
             token = deviceToken
         ))
 
-        setAuthState(AuthState.AUTHENTICATED)
+        // Device is provisioned on the server but NOT approved by an existing device yet.
+        // The app must call generateLinkCode(), display it, and wait for approval.
+        setAuthState(AuthState.PENDING_APPROVAL)
         delay(config.authRateLimitDelayMs)
     }
 

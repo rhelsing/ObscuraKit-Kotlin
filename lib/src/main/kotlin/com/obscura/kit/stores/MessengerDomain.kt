@@ -45,6 +45,8 @@ class MessengerDomain internal constructor(
         deviceMap[deviceId] = Pair(userId, registrationId)
     }
 
+    fun deviceMap(deviceId: String): Pair<String, Int>? = deviceMap[deviceId]
+
     fun getDeviceIdsForUser(userId: String): List<String> {
         return deviceMap.entries.filter { it.value.first == userId }.map { it.key }
     }
@@ -95,12 +97,21 @@ class MessengerDomain internal constructor(
                 .addAllMessages(submissions)
                 .build()
 
-            val responseBytes = api.sendMessage(request.toByteArray())
+            val responseBytes = try {
+                api.sendMessage(request.toByteArray())
+            } catch (e: Exception) {
+                // Network failure — re-queue for retry
+                queue.addAll(submissions)
+                throw e
+            }
+
             val failedSubmissions = if (responseBytes.isNotEmpty()) {
                 try {
                     SendMessageResponse.parseFrom(responseBytes).failedSubmissionsList
                 } catch (e: Exception) {
-                    emptyList()
+                    // Can't parse response — treat as all failed, re-queue
+                    queue.addAll(submissions)
+                    return@withContext Triple(0, submissions.size, emptyList<SendMessageResponse.FailedSubmission>())
                 }
             } else {
                 emptyList()

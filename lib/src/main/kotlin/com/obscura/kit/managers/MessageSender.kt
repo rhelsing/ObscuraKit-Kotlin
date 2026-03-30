@@ -18,9 +18,15 @@ internal class MessageSender(
             messenger.fetchPreKeyBundles(targetUserId)
             deviceIds = messenger.getDeviceIdsForUser(targetUserId)
         }
+        if (deviceIds.isEmpty()) {
+            throw IllegalStateException("No devices found for user $targetUserId")
+        }
         for (devId in deviceIds) {
             messenger.queueMessage(devId, msg, targetUserId)
         }
-        messenger.flushMessages()
+        val (sent, failed, _) = messenger.flushMessages()
+        if (sent == 0 && failed > 0) {
+            throw IllegalStateException("All $failed message submissions failed for $targetUserId")
+        }
     }
 }

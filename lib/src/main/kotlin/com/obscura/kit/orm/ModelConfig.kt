@@ -9,7 +9,8 @@ data class ModelConfig(
     val sync: String = "gset",                    // "gset" or "lww"
     val private: Boolean = false,                 // true = only sync to own devices
     val ttl: String? = null,                      // e.g., "24h", "7d"
-    val belongsTo: List<String> = emptyList()     // parent model names
+    val belongsTo: List<String> = emptyList(),    // parent model names
+    val hasMany: List<String> = emptyList()       // child model names
 ) {
     val isPrivate: Boolean get() = `private`
 }

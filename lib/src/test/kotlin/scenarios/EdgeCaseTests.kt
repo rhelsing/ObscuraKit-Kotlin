@@ -61,7 +61,8 @@ class EdgeCaseTests {
     fun `EC-3 - Verify code is stable for same recovery phrase`() = runBlocking {
         assumeTrue(checkServer())
 
-        val alice = registerAndConnect("ecv")
+        val recoveryConfig = com.obscura.kit.ObscuraConfig(API, enableRecoveryPhrase = true)
+        val alice = registerAndConnect("ecv", recoveryConfig)
         assertEquals(AuthState.AUTHENTICATED, alice.authState.value)
 
         alice.generateRecoveryPhrase()

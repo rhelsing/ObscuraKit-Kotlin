@@ -23,7 +23,8 @@ class Schema(
                     lwwMap = LWWMap(store, name),
                     syncManager = syncManager,
                     ttlManager = ttlManager,
-                    deviceId = deviceId
+                    deviceId = deviceId,
+                    store = store
                 )
             } else {
                 Model(
@@ -32,7 +33,8 @@ class Schema(
                     gset = GSet(store, name),
                     syncManager = syncManager,
                     ttlManager = ttlManager,
-                    deviceId = deviceId
+                    deviceId = deviceId,
+                    store = store
                 )
             }
             models[name] = model
@@ -40,7 +42,10 @@ class Schema(
         }
     }
 
-    fun model(name: String): Model? = models[name]
+    fun model(name: String): Model = models[name]
+        ?: throw IllegalArgumentException("Unknown model '$name'. Did you define it? Available: ${models.keys.joinToString()}")
+
+    fun modelOrNull(name: String): Model? = models[name]
 
     fun allModels(): Map<String, Model> = models.toMap()
 }

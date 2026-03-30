@@ -14,6 +14,9 @@ data class OrmEntry(
     val isDeleted: Boolean
         get() = data["_deleted"] == true
 
+    /** Eager-loaded child entries from include(). Key = model name, e.g. "comments", "reactions" */
+    val associations: MutableMap<String, List<OrmEntry>> = mutableMapOf()
+
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (other !is OrmEntry) return false

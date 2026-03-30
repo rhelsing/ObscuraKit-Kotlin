@@ -2,6 +2,11 @@ package com.obscura.kit.orm
 
 import com.obscura.kit.orm.crdt.GSet
 import com.obscura.kit.orm.crdt.LWWMap
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.flow.Flow
+import kotlinx.coroutines.flow.map
+import app.cash.sqldelight.coroutines.asFlow
+import app.cash.sqldelight.coroutines.mapToList
 import org.json.JSONObject
 import java.security.MessageDigest
 
@@ -14,9 +19,10 @@ class Model(
     val config: ModelConfig,
     private val gset: GSet? = null,
     private val lwwMap: LWWMap? = null,
-    private val syncManager: SyncManager? = null,
+    internal val syncManager: SyncManager? = null,
     private val ttlManager: TTLManager? = null,
-    private val deviceId: String = ""
+    private val deviceId: String = "",
+    internal val store: ModelStore? = null
 ) {
 
     suspend fun create(data: Map<String, Any?>): OrmEntry {
@@ -39,6 +45,17 @@ class Model(
 
         if (config.ttl != null && ttlManager != null) {
             ttlManager.schedule(name, id, config.ttl!!)
+        }
+
+        // Auto-register association if this model belongs_to a parent
+        if (config.belongsTo.isNotEmpty() && store != null) {
+            for (parentModel in config.belongsTo) {
+                val foreignKey = "${parentModel}Id"
+                val parentId = data[foreignKey] as? String
+                if (parentId != null) {
+                    store.addAssociation(parentModel, parentId, name, id)
+                }
+            }
         }
 
         syncManager?.broadcast(this, entry)
@@ -73,6 +90,16 @@ class Model(
         return QueryBuilder(this).where(conditions)
     }
 
+    /**
+     * DSL query:
+     *   story.where { "author" eq "alice"; "likes" atLeast 5 }.exec()
+     */
+    fun where(block: WhereBuilder.() -> Unit): QueryBuilder {
+        val builder = WhereBuilder()
+        builder.block()
+        return QueryBuilder(this).where(builder.conditions)
+    }
+
     suspend fun all(): List<OrmEntry> {
         return if (config.sync == "lww") lwwMap?.getAll() ?: emptyList() else gset?.getAll() ?: emptyList()
     }
@@ -80,6 +107,37 @@ class Model(
     suspend fun allSorted(descending: Boolean = true): List<OrmEntry> {
         return if (config.sync == "lww") lwwMap?.getAllSorted(descending) ?: emptyList()
         else gset?.getAllSorted(descending) ?: emptyList()
+    }
+
+    /**
+     * Observe all entries as a reactive Flow. Compose-ready:
+     *   val stories = model.observe().collectAsState(emptyList())
+     */
+    fun observe(): Flow<List<OrmEntry>> {
+        val db = store?.db ?: throw IllegalStateException("observe() requires a store-backed model")
+        val now = System.currentTimeMillis()
+        return db.modelEntryQueries.selectByModel(name)
+            .asFlow()
+            .mapToList(Dispatchers.IO)
+            .map { rows ->
+                rows.filter { row -> row.ttl_expires_at == null || row.ttl_expires_at > System.currentTimeMillis() }
+                    .map { row ->
+                        OrmEntry(
+                            id = row.entry_id,
+                            data = parseJsonMap(row.data_),
+                            timestamp = row.timestamp,
+                            authorDeviceId = row.author_device_id,
+                            signature = row.signature ?: ByteArray(0)
+                        )
+                    }
+            }
+    }
+
+    private fun parseJsonMap(json: String): Map<String, Any?> {
+        val obj = JSONObject(json)
+        val map = mutableMapOf<String, Any?>()
+        for (key in obj.keys()) { map[key] = if (obj.isNull(key)) null else obj.get(key) }
+        return map
     }
 
     suspend fun delete(id: String) {

@@ -76,6 +76,20 @@ class DeviceDomain internal constructor(private val db: ObscuraDatabase) {
         }
     }
 
+    suspend fun setOwnDevices(devices: List<FriendDeviceInfo>) = withContext(dispatcher) {
+        db.deviceQueries.deleteAllDevices()
+        for (d in devices) {
+            db.deviceQueries.insertDevice(
+                d.deviceId.ifBlank { d.deviceUuid }, // deviceId is the primary key
+                d.deviceName,
+                null, // user_id — own devices, not friend devices
+                d.signalIdentityKey,
+                1, // is_own
+                System.currentTimeMillis()
+            )
+        }
+    }
+
     suspend fun getSelfSyncTargets(): List<String> = withContext(dispatcher) {
         db.deviceQueries.selectOwnDevices().executeAsList().map { it.device_id }
     }

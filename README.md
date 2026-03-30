@@ -1,37 +1,67 @@
 # ObscuraKit-Kotlin
 
-E2E encrypted data layer for the Obscura protocol. This is a **library, not an app** — it provides the client state machine that any Android/JVM application links against. Pure JVM, no Android Studio required. Tested against `obscura.barrelmaker.dev`.
+**Rails for Signal-powered apps.**
+
+ObscuraKit is an E2E encrypted data layer library. Define your models, set sync rules, call `create()` — encryption, CRDT merging, fan-out to devices, persistence, and conflict resolution happen automatically. A developer building on ObscuraKit never thinks about Signal sessions, protobuf framing, or WebSocket management. They think about models, relationships, and queries — exactly like a Rails developer thinks about ActiveRecord.
+
+This is a **library, not an app**. Any Android/JVM application links against it. Pure JVM, no Android Studio required. Tested against `obscura.barrelmaker.dev`.
+
+## The Vision
+
+ObscuraKit makes Signal Protocol as invisible as TCP/IP. Just as a web developer doesn't think about packet framing when they make an HTTP request, an ObscuraKit developer doesn't think about ratchet state when they create a story. The protocol is the backbone — reliable, encrypted, conflict-free — and the developer builds on top of it.
+
+```
+What a Rails dev writes:              What ObscuraKit does underneath:
+─────────────────────────             ─────────────────────────────────
+Post.create(caption: "Hi")           1. Validate against schema
+                                      2. Persist to local CRDT (GSet)
+                                      3. Signal-encrypt for each friend device
+                                      4. Fan out via WebSocket batch
+                                      5. Remote devices decrypt + merge
+                                      6. Conflict resolution via CRDT semantics
+                                      7. UI observers fire automatically
+```
 
 ## Architecture
 
-Three levels stacked and abstracted on each other. Views never go below `ObscuraClient`.
+Three layers, each completely hiding the one below. The developer surface is Layer 3 — everything beneath it is invisible plumbing.
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
 │                        COMPOSE VIEWS                            │
-│  Observes StateFlow<List<Friend>>, StateFlow<Map<Messages>>     │
-│  Calls: send(), befriend(), acceptFriend(), sendModelSync()     │
+│  Observes StateFlow<List<Friend>>, model.observe()              │
+│  Calls: create(), send(), befriend() — never thinks about       │
+│  encryption, sessions, or transport                             │
 ├─────────────────────────────────────────────────────────────────┤
 │                     ObscuraClient (facade)                      │
 │  Wires levels together. Owns StateFlows. Envelope loop.         │
 │  Views never go below this line.                                │
 ╞═════════════════════════════════════════════════════════════════╡
 │                                                                 │
-│  LEVEL 3: ORM — Application data models                        │
-│  Stories, streaks, profiles, settings on CRDT sync              │
-│  GSet (add-only) / LWWMap (timestamp wins)                     │
-│  Rides on: ClientMessage.Type.MODEL_SYNC                       │
+│  LAYER 3: Application Classes                                   │
+│                                                                 │
+│  First-class domains:                                           │
+│    Friends — prekey ceremony, device announce, fan-out targets  │
+│    Devices — identity, linking, revocation, self-sync           │
+│                                                                 │
+│  ORM (freeform models):                                         │
+│    Define any model: stories, posts, settings, streaks          │
+│    CRDT-backed: GSet (immutable) / LWWMap (mutable)             │
+│    Config-driven sync: private | self | friends | group members │
+│    Relationships: has_many / belongs_to                         │
+│    TTL, validation, reactive observation via StateFlow          │
+│    Rides on: ClientMessage.Type.MODEL_SYNC                      │
 │                                                                 │
 ╞═════════════════════════════════════════════════════════════════╡
 │                                                                 │
-│  LEVEL 2: Client Protocol — Encrypted client-to-client         │
-│  Signal Protocol encrypt/decrypt, 20+ message types             │
+│  LAYER 2: Encryption Primitives (invisible to Layer 3)          │
+│  Signal Protocol encrypt/decrypt, auto-session building         │
+│  20+ client-to-client message types                             │
 │  Server never sees contents                                     │
-│  Rides on: Envelope.message (opaque bytes to server)            │
 │                                                                 │
 ╞═════════════════════════════════════════════════════════════════╡
 │                                                                 │
-│  LEVEL 1: Server Protocol — Binary transport                   │
+│  LAYER 1: Server Protocol (invisible to Layer 2)                │
 │  WebSocket (EnvelopeBatch/AckMessage) + REST API                │
 │  Server is a dumb relay of opaque encrypted blobs               │
 │                                                                 │
@@ -40,11 +70,149 @@ Three levels stacked and abstracted on each other. Views never go below `Obscura
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-**Abstraction boundaries:**
-- Level 1 never sees what's inside an encrypted message
-- Level 2 never sees ORM models or how CRDTs merge
-- Level 3 never sees Signal sessions, WebSocket frames, or HTTP calls
-- ObscuraClient is the only thing that crosses all three
+**Abstraction contracts:**
+- Layer 1 never sees what's inside an encrypted message
+- Layer 2 never sees ORM models or how CRDTs merge
+- Layer 3 never sees Signal sessions, WebSocket frames, or HTTP calls
+- Friends and Devices are first-class at Layer 3 because they require enough protocol ceremony (prekey bundles, device signing, fan-out resolution) to warrant dedicated implementations
+- Everything else — stories, posts, settings, streaks, group messages — is a freeform ORM model
+
+## ORM — The Developer Surface
+
+The ORM is the heart of ObscuraKit. It's where a Rails developer should feel immediately at home.
+
+### Defining Models
+
+```kotlin
+// Like ActiveRecord: declare fields, relationships, behavior
+client.orm.define(mapOf(
+    "story" to ModelConfig(
+        fields = mapOf("content" to "string", "mediaUrl" to "string?"),
+        sync = "gset",                    // immutable, append-only (like a tweet)
+        ttl = "24h",                      // auto-expires (like Snapchat)
+        hasMany = listOf("comment", "reaction")
+    ),
+    "comment" to ModelConfig(
+        fields = mapOf("text" to "string"),
+        sync = "gset",
+        ttl = "24h",
+        belongsTo = listOf("story", "comment")  // nested comments
+    ),
+    "reaction" to ModelConfig(
+        fields = mapOf("emoji" to "string"),
+        sync = "lww",                     // mutable, last-writer-wins (change your reaction)
+        ttl = "24h",
+        belongsTo = listOf("story", "comment")
+    ),
+    "settings" to ModelConfig(
+        fields = mapOf("theme" to "string", "notificationsEnabled" to "boolean"),
+        sync = "lww",
+        isPrivate = true                  // only syncs to your own devices, never to friends
+    ),
+    "group" to ModelConfig(
+        fields = mapOf("name" to "string", "members" to "string"),
+        sync = "gset",
+        hasMany = listOf("groupMessage")
+    ),
+    "groupMessage" to ModelConfig(
+        fields = mapOf("text" to "string", "mediaUrl" to "string?"),
+        sync = "gset",
+        ttl = "7d",
+        belongsTo = listOf("group")       // auto-targets group members, not all friends
+    )
+))
+```
+
+### CRUD — Feels Like ActiveRecord
+
+```kotlin
+// Create — persists, encrypts, fans out, notifies observers. One call.
+val story = client.orm.model("story")!!
+val entry = story.create(mapOf("content" to "Hello world!", "mediaUrl" to null))
+
+// Find by ID
+val found = story.find(entry.id)
+
+// Query with conditions
+val mine = story.where(mapOf("authorDeviceId" to client.deviceId)).exec()
+
+// Upsert (LWW models only — timestamp conflict resolution)
+client.orm.model("settings")!!.upsert("my_settings", mapOf("theme" to "dark"))
+
+// Delete (LWW models only — tombstone pattern)
+client.orm.model("reaction")!!.delete(reactionId)
+```
+
+### Sync Behavior Is Config-Driven
+
+The developer never calls "send this to Bob's devices." Sync happens automatically based on model config:
+
+| Config | Behavior | Example |
+|--------|----------|---------|
+| `isPrivate = true` | Own devices only | Settings, drafts |
+| `belongsTo = listOf("group")` | Group members only | GroupMessage targets the group's `members` field |
+| _(default)_ | All friends | Stories, posts, profile updates |
+
+```kotlin
+// Developer writes this:
+story.create(mapOf("content" to "Beach day!"))
+
+// ObscuraKit does this automatically:
+// 1. GSet.add() — persist locally
+// 2. SyncManager.broadcast() — resolve targets from config
+// 3. For each target device: Signal-encrypt → queue
+// 4. Batch flush over WebSocket
+// 5. Remote devices: decrypt → CRDT merge → UI observers fire
+```
+
+### Reactive Observation (Compose-Ready)
+
+```kotlin
+// Simple: observe all entries
+@Composable
+fun StoryFeed(client: ObscuraClient) {
+    val stories = client.orm.model("story")!!.observe().collectAsState(emptyList())
+    LazyColumn { items(stories.value) { StoryCard(it) } }
+}
+
+// Power: observe a query
+@Composable
+fun GroupChat(client: ObscuraClient, groupId: String) {
+    val messages = client.orm.model("groupMessage")!!
+        .where(mapOf("data.groupId" to groupId))
+        .observe()  // Returns Flow<List<OrmEntry>>
+        .collectAsState(emptyList())
+    LazyColumn { items(messages.value) { MessageBubble(it) } }
+}
+```
+
+### Relationships — has_many / belongs_to
+
+```kotlin
+// Story has_many comments, reactions
+// Comment belongs_to story (and recursively, comment)
+
+// Create a comment on a story
+val comment = client.orm.model("comment")!!.create(
+    mapOf("text" to "Nice!", "storyId" to story.id)
+)
+// Automatically: stored with association, synced to story's audience
+
+// Eager load (like ActiveRecord includes)
+val storiesWithComments = story.where(mapOf())
+    .include("comment", "reaction")
+    .exec()
+// Each story entry now has .comments and .reactions attached
+```
+
+### CRDTs — Conflict Resolution Without a Server
+
+ObscuraKit is peer-to-peer (through a dumb relay). There's no central database to be the source of truth. CRDTs solve this:
+
+- **GSet (Grow-only Set):** For immutable content — stories, comments, messages. Add-only. Merge = union. Two devices that independently add entries converge automatically. No conflicts possible.
+- **LWWMap (Last-Writer-Wins Map):** For mutable state — settings, reactions, streaks. On conflict, highest timestamp wins. Deterministic, convergent across all replicas. Tombstone pattern for deletion.
+
+The developer never interacts with CRDTs directly. They call `create()` and `upsert()`. The CRDT is chosen by the `sync` config field.
 
 ## Public API
 
@@ -63,7 +231,9 @@ client.connect()      // WebSocket + decrypt/route/ACK loop + token refresh
 client.disconnect()
 ```
 
-### Friends
+Connection management is designed to be as invisible as possible — reconnect, token refresh, and offline queueing are handled automatically. The app calls `connect()` once at startup and doesn't think about it again.
+
+### Friends (First-Class)
 ```kotlin
 client.befriend(userId, username)       // encrypted FRIEND_REQUEST
 client.acceptFriend(userId, username)   // encrypted FRIEND_RESPONSE
@@ -73,7 +243,6 @@ client.acceptFriend(userId, username)   // encrypted FRIEND_RESPONSE
 ```kotlin
 client.send(friendUsername, "Hello!")
 client.sendAttachment(friendUsername, attachmentId, contentKey, nonce, mimeType, size)
-client.sendModelSync(friendUsername, "story", entryId, data = mapOf("content" to "..."))
 ```
 
 ### Attachments
@@ -82,7 +251,7 @@ val (id, expiresAt) = client.uploadAttachment(bytes)
 val bytes = client.downloadAttachment(id)
 ```
 
-### Device Management
+### Device Management (First-Class)
 ```kotlin
 client.announceDevices()
 client.announceDeviceRevocation(friendUsername, remainingDeviceIds)
@@ -114,7 +283,7 @@ client.downloadBackup()
 client.checkBackup()
 ```
 
-### Observable State (Compose-ready)
+### Observable State (Compose-Ready)
 ```kotlin
 client.connectionState   // StateFlow<ConnectionState>  — DISCONNECTED, CONNECTING, CONNECTED
 client.authState          // StateFlow<AuthState>        — LOGGED_OUT, AUTHENTICATED
@@ -206,74 +375,74 @@ See `SECURITY_AUDIT.md` for the full list of security considerations.
 
 ## File Structure
 
-### Source — 5,654 lines
+### Source
 
 ```
 lib/src/main/kotlin/com/obscura/kit/
-├── ObscuraClient.kt          954  Public API facade. StateFlows, envelope loop, message routing
-├── ObscuraConfig.kt            7  Config (apiUrl, deviceName)
-├── ObscuraTestClient.kt      508  Raw E2E test client with direct Signal/WebSocket access
+├── ObscuraClient.kt             Public API facade. StateFlows, envelope loop, message routing
+├── ObscuraConfig.kt             Config (apiUrl, deviceName)
+├── ObscuraTestClient.kt         Raw E2E test client with direct Signal/WebSocket access
 ├── crypto/
-│   ├── SignalStore.kt         225  SQLDelight-backed Signal store (6 protocol interfaces)
-│   ├── Bip39.kt                65  Mnemonic generation + PBKDF2 seed derivation
-│   ├── Bip39Wordlist.kt     2052  2048-word BIP39 English wordlist
-│   └── RecoveryKeys.kt        63  Recovery phrase → Curve25519 keypair, sign/verify
+│   ├── SignalStore.kt           SQLDelight-backed Signal store (6 protocol interfaces)
+│   ├── Bip39.kt                 Mnemonic generation + PBKDF2 seed derivation
+│   ├── Bip39Wordlist.kt         2048-word BIP39 English wordlist
+│   └── RecoveryKeys.kt          Recovery phrase -> Curve25519 keypair, sign/verify
 ├── network/
-│   ├── APIClient.kt           349  OkHttp REST: auth, devices, messages, attachments, backup
-│   └── GatewayConnection.kt  145  OkHttp WebSocket: ticket auth, envelopes, ACK, reconnect
-├── orm/
+│   ├── APIClient.kt             OkHttp REST: auth, devices, messages, attachments, backup
+│   └── GatewayConnection.kt     OkHttp WebSocket: ticket auth, envelopes, ACK, reconnect
+├── orm/                         ** The developer surface **
 │   ├── crdt/
-│   │   ├── GSet.kt             84  Grow-only set. Add, merge (union), filter, sort
-│   │   └── LWWMap.kt          111  Last-writer-wins map. Timestamp conflict, tombstone delete
-│   ├── Model.kt               171  create/find/where/upsert/delete/handleSync/validate/sign
-│   ├── ModelConfig.kt          15  Schema definition (fields, sync type, private, ttl)
-│   ├── ModelStore.kt          116  SQLDelight persistence + associations + TTL
-│   ├── OrmEntry.kt             24  Universal entry (id, data, timestamp, author, signature)
-│   ├── QueryBuilder.kt         37  Chainable where().exec()
-│   ├── Schema.kt               46  Define models from config, wire CRDTs + sync
-│   ├── SyncManager.kt          61  Broadcast targeting: self / private / friends / belongs_to
-│   └── TTLManager.kt           62  Parse "24h", schedule expiration, cleanup
+│   │   ├── GSet.kt              Grow-only set. Add, merge (union), filter, sort
+│   │   └── LWWMap.kt            Last-writer-wins map. Timestamp conflict, tombstone delete
+│   ├── Model.kt                 create/find/where/upsert/delete/handleSync/validate/sign
+│   ├── ModelConfig.kt           Schema definition (fields, sync type, private, ttl, relationships)
+│   ├── ModelStore.kt            SQLDelight persistence + associations + TTL
+│   ├── OrmEntry.kt              Universal entry (id, data, timestamp, author, signature)
+│   ├── QueryBuilder.kt          Chainable where().orderBy().limit().include().exec()
+│   ├── Schema.kt                Define models from config, wire CRDTs + sync
+│   ├── SyncManager.kt           Broadcast targeting: self / private / friends / group members
+│   └── TTLManager.kt            Parse "24h", schedule expiration, cleanup
 └── stores/
-    ├── MessengerDomain.kt     237  Signal encrypt/decrypt, auto-session, queue/flush, device map
-    ├── FriendDomain.kt        152  Friend CRUD, device lists, fan-out targets, export/import
-    ├── DeviceDomain.kt         82  Device identity, own device list, self-sync targets
-    ├── MessageDomain.kt        57  Messages by conversation, migration, device purge
-    └── SchemaDomain.kt         31  ORM schema definition + MODEL_SYNC handling
+    ├── MessengerDomain.kt       Signal encrypt/decrypt, auto-session, queue/flush, device map
+    ├── FriendDomain.kt          Friend CRUD, device lists, fan-out targets, export/import
+    ├── DeviceDomain.kt          Device identity, own device list, self-sync targets
+    ├── MessageDomain.kt         Messages by conversation, migration, device purge
+    └── SchemaDomain.kt          ORM schema definition + MODEL_SYNC handling
 ```
 
-### Schemas — 235 lines SQL, 340 lines proto
+### Schemas
 
 ```
 lib/src/main/sqldelight/com/obscura/kit/
-├── SignalKey.sq        78  Signal identity, prekeys, signed prekeys, sessions, sender keys
-├── Device.sq           46  Device table + device identity singleton
-├── Friend.sq           27  Friend list with status and device JSON
-├── Message.sq          27  Messages by conversation with author device tracking
-└── ModelEntry.sq       57  ORM entries + associations + TTL expiration
+├── SignalKey.sq        Signal identity, prekeys, signed prekeys, sessions, sender keys
+├── Device.sq           Device table + device identity singleton
+├── Friend.sq           Friend list with status and device JSON
+├── Message.sq          Messages by conversation with author device tracking
+└── ModelEntry.sq       ORM entries + associations + TTL expiration
 
 fixtures/
-├── obscura.proto       84  Server protocol: WebSocket frames, envelopes, send/ack
-└── client.proto       256  Client protocol: 20+ message types (text, friend, device, sync, ORM)
+├── obscura.proto       Server protocol: WebSocket frames, envelopes, send/ack
+└── client.proto        Client protocol: 20+ message types (text, friend, device, sync, ORM)
 ```
 
-### Tests — 1,184 lines, 40 scenarios against live server
+### Tests — 40 scenarios against live server
 
 ```
 lib/src/test/kotlin/scenarios/
-├── CoreFlowTests.kt              97  Register, login, befriend, encrypted text exchange
-├── MultiDeviceFanOutTests.kt    114  2 devices same user, fan-out, SENT_SYNC
-├── MultiDeviceLinkingTests.kt    90  Device provisioning, server list, friend targets
-├── OfflineSyncTests.kt           82  Disconnect, queue offline, reconnect + receive
-├── AttachmentTests.kt            77  Upload, download, CONTENT_REFERENCE to friend
-├── EdgeCaseTests.kt              97  Size limits, verify codes, profile ORM sync
-├── ORMTests.kt                   88  MODEL_SYNC CREATE/UPDATE, bidirectional, LWW
-├── PixFlowTests.kt               82  Image upload + encrypted send + download
-├── StoryAttachmentTests.kt       88  Story with media via MODEL_SYNC
-├── DeviceRevocationTests.kt      63  Server device list, signed revocation announce
-├── DeviceTakeoverTests.kt        75  Key replacement, messaging with new keys
-├── RecoveryMessagingTests.kt     75  Recovery announcement, resume messaging
-├── SessionResetTests.kt          63  SESSION_RESET delivery, bulk reset
-└── SyncAndBackupTests.kt         93  Backup round-trip, BIP39, recovery signing, verify code
+├── CoreFlowTests.kt              Register, login, befriend, encrypted text exchange
+├── MultiDeviceFanOutTests.kt     2 devices same user, fan-out, SENT_SYNC
+├── MultiDeviceLinkingTests.kt    Device provisioning, server list, friend targets
+├── OfflineSyncTests.kt           Disconnect, queue offline, reconnect + receive
+├── AttachmentTests.kt            Upload, download, CONTENT_REFERENCE to friend
+├── EdgeCaseTests.kt              Size limits, verify codes, profile ORM sync
+├── ORMTests.kt                   MODEL_SYNC CREATE/UPDATE, bidirectional, LWW
+├── PixFlowTests.kt               Image upload + encrypted send + download
+├── StoryAttachmentTests.kt       Story with media via MODEL_SYNC
+├── DeviceRevocationTests.kt      Server device list, signed revocation announce
+├── DeviceTakeoverTests.kt        Key replacement, messaging with new keys
+├── RecoveryMessagingTests.kt     Recovery announcement, resume messaging
+├── SessionResetTests.kt          SESSION_RESET delivery, bulk reset
+└── SyncAndBackupTests.kt         Backup round-trip, BIP39, recovery signing, verify code
 ```
 
 ## Multi-App Architecture
@@ -300,7 +469,7 @@ ObscuraKit is a shared data layer. Multiple apps can use the same user identity 
 
 **What differentiates apps — ORM model definitions:**
 ```kotlin
-// Snap clone
+// Snap clone — ephemeral media
 client.orm.define(mapOf(
     "snap" to ModelConfig(
         fields = mapOf("mediaRef" to "string", "recipient" to "string"),
@@ -308,15 +477,17 @@ client.orm.define(mapOf(
     ),
     "story" to ModelConfig(
         fields = mapOf("mediaRef" to "string"),
-        sync = "gset", ttl = "24h"
+        sync = "gset", ttl = "24h",
+        hasMany = listOf("comment", "reaction")
     )
 ))
 
-// Insta clone
+// Insta clone — persistent content
 client.orm.define(mapOf(
     "post" to ModelConfig(
         fields = mapOf("mediaRef" to "string", "caption" to "string"),
-        sync = "gset"
+        sync = "gset",
+        hasMany = listOf("comment", "like")
     ),
     "comment" to ModelConfig(
         fields = mapOf("text" to "string", "postId" to "string"),
@@ -324,33 +495,33 @@ client.orm.define(mapOf(
     ),
     "like" to ModelConfig(
         fields = mapOf("postId" to "string"),
-        sync = "lww"
+        sync = "lww", belongsTo = listOf("post")
     )
 ))
 ```
 
-Each app defines its own models at Level 3. Levels 1 and 2 (transport + encryption) are identical. When a snap syncs via MODEL_SYNC, all devices receive it. Apps ignore model names they don't recognize.
+Each app defines its own models at Layer 3. Layers 1 and 2 (transport + encryption) are identical. When a snap syncs via MODEL_SYNC, all devices receive it. Apps ignore model names they don't recognize.
 
 **Signal ratchets are per-device.** Each app has its own Signal identity keypair, its own session state. When Alice sends to Bob, she encrypts separately for each of Bob's devices (fan-out). There's no way to share ratchet state across apps — that's fundamental to Signal Protocol security.
 
 ## Multi-Platform
 
-The three-level architecture ports 1:1 to any platform. Only the edge drivers change:
+The three-layer architecture ports 1:1 to any platform. Only the edge drivers change:
 
 ```
                   Kotlin/Android         Swift/iOS
                   ──────────────         ─────────
 
-Level 1           OkHttp                 URLSession
+Layer 1           OkHttp                 URLSession
                   OkHttp WebSocket       URLSessionWebSocketTask
                   protobuf-kotlin        SwiftProtobuf
 
-Level 2           libsignal-client       libsignal-swift
+Layer 2           libsignal-client       libsignal-swift
                   SQLDelight             GRDB
                   suspend fun            async/await
                   limitedParallelism(1)  actor
 
-Level 3           identical              identical
+Layer 3           identical              identical
                   (pure logic)           (pure logic)
 
 UI binding        StateFlow              @Observable

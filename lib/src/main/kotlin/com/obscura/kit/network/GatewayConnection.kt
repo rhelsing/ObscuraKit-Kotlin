@@ -30,6 +30,7 @@ class GatewayConnection(
 
     private var webSocket: WebSocket? = null
     private var reconnectJob: Job? = null
+    private var reconnectBackoffMs = 3000L
 
     private val _state = MutableStateFlow(GatewayState.DISCONNECTED)
     val state: StateFlow<GatewayState> = _state
@@ -94,6 +95,7 @@ class GatewayConnection(
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
                 _state.value = GatewayState.CONNECTED
+                reconnectBackoffMs = 3000L // Reset on successful connect
                 onConnected?.invoke()
             }
 
@@ -134,11 +136,12 @@ class GatewayConnection(
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
             _state.value = GatewayState.RECONNECTING
-            delay(3000) // Wait before reconnecting
+            delay(reconnectBackoffMs)
             try {
                 connect()
             } catch (e: Exception) {
-                // Will retry on next failure
+                reconnectBackoffMs = (reconnectBackoffMs * 2).coerceAtMost(60_000L)
+                scheduleReconnect()
             }
         }
     }

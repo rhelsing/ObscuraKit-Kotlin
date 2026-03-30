@@ -21,9 +21,16 @@ class SchemaDomain internal constructor(
         schema.define(definitions)
     }
 
-    suspend fun model(name: String): Model? = withContext(dispatcher) {
-        schema.model(name)
-    }
+    /**
+     * Get a model by name. Throws if not defined.
+     *   val post = client.orm.model("post")  // no !!, no suspend
+     */
+    fun model(name: String): Model = schema.model(name)
+
+    /**
+     * Get a model or null if not defined.
+     */
+    fun modelOrNull(name: String): Model? = schema.modelOrNull(name)
 
     suspend fun handleSync(modelSync: ModelSyncData, from: String): OrmEntry? = withContext(dispatcher) {
         syncManager.handleIncoming(modelSync, from)

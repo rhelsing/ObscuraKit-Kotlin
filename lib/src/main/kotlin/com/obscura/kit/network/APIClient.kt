@@ -297,19 +297,29 @@ class APIClient(private val baseUrl: String) {
         return executeString(request)
     }
 
-    private fun executeString(request: Request): String {
+    private fun executeString(request: Request, retries: Int = 2): String {
         val response = httpClient.newCall(request).execute()
         if (!response.isSuccessful) {
             val body = response.body?.string() ?: ""
+            if (response.code in listOf(429, 503) && retries > 0) {
+                val retryAfterMs = (response.header("Retry-After")?.toLongOrNull() ?: 2) * 1000
+                Thread.sleep(retryAfterMs.coerceAtMost(10_000))
+                return executeString(request, retries - 1)
+            }
             throw HttpException(response.code, body)
         }
         return response.body?.string() ?: ""
     }
 
-    private fun executeBytes(request: Request): ByteArray {
+    private fun executeBytes(request: Request, retries: Int = 2): ByteArray {
         val response = httpClient.newCall(request).execute()
         if (!response.isSuccessful) {
             val body = response.body?.string() ?: ""
+            if (response.code in listOf(429, 503) && retries > 0) {
+                val retryAfterMs = (response.header("Retry-After")?.toLongOrNull() ?: 2) * 1000
+                Thread.sleep(retryAfterMs.coerceAtMost(10_000))
+                return executeBytes(request, retries - 1)
+            }
             throw HttpException(response.code, body)
         }
         return response.body?.bytes() ?: ByteArray(0)

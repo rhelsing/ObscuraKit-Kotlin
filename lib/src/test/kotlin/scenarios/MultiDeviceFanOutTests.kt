@@ -41,10 +41,9 @@ class MultiDeviceFanOutTests {
                 assertNotNull(bob1!!.userId)
                 assertNotNull(bob1!!.deviceId)
 
-                // Bob device 2: provision via loginAndProvision + connect
-                bob2 = ObscuraClient(ObscuraConfig(API, deviceName = "Bob Laptop"))
-                bob2!!.loginAndProvision(name, TEST_PASSWORD, "Bob Laptop")
-                assertEquals(AuthState.AUTHENTICATED, bob2!!.authState.value)
+                // Bob device 2: provision + approve via link code
+                bob1!!.connect()
+                bob2 = provisionAndApprove(bob1!!, name, "Bob Laptop")
                 assertNotNull(bob2!!.deviceId)
                 assertNotEquals(bob1!!.deviceId, bob2!!.deviceId, "Devices should have different IDs")
 
@@ -58,8 +57,8 @@ class MultiDeviceFanOutTests {
                 // Alice befriends Bob (device 1) via becomeFriends()
                 becomeFriends(alice!!, bob1!!)
 
-                // Bob device 2 may receive the friend request too (fan-out) - drain it
-                try { bob2!!.waitForMessage() } catch (_: Exception) {}
+                // Bob device 2 may receive friend request/response/sync — drain all
+                try { while (true) { bob2!!.waitForMessage(2_000) } } catch (_: Exception) {}
             }
         }
     }
