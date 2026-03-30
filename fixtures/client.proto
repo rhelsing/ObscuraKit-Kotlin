@@ -100,7 +100,7 @@ message ClientMessage {
   // ORM Layer payload
   ModelSync model_sync = 50;
 
-  // ECS signal payload (ephemeral)
+  // ECS signal payload (ephemeral, uses JSON in text field for cross-platform interop)
   ModelSignal model_signal = 52;
 
   // Friend sync payload

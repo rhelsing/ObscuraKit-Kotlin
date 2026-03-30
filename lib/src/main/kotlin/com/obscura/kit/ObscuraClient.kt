@@ -270,7 +270,7 @@ class ObscuraClient(
             messenger.flushMessages()
         }
 
-        // Wire ECS signal sending — JSON in text field for cross-platform interop
+        // Wire ECS signal sending — JSON in text field (matches iOS wire format exactly)
         signalManager.sendSignal = { modelName, signalName, signalData ->
             val payload = org.json.JSONObject().apply {
                 put("model", modelName)
@@ -564,15 +564,15 @@ class ObscuraClient(
 
     private fun handleModelSignal(msg: ClientMessage, sourceUserId: String) {
         try {
-            // Try JSON in text field first (cross-platform wire format)
-            val json = if (msg.text.isNotBlank() && msg.text.startsWith("{")) {
-                org.json.JSONObject(msg.text)
-            } else null
-
             val modelName: String
             val signalName: String
             val authorDeviceId: String
             val data: Map<String, Any?>
+
+            // Try JSON in text field first (cross-platform wire format)
+            val json = if (msg.text.isNotBlank() && msg.text.startsWith("{")) {
+                org.json.JSONObject(msg.text)
+            } else null
 
             if (json != null && json.has("model") && json.has("signal")) {
                 modelName = json.getString("model")
