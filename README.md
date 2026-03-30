@@ -74,12 +74,11 @@ Tested with 210+ tests (unit + integration against live server):
 - **Relationships** — `hasMany`/`belongsTo` with `include()` eager loading
 - **Device linking** — `loginAndProvision()` → `PENDING_APPROVAL` → QR/code approval required
 - **ECS signals** — `model.typing(convId)` / `model.observeTyping(convId)` for ephemeral indicators
-- **Cross-platform** — same wire format as iOS. DirectMessage, Story, Profile, Settings models interoperate.
+- **Cross-platform** — iOS ↔ Android proven with shared ORM wire format. DirectMessage, Story, Profile, Settings models interoperate.
 - **Chat via ORM** — `client.send()` uses DirectMessage model (MODEL_SYNC type 30). Falls back to TEXT (type 0) if model not defined.
 
 ## What Doesn't Work Yet
 
-- Cross-platform interop not verified end-to-end against live server (wire format matches by design)
 - `observe()` on queries with `include()` — observation works, eager loading works, not together yet
 - Counter CRDT (only GSet and LWWMap)
 
@@ -112,3 +111,8 @@ export JAVA_HOME=/path/to/jdk-21
 - `org.jetbrains.kotlinx:kotlinx-coroutines-core` — async
 - `org.jetbrains.kotlinx:kotlinx-serialization-json` — typed models
 - `org.json:json` — JSON parsing
+
+## Server
+
+- **API:** https://obscura.barrelmaker.dev
+- **Spec:** https://obscura.barrelmaker.dev/openapi.yaml
