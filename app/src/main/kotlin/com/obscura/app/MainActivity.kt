@@ -26,6 +26,11 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.Serializable
 
+/** Canonical conversationId — same string from both sides. Must match iOS. */
+fun canonicalConversationId(userId1: String, userId2: String): String {
+    return listOf(userId1, userId2).sorted().joinToString("_")
+}
+
 // ─── Model definitions (same field names as iOS for interop) ──
 
 @Serializable
@@ -276,7 +281,7 @@ fun StoriesTab(client: ObscuraClient) {
     var storyText by remember { mutableStateOf("") }
 
     val storyModel = remember(client) {
-        TypedModel.wrap<Story>(client.orm.model("story"))
+        TypedModel(client.orm.model("story"), Story.serializer())
     }
     val stories by storyModel.observe().collectAsState(emptyList())
 
@@ -333,7 +338,7 @@ fun ProfileTab(client: ObscuraClient) {
     val scope = rememberCoroutineScope()
 
     val profileModel = remember(client) {
-        TypedModel.wrap<Profile>(client.orm.model("profile"))
+        TypedModel(client.orm.model("profile"), Profile.serializer())
     }
     val profiles by profileModel.observe().collectAsState(emptyList())
 
@@ -457,7 +462,14 @@ fun FriendsTab(client: ObscuraClient) {
 
         Spacer(Modifier.height(16.dp))
 
-        // Pending requests
+        // Outgoing pending
+        val sent = friends.filter { it.status == FriendStatus.PENDING_SENT }
+        sent.forEach { f ->
+            Text("${f.username} (pending)", color = MaterialTheme.colorScheme.outline,
+                modifier = Modifier.padding(vertical = 4.dp))
+        }
+
+        // Incoming requests
         pending.forEach { req ->
             Row(
                 Modifier.fillMaxWidth().padding(vertical = 4.dp),
@@ -497,7 +509,7 @@ fun ChatTab(client: ObscuraClient) {
 
     // Observe ALL direct messages reactively from the ORM
     val messages = remember(client) {
-        TypedModel.wrap<DirectMessage>(client.orm.model("directMessage"))
+        TypedModel(client.orm.model("directMessage"), DirectMessage.serializer())
     }
     val allMessages by messages.observe().collectAsState(emptyList())
 
@@ -510,9 +522,9 @@ fun ChatTab(client: ObscuraClient) {
                 Text("No friends yet. Add someone in the Friends tab.", style = MaterialTheme.typography.bodyMedium)
             }
             accepted.forEach { f ->
-                // Last message for this conversation from ORM
+                val convId = canonicalConversationId(client.userId ?: "", f.userId)
                 val lastMsg = allMessages
-                    .filter { it.value.conversationId == f.userId || it.value.senderUsername == f.username }
+                    .filter { it.value.conversationId == convId }
                     .maxByOrNull { it.timestamp }
 
                 Surface(
@@ -536,13 +548,11 @@ fun ChatTab(client: ObscuraClient) {
         } else {
             val friend = accepted.find { it.username == selectedFriend }
             val friendId = friend?.userId
+            val convId = if (friendId != null) canonicalConversationId(client.userId ?: "", friendId) else ""
 
             // Filter messages for this conversation from ORM
             val conversationMsgs = allMessages
-                .filter { msg ->
-                    msg.value.conversationId == friendId ||
-                    (msg.value.conversationId == client.userId && msg.value.senderUsername == friend?.username)
-                }
+                .filter { it.value.conversationId == convId }
                 .sortedBy { it.timestamp }
 
             TextButton(onClick = { selectedFriend = null }) { Text("Back") }
@@ -580,8 +590,9 @@ fun ChatTab(client: ObscuraClient) {
                         messageText = ""
                         scope.launch {
                             withContext(Dispatchers.IO) {
+                                val convId = canonicalConversationId(client.userId ?: "", friendId ?: "")
                                 messages.create(DirectMessage(
-                                    conversationId = friendId ?: "",
+                                    conversationId = convId,
                                     content = text,
                                     senderUsername = client.username ?: ""
                                 ))
@@ -601,7 +612,7 @@ fun SettingsTab(client: ObscuraClient, app: ObscuraApp) {
     val scope = rememberCoroutineScope()
 
     val settingsModel = remember(client) {
-        TypedModel.wrap<AppSettings>(client.orm.model("settings"))
+        TypedModel(client.orm.model("settings"), AppSettings.serializer())
     }
     val settingsEntries by settingsModel.observe().collectAsState(emptyList())
 
@@ -671,33 +682,5 @@ fun SettingsTab(client: ObscuraClient, app: ObscuraApp) {
 
 // ─── ORM Schema Definition ───────────────────────────────────
 
-/**
- * Define app models once after auth.
- * This is the app's "migration" — like Rails db:migrate.
- */
-private suspend fun defineModels(client: ObscuraClient) {
-    client.orm.define(mapOf(
-        // Chat — interoperable with iOS DirectMessage
-        "directMessage" to ModelConfig(
-            fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"),
-            sync = "gset"
-        ),
-        // Feed
-        "story" to ModelConfig(
-            fields = mapOf("content" to "string", "authorUsername" to "string", "mediaUrl" to "string?"),
-            sync = "gset",
-            ttl = "24h"
-        ),
-        // Profile — syncs to friends
-        "profile" to ModelConfig(
-            fields = mapOf("displayName" to "string", "bio" to "string?"),
-            sync = "lww"
-        ),
-        // Settings — private, never leaves your devices
-        "settings" to ModelConfig(
-            fields = mapOf("theme" to "string", "notificationsEnabled" to "boolean"),
-            sync = "lww",
-            private = true
-        )
-    ))
-}
+/** Define app models — delegates to ObscuraApp.defineModels() for single source of truth. */
+private suspend fun defineModels(client: ObscuraClient) = ObscuraApp.defineModels(client)

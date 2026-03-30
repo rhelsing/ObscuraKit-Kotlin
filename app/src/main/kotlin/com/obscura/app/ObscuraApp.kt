@@ -8,6 +8,8 @@ import app.cash.sqldelight.driver.android.AndroidSqliteDriver
 import com.obscura.kit.ObscuraClient
 import com.obscura.kit.ObscuraConfig
 import com.obscura.kit.db.ObscuraDatabase
+import com.obscura.kit.orm.ModelConfig
+import kotlinx.coroutines.runBlocking
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
 
 class ObscuraApp : Application() {
@@ -42,7 +44,33 @@ class ObscuraApp : Application() {
                     registrationId = securePrefs.getInt("registrationId", 0)
                 )
             }
+            runBlocking { defineModels(c) }
             client = c
+        }
+    }
+
+    companion object {
+        suspend fun defineModels(client: ObscuraClient) {
+            client.orm.define(mapOf(
+                "directMessage" to ModelConfig(
+                    fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"),
+                    sync = "gset"
+                ),
+                "story" to ModelConfig(
+                    fields = mapOf("content" to "string", "authorUsername" to "string", "mediaUrl" to "string?"),
+                    sync = "gset",
+                    ttl = "24h"
+                ),
+                "profile" to ModelConfig(
+                    fields = mapOf("displayName" to "string", "bio" to "string?"),
+                    sync = "lww"
+                ),
+                "settings" to ModelConfig(
+                    fields = mapOf("theme" to "string", "notificationsEnabled" to "boolean"),
+                    sync = "lww",
+                    private = true
+                )
+            ))
         }
     }
 

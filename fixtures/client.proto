@@ -94,10 +94,14 @@ message ClientMessage {
 
     // ORM Layer (30-39)
     MODEL_SYNC = 30;     // CRDT model operation (create/update/delete)
+    MODEL_SIGNAL = 31;   // Ephemeral signal (typing, read receipt) — not persisted
   }
 
   // ORM Layer payload
   ModelSync model_sync = 50;
+
+  // ECS signal payload (ephemeral)
+  ModelSignal model_signal = 52;
 
   // Friend sync payload
   FriendSync friend_sync = 51;

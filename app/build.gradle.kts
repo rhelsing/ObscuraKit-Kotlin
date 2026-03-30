@@ -1,6 +1,7 @@
 plugins {
     alias(libs.plugins.android.app)
     alias(libs.plugins.kotlin.android)
+    alias(libs.plugins.kotlin.serialization)
 }
 
 android {
@@ -61,6 +62,9 @@ dependencies {
 
     // Coroutines
     implementation(libs.coroutines.core)
+
+    // Serialization (typed ORM models)
+    implementation(libs.serialization.json)
 
     // Secure storage
     implementation("androidx.security:security-crypto:1.1.0-alpha06")

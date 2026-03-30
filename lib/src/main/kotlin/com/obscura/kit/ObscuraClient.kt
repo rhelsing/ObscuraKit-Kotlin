@@ -93,7 +93,7 @@ class ObscuraClient(
     private val messagesDomain: MessageDomain
     internal val devices: DeviceDomain
     internal val messenger: MessengerDomain
-    internal val orm: SchemaDomain
+    val orm: SchemaDomain
 
     private val modelStore: ModelStore
     private val syncManager: SyncManager
@@ -644,13 +644,14 @@ class ObscuraClient(
         if (directMessage != null) {
             val friendData = friends.getAccepted().find { it.username == friendUsername }
                 ?: throw IllegalStateException("Not friends with $friendUsername")
+            val convId = listOf(userId ?: "", friendData.userId).sorted().joinToString("_")
             // Create via ORM — auto-syncs to friend via MODEL_SYNC
             val entry = directMessage.create(mapOf(
-                "conversationId" to friendData.userId,
+                "conversationId" to convId,
                 "content" to text,
                 "senderUsername" to (username ?: "")
             ))
-            // Also persist locally to conversations
+            // Also persist locally to conversations (keyed by friend userId for StateFlow compat)
             messagesDomain.add(friendData.userId, MessageData(
                 id = entry.id, conversationId = friendData.userId,
                 authorDeviceId = deviceId ?: "self",

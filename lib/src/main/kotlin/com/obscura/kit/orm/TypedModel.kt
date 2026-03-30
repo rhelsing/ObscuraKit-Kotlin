@@ -97,6 +97,10 @@ class TypedModel<T : Any>(
     }
 
     companion object {
+        /**
+         * Wrap a model with type safety. Call from the same module as the data class,
+         * or pass the serializer explicitly: TypedModel(model, MyType.serializer())
+         */
         inline fun <reified T : Any> wrap(model: Model): TypedModel<T> {
             return TypedModel(model, serializer())
         }
