@@ -564,12 +564,24 @@ fun ChatTab(client: ObscuraClient) {
                 Text(selectedFriend!!, style = MaterialTheme.typography.titleLarge)
             }
 
-            // Messages — grows from top, scrolls down
+            // Messages — reverse layout: newest at bottom, auto-scrolls on new messages
             LazyColumn(
                 modifier = Modifier.weight(1f),
-                verticalArrangement = Arrangement.Bottom
+                reverseLayout = true
             ) {
-                items(conversationMsgs, key = { it.id }) { msg ->
+                // Typing bubble first (shows at bottom in reverse layout)
+                if (typers.isNotEmpty()) {
+                    item(key = "__typing__") {
+                        Row(
+                            Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
+                            horizontalArrangement = Arrangement.Start
+                        ) {
+                            TypingBubble()
+                        }
+                    }
+                }
+                // Messages in reverse order (newest first in the list = bottom of screen)
+                items(conversationMsgs.reversed(), key = { it.id }) { msg ->
                     val isMe = msg.value.senderUsername == client.username
                     Row(
                         Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
@@ -582,17 +594,6 @@ fun ChatTab(client: ObscuraClient) {
                                     else MaterialTheme.colorScheme.surfaceVariant
                         ) {
                             Text(msg.value.content, modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp))
-                        }
-                    }
-                }
-                // Typing bubble appears at the end (where next message would be)
-                if (typers.isNotEmpty()) {
-                    item(key = "__typing__") {
-                        Row(
-                            Modifier.fillMaxWidth().padding(horizontal = 4.dp, vertical = 2.dp),
-                            horizontalArrangement = Arrangement.Start
-                        ) {
-                            TypingBubble()
                         }
                     }
                 }
