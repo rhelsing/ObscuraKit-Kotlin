@@ -97,6 +97,22 @@ class APIClient(private val baseUrl: String) {
     }
 
     /**
+     * Register or update the FCM/APNS push token for this device.
+     * Requires device-scoped JWT. Idempotent (server upserts by deviceId).
+     * Server accepts both FCM and APNS tokens — no platform field needed.
+     */
+    suspend fun registerPushToken(token: String) {
+        val body = JSONObject().apply { put("token", token) }
+        val httpRequest = Request.Builder()
+            .url("$baseUrl/v1/push-tokens")
+            .put(body.toString().toRequestBody(JSON_MEDIA))
+            .addHeader("Content-Type", "application/json")
+            .addHeader("Authorization", "Bearer ${this.token ?: throw IllegalStateException("No token")}")
+            .build()
+        executeString(httpRequest) // ignore empty response body
+    }
+
+    /**
      * Upload PreKeys for the authenticated device.
      */
     suspend fun uploadDeviceKeys(request: UploadDeviceKeysRequest) {

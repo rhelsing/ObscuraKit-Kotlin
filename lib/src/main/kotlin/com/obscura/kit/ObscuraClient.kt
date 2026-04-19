@@ -48,6 +48,19 @@ enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED }
 enum class AuthState { LOGGED_OUT, PENDING_APPROVAL, AUTHENTICATED }
 
 /**
+ * Result of [ObscuraClient.processPendingMessages] — counts of envelopes drained, by ORM model.
+ *
+ * The bridge uses these to pick generic notification text ("New pix" / "New message").
+ * [otherCount] is debug-only; the bridge ignores it. Shape matches Swift's ProcessedCounts
+ * so both platforms implement identical notification logic.
+ */
+data class ProcessedCounts(
+    val pixCount: Int = 0,
+    val messageCount: Int = 0,
+    val otherCount: Int = 0
+)
+
+/**
  * Create with default JVM in-memory driver (for tests).
  * For Android production, pass an encrypted AndroidSqliteDriver:
  *
@@ -611,6 +624,77 @@ class ObscuraClient(
         eventForwardingJob?.cancel()
         gateway.disconnect()
         _connectionState.value = ConnectionState.DISCONNECTED
+    }
+
+    // ─── Push Notifications ─────────────────────────────────
+
+    /**
+     * Register FCM/APNS push token with server. Requires device-scoped JWT.
+     * Safe to call multiple times — server upserts by deviceId.
+     */
+    suspend fun registerPushToken(token: String) {
+        api.registerPushToken(token)
+    }
+
+    /**
+     * Drain queued envelopes after a silent push wake. Connects if needed, waits up to
+     * [timeoutMs] ms (returning early when the queue stays empty for 500ms), categorizes
+     * by ORM model, and returns counts. Does NOT disconnect afterwards — the OS will
+     * freeze the app when done.
+     *
+     * The bridge layer uses the returned counts to post a generic local notification
+     * ("New pix" / "New message"). Kit must NEVER post OS notifications itself.
+     *
+     * Categorization (per the locked cross-platform contract):
+     *   MODEL_SYNC with sync.model == "pix"           → pixCount
+     *   MODEL_SYNC with sync.model == "directMessage" → messageCount
+     *   Legacy TEXT / IMAGE ClientMessage              → messageCount
+     *   Everything else                                → otherCount (debug only)
+     */
+    suspend fun processPendingMessages(timeoutMs: Long): ProcessedCounts {
+        if (_connectionState.value != ConnectionState.CONNECTED) {
+            try { connect() } catch (_: Exception) { return ProcessedCounts() }
+        }
+
+        var pix = 0
+        var message = 0
+        var other = 0
+        val deadline = System.currentTimeMillis() + timeoutMs
+        val idleThresholdMs = 500L
+        var lastEnvelopeAt = System.currentTimeMillis()
+
+        while (System.currentTimeMillis() < deadline) {
+            val received = incomingMessages.tryReceive().getOrNull()
+            if (received != null) {
+                classifyForPushCounts(received).let { (p, m, o) ->
+                    pix += p; message += m; other += o
+                }
+                lastEnvelopeAt = System.currentTimeMillis()
+            } else if (System.currentTimeMillis() - lastEnvelopeAt > idleThresholdMs) {
+                break
+            } else {
+                delay(50)
+            }
+        }
+
+        return ProcessedCounts(pixCount = pix, messageCount = message, otherCount = other)
+    }
+
+    /** Classify a single envelope into (pix, message, other) buckets. */
+    private fun classifyForPushCounts(msg: ReceivedMessage): Triple<Int, Int, Int> {
+        // MODEL_SYNC carries the ORM model name — the authoritative categorization.
+        if (msg.type == "MODEL_SYNC" && msg.raw != null) {
+            val modelName = msg.raw.modelSync.model
+            when (modelName) {
+                "pix" -> return Triple(1, 0, 0)
+                "directMessage" -> return Triple(0, 1, 0)
+            }
+        }
+        // Legacy TEXT / IMAGE counts as message (unused by current app, but contract mandates)
+        if (msg.type == "TEXT" || msg.type == "IMAGE") {
+            return Triple(0, 1, 0)
+        }
+        return Triple(0, 0, 1)
     }
 
     private fun startPreKeyStatusListener() {
