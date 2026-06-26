@@ -60,12 +60,13 @@ class SignalStoreTests {
     }
 
     @Test
-    fun `saveIdentity TOFU — first save returns false (not replaced)`() {
+    fun `saveIdentity TOFU — first save returns NEW_OR_UNCHANGED (not replaced)`() {
         store.generateIdentity()
         val remoteKey = IdentityKeyPair.generate()
         val address = SignalProtocolAddress("alice-user-id", 1)
-        val replaced = store.saveIdentity(address, remoteKey.publicKey)
-        assertFalse(replaced, "First identity save should return false (TOFU, not a replacement)")
+        val change = store.saveIdentity(address, remoteKey.publicKey)
+        assertEquals(IdentityKeyStore.IdentityChange.NEW_OR_UNCHANGED, change,
+            "First identity save should return NEW_OR_UNCHANGED (TOFU, not a replacement)")
     }
 
     @Test
