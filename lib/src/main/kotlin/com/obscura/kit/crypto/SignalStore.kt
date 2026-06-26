@@ -60,15 +60,15 @@ class SignalStore(
         return localRegistrationId
     }
 
-    override fun saveIdentity(address: SignalProtocolAddress, identityKey: IdentityKey): Boolean {
+    override fun saveIdentity(address: SignalProtocolAddress, identityKey: IdentityKey): IdentityKeyStore.IdentityChange {
         val addressStr = "${address.name}.${address.deviceId}"
         val existing = db.signalKeyQueries.selectIdentityByAddress(addressStr).executeAsOneOrNull()
         db.signalKeyQueries.insertIdentity(addressStr, identityKey.serialize())
-        val replaced = existing != null
-        if (replaced && !java.security.MessageDigest.isEqual(existing, identityKey.serialize())) {
-            onIdentityChanged?.invoke(addressStr, existing, identityKey.serialize())
+        val replaced = existing != null && !java.security.MessageDigest.isEqual(existing, identityKey.serialize())
+        if (replaced) {
+            onIdentityChanged?.invoke(addressStr, existing!!, identityKey.serialize())
         }
-        return replaced
+        return if (replaced) IdentityKeyStore.IdentityChange.REPLACED_EXISTING else IdentityKeyStore.IdentityChange.NEW_OR_UNCHANGED
     }
 
     override fun isTrustedIdentity(
