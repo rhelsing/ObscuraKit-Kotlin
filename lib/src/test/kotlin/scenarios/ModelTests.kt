@@ -36,7 +36,7 @@ class ModelTests {
     }
 
     private fun defineSchema(vararg models: Pair<String, ModelConfig>): Schema {
-        val schema = Schema(store, syncManager, ttlManager, "test-device")
+        val schema = Schema(store, syncManager, ttlManager, { "test-device" })
         schema.define(models.toMap())
         return schema
     }

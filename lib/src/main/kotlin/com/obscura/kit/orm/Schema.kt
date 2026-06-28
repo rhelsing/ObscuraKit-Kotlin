@@ -10,7 +10,12 @@ class Schema(
     private val store: ModelStore,
     private val syncManager: SyncManager,
     private val ttlManager: TTLManager,
-    private val deviceId: String = "",
+    /**
+     * Lazy provider for the local device id. Read on every entry create
+     * so models defined before login still stamp entries correctly once
+     * the device id becomes known.
+     */
+    private val deviceIdProvider: () -> String = { "" },
     private val signalManager: SignalManager? = null,
     var username: String = ""
 ) {
@@ -23,7 +28,7 @@ class Schema(
                     name = name, config = config,
                     lwwMap = LWWMap(store, name),
                     syncManager = syncManager, ttlManager = ttlManager,
-                    deviceId = deviceId, store = store,
+                    deviceIdProvider = deviceIdProvider, store = store,
                     signalManager = signalManager
                 )
             } else {
@@ -31,7 +36,7 @@ class Schema(
                     name = name, config = config,
                     gset = GSet(store, name),
                     syncManager = syncManager, ttlManager = ttlManager,
-                    deviceId = deviceId, store = store,
+                    deviceIdProvider = deviceIdProvider, store = store,
                     signalManager = signalManager
                 )
             }

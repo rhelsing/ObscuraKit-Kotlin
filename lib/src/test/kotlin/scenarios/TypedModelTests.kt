@@ -44,7 +44,7 @@ class TypedModelTests {
         val store = ModelStore(db)
         val syncManager = SyncManager(store)
         val ttlManager = TTLManager(store)
-        schema = Schema(store, syncManager, ttlManager, "test-device")
+        schema = Schema(store, syncManager, ttlManager, { "test-device" })
 
         schema.define(mapOf(
             "story" to ModelConfig(fields = mapOf("content" to "string", "authorUsername" to "string", "mediaUrl" to "string?"), sync = "gset", ttl = "24h"),

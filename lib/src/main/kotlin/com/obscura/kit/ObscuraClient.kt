@@ -218,7 +218,14 @@ class ObscuraClient(
         signalManager = SignalManager()
         gateway = GatewayConnection(api, scope)
 
-        orm = SchemaDomain(modelStore, syncManager, ttlManager, signalManager = signalManager)
+        orm = SchemaDomain(
+            modelStore, syncManager, ttlManager,
+            // Read the deviceId fresh on each entry create — it's null at
+            // construction time and only becomes available after register /
+            // loginAndProvision / restoreSession.
+            deviceIdProvider = { session.deviceId ?: "" },
+            signalManager = signalManager,
+        )
 
         // Create ClientContext — shared dependencies for all managers
         val ctx = ClientContext(

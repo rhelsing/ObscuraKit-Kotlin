@@ -29,7 +29,7 @@ class QueryBuilderTests {
         val store = ModelStore(db)
         val syncManager = SyncManager(store)
         val ttlManager = TTLManager(store)
-        schema = Schema(store, syncManager, ttlManager, "test-device")
+        schema = Schema(store, syncManager, ttlManager, { "test-device" })
 
         schema.define(mapOf(
             "post" to ModelConfig(
