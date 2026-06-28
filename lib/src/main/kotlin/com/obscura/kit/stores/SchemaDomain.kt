@@ -12,11 +12,15 @@ class SchemaDomain internal constructor(
     private val store: ModelStore,
     private val syncManager: SyncManager,
     private val ttlManager: TTLManager,
-    private val deviceId: String = "",
+    /**
+     * Lazy provider for the local device id. Read on every entry
+     * create — see Schema/Model docs for why this isn't a constant.
+     */
+    private val deviceIdProvider: () -> String = { "" },
     private val signalManager: SignalManager? = null
 ) {
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default.limitedParallelism(1)
-    private val schema = Schema(store, syncManager, ttlManager, deviceId, signalManager)
+    private val schema = Schema(store, syncManager, ttlManager, deviceIdProvider, signalManager)
 
     /** Set the local username — used for signal senderUsername. */
     fun setUsername(username: String) { schema.username = username }

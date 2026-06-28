@@ -21,7 +21,12 @@ class Model(
     private val lwwMap: LWWMap? = null,
     internal val syncManager: SyncManager? = null,
     private val ttlManager: TTLManager? = null,
-    private val deviceId: String = "",
+    /**
+     * Resolves the local device id at create/upsert time. A lambda (not a
+     * constant) so models constructed before login still produce entries
+     * stamped with the correct deviceId once it becomes available.
+     */
+    private val deviceIdProvider: () -> String = { "" },
     internal val store: ModelStore? = null,
     internal var signalManager: SignalManager? = null
 ) {
@@ -34,7 +39,7 @@ class Model(
             id = id,
             data = data,
             timestamp = System.currentTimeMillis(),
-            authorDeviceId = deviceId,
+            authorDeviceId = deviceIdProvider(),
             signature = sign(name, id, data)
         )
 
@@ -70,7 +75,7 @@ class Model(
             id = id,
             data = data,
             timestamp = System.currentTimeMillis(),
-            authorDeviceId = deviceId,
+            authorDeviceId = deviceIdProvider(),
             signature = sign(name, id, data)
         )
 
@@ -143,7 +148,7 @@ class Model(
 
     suspend fun delete(id: String) {
         if (config.sync != "lww") throw IllegalStateException("Delete only supported for LWW models")
-        lwwMap?.delete(id, deviceId)
+        lwwMap?.delete(id, deviceIdProvider())
     }
 
     // ─── ECS Signals (ephemeral, not persisted) ─────────────────
@@ -156,17 +161,17 @@ class Model(
      * Auto-throttled: sends at most once per 2 seconds.
      */
     suspend fun typing(conversationId: String) {
-        signalManager?.emit(name, "typing", mapOf("conversationId" to conversationId, "senderUsername" to localUsername), deviceId)
+        signalManager?.emit(name, "typing", mapOf("conversationId" to conversationId, "senderUsername" to localUsername), deviceIdProvider())
     }
 
     /** Explicitly stop typing. */
     suspend fun stopTyping(conversationId: String) {
-        signalManager?.emit(name, "stoppedTyping", mapOf("conversationId" to conversationId, "senderUsername" to localUsername), deviceId)
+        signalManager?.emit(name, "stoppedTyping", mapOf("conversationId" to conversationId, "senderUsername" to localUsername), deviceIdProvider())
     }
 
     /** Send a read receipt. */
     suspend fun read(conversationId: String) {
-        signalManager?.emit(name, "read", mapOf("conversationId" to conversationId, "senderUsername" to localUsername), deviceId)
+        signalManager?.emit(name, "read", mapOf("conversationId" to conversationId, "senderUsername" to localUsername), deviceIdProvider())
     }
 
     /**
