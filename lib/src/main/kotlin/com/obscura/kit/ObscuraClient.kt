@@ -323,11 +323,13 @@ class ObscuraClient(
             } else emptyList()
         }
         syncManager.getDevicesForUserId = { userId ->
-            // Only resolve for self or accepted friends — never send a scoped 1:1 payload to
-            // an arbitrary userId (e.g. a tampered conversationId).
-            val isSelf = userId == session.userId
+            // Resolve ONLY accepted friends. A 1:1 conversationId ("selfId_friendId") contains
+            // the sender's own id too, but self-sync is handled separately by getSelfSyncTargets
+            // (which excludes the current device). Resolving self here would target the sender's
+            // OWN current device and echo the message back into the sender's own inbox. Excluding
+            // self also blocks sending a scoped payload to an arbitrary (e.g. tampered) userId.
             val isFriend = friends.getAccepted().any { it.userId == userId }
-            if (isSelf || isFriend) {
+            if (isFriend) {
                 var deviceIds = messenger.getDeviceIdsForUser(userId)
                 if (deviceIds.isEmpty()) {
                     try { messenger.fetchPreKeyBundles(userId) } catch (_: Exception) {}
