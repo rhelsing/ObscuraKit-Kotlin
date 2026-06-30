@@ -73,7 +73,8 @@ class ObscuraApp : Application() {
             client.orm.define(mapOf(
                 "directMessage" to ModelConfig(
                     fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"),
-                    sync = "gset"
+                    sync = "gset",
+                    direct = true   // 1:1 — must resolve a recipient or fail loud, never broadcast
                 ),
                 "story" to ModelConfig(
                     fields = mapOf("content" to "string", "authorUsername" to "string", "mediaUrl" to "string?"),
