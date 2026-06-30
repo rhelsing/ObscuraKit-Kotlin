@@ -181,9 +181,11 @@ kover {
                 // Generated code — protobuf + sqldelight produce thousands
                 // of LOC we neither own nor need to cover.
                 classes(
-                    "com.obscura.kit.db.*",  // sqldelight-generated
-                    "obscura.*",             // protobuf-generated
-                    "client.*"               // protobuf-generated
+                    "com.obscura.kit.db.*",                  // sqldelight-generated
+                    "obscura.*",                             // protobuf-generated (obscura.v2.*)
+                    "client.*",                              // protobuf-generated
+                    "xyz.obscura.server.contracts.*",        // protobuf-generated (server contract types)
+                    "scenarios.*"                            // integration test classes
                 )
             }
         }
