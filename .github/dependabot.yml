@@ -1,0 +1,58 @@
+version: 2
+updates:
+
+  # ─── Gradle (lib + app share the same version catalog) ───
+  # The lib is the foundation that pix's Android build resolves against
+  # via mavenLocal, so bumps here are gated by both this repo's CI and
+  # pix's CI (which clones+publishes-local before building its release
+  # APK). That's the correct couple — if a kit bump breaks pix, we
+  # learn about it on the kit PR.
+  - package-ecosystem: "gradle"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 5
+    groups:
+      kotlinx:
+        patterns:
+          - "org.jetbrains.kotlinx:*"
+      sqldelight:
+        patterns:
+          - "app.cash.sqldelight:*"
+      protobuf:
+        patterns:
+          - "com.google.protobuf:*"
+      androidx:
+        patterns:
+          - "androidx.*"
+      compose:
+        patterns:
+          - "androidx.compose:*"
+          - "androidx.compose.*"
+    ignore:
+      # libsignal is internal-Signal-Rust; APIs change without notice.
+      # Bumps must be done by hand against the published binding jars
+      # and tested end-to-end (verified painful with 0.72 — touched
+      # auth surface). Block dependabot.
+      - dependency-name: "org.signal:libsignal-client"
+      - dependency-name: "org.signal:libsignal-android"
+      # AGP majors are coordinated with kotlin+gradle wrapper; do those
+      # by hand. Patches still useful.
+      - dependency-name: "com.android.tools.build:gradle"
+        update-types: ["version-update:semver-major"]
+      # Kotlin majors touch every consumer (pix, app). By hand.
+      - dependency-name: "org.jetbrains.kotlin:*"
+        update-types: ["version-update:semver-major"]
+      # SQLDelight 2->3 will be a migration; gate manually when it
+      # ships. Patches/minors are fine.
+      - dependency-name: "app.cash.sqldelight:*"
+        update-types: ["version-update:semver-major"]
+
+  # ─── GitHub Actions ─────────────────────────────────────
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 3
