@@ -10,8 +10,11 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  lib:
-    name: Lib (test + publish)
+  # Fast PR gate. No network, no live server. <30s.
+  # Compiles main + runs the pure-logic unit suite + smoke-publishes to
+  # mavenLocal so we know pix's resolution path still works.
+  lib-unit:
+    name: Lib (unit tests + publish)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -23,27 +26,23 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v6
 
-      # Pure JVM module — JUnit 5 scenario suite (CRDT, DeviceRevocation,
-      # SessionReconnect, RecoveryMessaging, etc.). This is the gate that
-      # would have caught the deviceId=""  bug at the source instead of
-      # downstream in pix.
-      - name: Test lib
+      - name: Unit tests
         run: ./gradlew :lib:test --no-daemon
 
-      # Smoke-publish to mavenLocal so we know pix's resolution path
-      # (mavenLocal -> com.obscura:obscura-kit:0.1.0) still works after
-      # build-script changes.
       - name: Publish lib to local Maven (smoke)
         run: ./gradlew :lib:publishToMavenLocal --no-daemon
 
-      - name: Upload test report on failure
+      - name: Upload unit-test report on failure
         if: failure()
         uses: actions/upload-artifact@v7
         with:
-          name: lib-test-report
+          name: lib-unit-test-report
           path: lib/build/reports/tests/test/
           retention-days: 7
 
+  # Catches Compose/AGP/Kotlin compiler regressions the :lib JVM build can't
+  # see (different toolchain, different targets). Debug only — release would
+  # need a keystore.
   app:
     name: App (Android assemble)
     runs-on: ubuntu-latest
@@ -57,9 +56,35 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v6
 
-      # The demo/dev app inside this repo. Building it catches Compose /
-      # AGP / Kotlin compiler regressions that the :lib JVM tests can't
-      # see (different target, different toolchain). Debug only — release
-      # would need a signing keystore.
       - name: Assemble debug APK
         run: ./gradlew :app:assembleDebug --no-daemon
+
+  # Server-dependent scenario suite (256 tests, ~5 min) against the live
+  # Obscura server. Runs on main pushes only — PR feedback stays fast.
+  # The tests use JUnit Assumptions.assumeTrue(checkServer()) so a server
+  # outage shows as "skipped" rather than red. Worth eyeballing the report
+  # after each main run until we move to a containerized test server.
+  lib-integration:
+    name: Lib (integration tests, live server)
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-java@v5
+        with:
+          distribution: 'temurin'
+          java-version: '21'
+
+      - uses: gradle/actions/setup-gradle@v6
+
+      - name: Integration tests
+        run: ./gradlew :lib:integrationTest --no-daemon
+
+      - name: Upload integration-test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: lib-integration-test-report
+          path: lib/build/reports/tests/integrationTest/
+          retention-days: 14
