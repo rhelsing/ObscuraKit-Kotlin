@@ -322,6 +322,20 @@ class ObscuraClient(
                 deviceIds
             } else emptyList()
         }
+        syncManager.getDevicesForUserId = { userId ->
+            // Only resolve for self or accepted friends — never send a scoped 1:1 payload to
+            // an arbitrary userId (e.g. a tampered conversationId).
+            val isSelf = userId == session.userId
+            val isFriend = friends.getAccepted().any { it.userId == userId }
+            if (isSelf || isFriend) {
+                var deviceIds = messenger.getDeviceIdsForUser(userId)
+                if (deviceIds.isEmpty()) {
+                    try { messenger.fetchPreKeyBundles(userId) } catch (_: Exception) {}
+                    deviceIds = messenger.getDeviceIdsForUser(userId)
+                }
+                deviceIds
+            } else emptyList()
+        }
         syncManager.flushQueue = {
             authManager.ensureFreshToken()
             messenger.flushMessages()
