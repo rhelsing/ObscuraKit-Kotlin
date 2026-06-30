@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <application>
+        <!-- DEBUG ONLY: lets `adb shell am broadcast` simulate a push wake. -->
+        <receiver
+            android:name=".TestPushReceiver"
+            android:exported="true">
+            <intent-filter>
+                <action android:name="com.obscura.app.TEST_PUSH" />
+            </intent-filter>
+        </receiver>
+    </application>
+
+</manifest>

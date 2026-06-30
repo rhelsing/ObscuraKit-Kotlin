@@ -315,6 +315,20 @@ class ObscuraClient(
                 deviceIds
             } else emptyList()
         }
+        syncManager.getDevicesForUserId = { userId ->
+            // Only resolve for self or accepted friends — never send a scoped 1:1 payload to
+            // an arbitrary userId (e.g. a tampered conversationId).
+            val isSelf = userId == session.userId
+            val isFriend = friends.getAccepted().any { it.userId == userId }
+            if (isSelf || isFriend) {
+                var deviceIds = messenger.getDeviceIdsForUser(userId)
+                if (deviceIds.isEmpty()) {
+                    try { messenger.fetchPreKeyBundles(userId) } catch (_: Exception) {}
+                    deviceIds = messenger.getDeviceIdsForUser(userId)
+                }
+                deviceIds
+            } else emptyList()
+        }
         syncManager.flushQueue = {
             authManager.ensureFreshToken()
             messenger.flushMessages()
@@ -652,13 +666,19 @@ class ObscuraClient(
      *   Everything else                                → otherCount (debug only)
      */
     suspend fun processPendingMessages(timeoutMs: Long): ProcessedCounts {
-        if (_connectionState.value != ConnectionState.CONNECTED) {
-            try { connect() } catch (_: Exception) { return ProcessedCounts() }
+        val wasConnected = _connectionState.value == ConnectionState.CONNECTED
+        logger.log("processPendingMessages: start (connected=$wasConnected, timeout=${timeoutMs}ms)")
+        if (!wasConnected) {
+            try { connect() } catch (e: Exception) {
+                logger.log("processPendingMessages: connect failed: ${e.message} — returning empty")
+                return ProcessedCounts()
+            }
         }
 
         var pix = 0
         var message = 0
         var other = 0
+        var total = 0
         val deadline = System.currentTimeMillis() + timeoutMs
         val idleThresholdMs = 500L
         var lastEnvelopeAt = System.currentTimeMillis()
@@ -669,6 +689,8 @@ class ObscuraClient(
                 classifyForPushCounts(received).let { (p, m, o) ->
                     pix += p; message += m; other += o
                 }
+                total++
+                logger.log("processPendingMessages: drained #$total type=${received.type} → pix=$pix msg=$message other=$other")
                 lastEnvelopeAt = System.currentTimeMillis()
             } else if (System.currentTimeMillis() - lastEnvelopeAt > idleThresholdMs) {
                 break
@@ -677,6 +699,7 @@ class ObscuraClient(
             }
         }
 
+        logger.log("processPendingMessages: done (pix=$pix msg=$message other=$other, connection left open)")
         return ProcessedCounts(pixCount = pix, messageCount = message, otherCount = other)
     }
 

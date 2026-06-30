@@ -1,0 +1,29 @@
+{
+  "project_info": {
+    "project_number": "245820007515",
+    "project_id": "obscura-af88b",
+    "storage_bucket": "obscura-af88b.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:245820007515:android:a0b9ed01de483a54f10b7e",
+        "android_client_info": {
+          "package_name": "com.obscuraapp.android"
+        }
+      },
+      "oauth_client": [],
+      "api_key": [
+        {
+          "current_key": "AIzaSyAOJQTsFaLIpOS4n9m-ldQmpEuouSypmAA"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": []
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

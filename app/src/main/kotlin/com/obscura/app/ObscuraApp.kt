@@ -2,12 +2,15 @@ package com.obscura.app
 
 import android.app.Application
 import android.content.SharedPreferences
+import android.util.Log
 import androidx.lifecycle.DefaultLifecycleObserver
 import androidx.lifecycle.LifecycleOwner
 import androidx.lifecycle.ProcessLifecycleOwner
 import androidx.security.crypto.EncryptedSharedPreferences
 import androidx.security.crypto.MasterKeys
 import app.cash.sqldelight.driver.android.AndroidSqliteDriver
+import com.google.firebase.messaging.FirebaseMessaging
+import com.obscura.kit.AuthState
 import com.obscura.kit.ConnectionState
 import com.obscura.kit.ObscuraClient
 import com.obscura.kit.ObscuraConfig
@@ -16,6 +19,7 @@ import com.obscura.kit.orm.ModelConfig
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import net.zetetic.database.sqlcipher.SupportOpenHelperFactory
@@ -102,7 +106,39 @@ class ObscuraApp : Application() {
             name = "obscura_$username.db",
             factory = factory
         )
-        return ObscuraClient(ObscuraConfig(apiUrl = "https://obscura.barrelmaker.dev"), externalDriver = driver)
+        val client = ObscuraClient(ObscuraConfig(apiUrl = "https://obscura.barrelmaker.dev"), externalDriver = driver)
+        client.logger = LogcatLogger
+        registerPushTokenOnAuth(client)
+        return client
+    }
+
+    /**
+     * Once this client authenticates (via any path — register/login/restore/link approval),
+     * fetch the current FCM token and register it with the server. registerPushToken requires
+     * a device-scoped JWT, so it must run post-auth. Idempotent server-side, so re-running is safe.
+     */
+    private fun registerPushTokenOnAuth(client: ObscuraClient) {
+        appScope.launch {
+            client.authState.first { it == AuthState.AUTHENTICATED }
+            FirebaseMessaging.getInstance().token.addOnCompleteListener { task ->
+                if (!task.isSuccessful) {
+                    Log.e("ObscuraApp", "FCM getToken failed: ${task.exception?.message}")
+                    return@addOnCompleteListener
+                }
+                val token = task.result
+                securePrefs.edit().putString("fcmToken", token).apply()
+                // Debug-only: print the full token so it can be read off logcat for testing.
+                if (BuildConfig.DEBUG) Log.i("ObscuraApp", "FULL_FCM_TOKEN=$token")
+                appScope.launch {
+                    try {
+                        client.registerPushToken(token)
+                        Log.d("ObscuraApp", "push token registered: ${token.take(12)}…")
+                    } catch (e: Exception) {
+                        Log.e("ObscuraApp", "registerPushToken failed: ${e.message}")
+                    }
+                }
+            }
+        }
     }
 
     fun saveSession() {

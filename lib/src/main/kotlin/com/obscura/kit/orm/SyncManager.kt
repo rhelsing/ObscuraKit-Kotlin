@@ -7,7 +7,8 @@ package com.obscura.kit.orm
  * 1. Always self-sync to own devices
  * 2. If model.config.isPrivate → ONLY own devices (settings, drafts)
  * 3. If model has belongs_to a targeting model (group) → group members only
- * 4. Default → all friend devices
+ * 4. If the entry declares a 1:1 / direct recipient (directMessage, pix) → those participants only
+ * 5. Default → all friend devices
  *
  * The developer never calls this directly. model.create() triggers broadcast
  * automatically based on the model's config.
@@ -21,6 +22,7 @@ class SyncManager(
     var getSelfSyncTargets: suspend () -> List<String> = { emptyList() }
     var getFriendTargets: suspend () -> List<String> = { emptyList() }
     var getDevicesForUsername: suspend (username: String) -> List<String> = { emptyList() }
+    var getDevicesForUserId: suspend (userId: String) -> List<String> = { emptyList() }
     var queueModelSync: suspend (targetDeviceId: String, modelSync: ModelSyncData) -> Unit = { _, _ -> }
     var flushQueue: suspend () -> Unit = { }
 
@@ -80,10 +82,45 @@ class SyncManager(
             }
         }
 
-        // 4. Default: broadcast to all friends
+        // 4. Scoped 1:1 / direct-recipient delivery (before the all-friends broadcast).
+        // directMessage and pix carry their intended audience in their own data. Without this
+        // rule they fall through to "all friends" and leak to every mutual friend — a
+        // confidentiality breach for what are meant to be private 1:1 payloads.
+        val scoped = resolveScopedRecipients(entry)
+        if (scoped != null) {
+            targets.addAll(scoped)
+            return targets.toList()
+        }
+
+        // 5. Default: broadcast to all friends
         targets.addAll(getFriendTargets())
 
         return targets.toList()
+    }
+
+    /**
+     * Device IDs for an entry whose audience is a single recipient or a 1:1 conversation,
+     * or null if the entry declares no such scoping (→ caller broadcasts to all friends).
+     *
+     *  - data.recipientUsername present (e.g. pix) → that user's devices
+     *  - data.conversationId of the canonical 1:1 form "userIdA_userIdB" → both participants
+     *
+     * The sender's own devices are always added separately (step 1 of getTargets), so a
+     * conversationId that contains the sender's own id is fine (it dedupes).
+     */
+    private suspend fun resolveScopedRecipients(entry: OrmEntry): List<String>? {
+        (entry.data["recipientUsername"] as? String)?.takeIf { it.isNotBlank() }?.let { username ->
+            return getDevicesForUsername(username)
+        }
+        (entry.data["conversationId"] as? String)?.let { convId ->
+            val participantIds = convId.split("_").filter { it.isNotBlank() }
+            // Only canonical 1:1 conversations are scoped here. Anything else (a group id,
+            // an unexpected format) falls through to the all-friends default unchanged.
+            if (participantIds.size == 2) {
+                return participantIds.flatMap { getDevicesForUserId(it) }
+            }
+        }
+        return null
     }
 
     private suspend fun resolveGroupMembers(parentModelName: String, parentId: String): List<String> {
