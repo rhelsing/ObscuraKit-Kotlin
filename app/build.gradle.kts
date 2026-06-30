@@ -3,6 +3,7 @@ plugins {
     alias(libs.plugins.kotlin.android)
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.compose.compiler)
+    alias(libs.plugins.google.services)
 }
 
 android {
@@ -10,15 +11,24 @@ android {
     compileSdk = 35
 
     defaultConfig {
-        applicationId = "com.obscura.app"
+        // Matches the Android app registered in Firebase project obscura-af88b
+        // (google-services.json). namespace stays com.obscura.app — the two are independent.
+        applicationId = "com.obscuraapp.android"
         minSdk = 26
         targetSdk = 35
         versionCode = 1
         versionName = "0.1.0"
+
+        // Opt-in slim build for sharing: ./gradlew :app:assembleDebug -PslimAbi
+        // Packages only arm64-v8a (every modern phone) instead of all 4 ABIs.
+        if (project.hasProperty("slimAbi")) {
+            ndk { abiFilters += "arm64-v8a" }
+        }
     }
 
     buildFeatures {
         compose = true
+        buildConfig = true
     }
 
     composeOptions {
@@ -60,6 +70,10 @@ dependencies {
     implementation(libs.compose.ui)
     implementation(libs.compose.foundation)
     implementation(libs.activity.compose)
+
+    // Firebase Cloud Messaging — push wake-ups (token → client.registerPushToken)
+    implementation(platform(libs.firebase.bom))
+    implementation(libs.firebase.messaging)
 
     // Coroutines
     implementation(libs.coroutines.core)
