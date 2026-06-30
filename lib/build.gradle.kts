@@ -29,6 +29,53 @@ kotlin {
     jvmToolchain(21)
 }
 
+// ──────────────────────────────────────────────────────────────────────
+// Test source-set split
+//
+// :lib:test            — pure unit tests. No network. <10s. Runs on every PR.
+// :lib:integrationTest — server-dependent scenario suite (256 tests against a
+//                        live Obscura server). 4-5 min. Runs on main + nightly.
+//
+// The integration suite is gated on a reachable server via assumeTrue() inside
+// the tests themselves, so it skips-not-fails when the server is down. That's
+// fine for nightly, but it means "green CI" must NOT depend on these — hence
+// the split.
+// ──────────────────────────────────────────────────────────────────────
+sourceSets {
+    create("integrationTest") {
+        kotlin.srcDir("src/integrationTest/kotlin")
+        resources.srcDir("src/integrationTest/resources")
+        compileClasspath += sourceSets["main"].output
+        runtimeClasspath += sourceSets["main"].output
+    }
+}
+
+val integrationTestImplementation: Configuration by configurations.getting {
+    extendsFrom(configurations["implementation"], configurations["testImplementation"])
+}
+val integrationTestRuntimeOnly: Configuration by configurations.getting {
+    extendsFrom(configurations["runtimeOnly"], configurations["testRuntimeOnly"])
+}
+
+// The integration tests were originally in src/test/ where they could see
+// `internal` symbols on ObscuraClient (APIClient field, etc.). New source set
+// = new Kotlin compilation, which loses internal visibility. Associate it
+// with main as a "friend" compilation to restore that access.
+kotlin {
+    target.compilations.named("integrationTest") {
+        associateWith(target.compilations.named("main").get())
+    }
+}
+
+val integrationTest by tasks.registering(Test::class) {
+    description = "Runs the server-dependent integration scenario suite."
+    group = "verification"
+    testClassesDirs = sourceSets["integrationTest"].output.classesDirs
+    classpath = sourceSets["integrationTest"].runtimeClasspath
+    useJUnitPlatform()
+    shouldRunAfter(tasks.test)
+}
+
 dependencies {
     // Protobuf
     implementation(libs.protobuf.kotlin)
@@ -54,7 +101,7 @@ dependencies {
     // Coroutines
     implementation(libs.coroutines.core)
 
-    // Testing
+    // Testing — shared by both suites via the extendsFrom above.
     testImplementation(libs.junit.api)
     testRuntimeOnly(libs.junit.engine)
     testImplementation(libs.coroutines.test)
@@ -92,4 +139,10 @@ sourceSets {
 
 tasks.test {
     useJUnitPlatform()
+    description = "Runs pure unit tests (no network, no server). Fast feedback."
+}
+
+tasks.check {
+    // Deliberately NOT depending on integrationTest. CI runs integrationTest
+    // separately on main pushes. ./gradlew check stays a fast feedback loop.
 }
