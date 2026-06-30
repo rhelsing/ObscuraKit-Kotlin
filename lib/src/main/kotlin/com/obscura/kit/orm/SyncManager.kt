@@ -7,8 +7,9 @@ package com.obscura.kit.orm
  * 1. Always self-sync to own devices
  * 2. If model.config.isPrivate → ONLY own devices (settings, drafts)
  * 3. If model has belongs_to a targeting model (group) → group members only
- * 4. If the entry declares a 1:1 / direct recipient (directMessage, pix) → those participants only
- * 5. Default → all friend devices
+ * 4. If model.config.direct → those participants only, or THROW (never broadcast)
+ * 5. If a non-direct entry happens to declare a recipient → those participants only
+ * 6. Default → all friend devices
  *
  * The developer never calls this directly. model.create() triggers broadcast
  * automatically based on the model's config.
@@ -82,17 +83,30 @@ class SyncManager(
             }
         }
 
-        // 4. Scoped 1:1 / direct-recipient delivery (before the all-friends broadcast).
-        // directMessage and pix carry their intended audience in their own data. Without this
-        // rule they fall through to "all friends" and leak to every mutual friend — a
-        // confidentiality breach for what are meant to be private 1:1 payloads.
+        // 4. Direct (1:1) models MUST resolve to an explicit recipient. They carry their
+        // audience in their own data (directMessage, pix); if that cannot be resolved we
+        // FAIL LOUD rather than fall through to the all-friends broadcast below. A misrouted
+        // 1:1 payload is a confidentiality breach — refusing to send is the safe failure.
+        if (model.config.direct) {
+            val scoped = resolveScopedRecipients(entry)
+                ?: throw IllegalStateException(
+                    "Model '${model.name}' is direct (1:1) but no recipient could be resolved " +
+                    "from its data — expected a 'recipientUsername' or a canonical 1:1 " +
+                    "'conversationId' (\"userIdA_userIdB\"). Refusing to broadcast a direct " +
+                    "payload to all friends.")
+            targets.addAll(scoped)
+            return targets.toList()
+        }
+
+        // 5. Non-direct models may still opportunistically scope if they carry recipient data;
+        // otherwise they fall through to the all-friends broadcast.
         val scoped = resolveScopedRecipients(entry)
         if (scoped != null) {
             targets.addAll(scoped)
             return targets.toList()
         }
 
-        // 5. Default: broadcast to all friends
+        // 6. Default: broadcast to all friends
         targets.addAll(getFriendTargets())
 
         return targets.toList()

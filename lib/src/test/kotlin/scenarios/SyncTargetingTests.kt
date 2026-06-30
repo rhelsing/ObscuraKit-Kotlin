@@ -7,6 +7,7 @@ import com.obscura.kit.orm.SyncManager
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Test
+import org.junit.jupiter.api.assertThrows
 
 /**
  * Pure unit tests for [SyncManager] delivery targeting — no network, no Signal.
@@ -57,7 +58,7 @@ class SyncTargetingTests {
     fun `directMessage goes only to the two participants, never to other friends`() = runBlocking {
         val recorded = mutableListOf<String>()
         val sm = newSyncManager(recorded)
-        val dm = Model("directMessage", ModelConfig(sync = "gset"))
+        val dm = Model("directMessage", ModelConfig(sync = "gset", direct = true))
 
         sm.broadcast(dm, entry(mapOf(
             "conversationId" to conversationId(selfUserId, "uB"), // me ↔ bob
@@ -75,7 +76,7 @@ class SyncTargetingTests {
     fun `pix goes only to its recipient, never to other friends`() = runBlocking {
         val recorded = mutableListOf<String>()
         val sm = newSyncManager(recorded)
-        val pix = Model("pix", ModelConfig(sync = "lww"))
+        val pix = Model("pix", ModelConfig(sync = "lww", direct = true))
 
         sm.broadcast(pix, entry(mapOf(
             "recipientUsername" to "alice",
@@ -126,19 +127,38 @@ class SyncTargetingTests {
     }
 
     @Test
-    fun `non 1to1 conversationId falls through to broadcast (no accidental scoping)`() = runBlocking {
+    fun `direct model with an unrecognized conversationId throws instead of broadcasting`() = runBlocking {
         val recorded = mutableListOf<String>()
         val sm = newSyncManager(recorded)
-        val dm = Model("directMessage", ModelConfig(sync = "gset"))
+        val dm = Model("directMessage", ModelConfig(sync = "gset", direct = true))
 
-        // A malformed / multi-party id (not exactly two parts) must not silently drop recipients.
-        sm.broadcast(dm, entry(mapOf(
-            "conversationId" to "uMe_uB_uC",
-            "content" to "x",
-            "senderUsername" to "me",
-        )))
+        // A malformed / multi-party id (not exactly two parts) must NOT silently broadcast.
+        val ex = assertThrows<IllegalStateException> {
+            runBlocking {
+                sm.broadcast(dm, entry(mapOf(
+                    "conversationId" to "uMe_uB_uC",
+                    "content" to "x",
+                    "senderUsername" to "me",
+                )))
+            }
+        }
+        assert(ex.message?.contains("direct") == true) { "error must explain why it refused" }
+        assertEquals(emptyList<String>(), recorded,
+            "nothing may be sent when a direct recipient cannot be resolved")
+    }
 
-        assertEquals(setOf("selfDev", "aDev", "bDev", "cDev"), recorded.toSet(),
-            "unrecognized conversationId shape falls back to all-friends, not silent loss")
+    @Test
+    fun `direct model with no recipient data at all throws`() = runBlocking {
+        val recorded = mutableListOf<String>()
+        val sm = newSyncManager(recorded)
+        val pix = Model("pix", ModelConfig(sync = "lww", direct = true))
+
+        // No recipientUsername, no conversationId — the audience is undeclared.
+        assertThrows<IllegalStateException> {
+            runBlocking {
+                sm.broadcast(pix, entry(mapOf("mediaRef" to "ref-1", "senderUsername" to "me")))
+            }
+        }
+        assertEquals(emptyList<String>(), recorded, "must refuse to send a direct payload with no recipient")
     }
 }

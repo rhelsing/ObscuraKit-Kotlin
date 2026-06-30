@@ -10,7 +10,9 @@ data class ModelConfig(
     val private: Boolean = false,                 // true = only sync to own devices
     val ttl: String? = null,                      // e.g., "24h", "7d"
     val belongsTo: List<String> = emptyList(),    // parent model names
-    val hasMany: List<String> = emptyList()       // child model names
+    val hasMany: List<String> = emptyList(),      // child model names
+    val direct: Boolean = false                   // true = 1:1 payload; MUST resolve an explicit
+                                                   // recipient or fail loud — never broadcasts
 ) {
     val isPrivate: Boolean get() = `private`
 }
