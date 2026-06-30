@@ -1,3 +1,5 @@
+import org.jetbrains.kotlin.gradle.dsl.JvmTarget
+
 plugins {
     alias(libs.plugins.android.app)
     alias(libs.plugins.kotlin.android)
@@ -21,18 +23,10 @@ android {
         compose = true
     }
 
-    composeOptions {
-        // Compose Compiler is now provided by the kotlin.plugin.compose plugin
-    }
-
     compileOptions {
         isCoreLibraryDesugaringEnabled = true
         sourceCompatibility = JavaVersion.VERSION_17
         targetCompatibility = JavaVersion.VERSION_17
-    }
-
-    kotlinOptions {
-        jvmTarget = "17"
     }
 
     packaging {
@@ -40,6 +34,14 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
             excludes += "/META-INF/DEPENDENCIES"
         }
+    }
+}
+
+// Replaces the deprecated `android { kotlinOptions { jvmTarget = "17" } }`
+// block. Kotlin 2.x prefers the project-level kotlin DSL.
+kotlin {
+    compilerOptions {
+        jvmTarget.set(JvmTarget.JVM_17)
     }
 }
 
@@ -68,15 +70,15 @@ dependencies {
     implementation(libs.serialization.json)
 
     // Lifecycle (foreground reconnect)
-    implementation("androidx.lifecycle:lifecycle-process:2.8.3")
+    implementation(libs.lifecycle.process)
 
     // Secure storage
-    implementation("androidx.security:security-crypto:1.1.0-alpha06")
+    implementation(libs.security.crypto)
 
     // SQLCipher — encrypted SQLite (same as Signal Android)
     implementation(libs.sqlcipher)
     implementation(libs.sqlite)
 
     // Desugaring (required by libsignal-android)
-    coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.0.4")
+    coreLibraryDesugaring(libs.desugar.jdk.libs)
 }
