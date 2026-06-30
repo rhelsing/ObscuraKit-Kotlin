@@ -13,6 +13,10 @@ activity-compose = "1.9.1"
 sqlcipher = "4.6.1"
 sqlite = "2.4.0"
 serialization = "1.6.3"
+lifecycle-process = "2.8.3"
+security-crypto = "1.1.0-alpha06"
+desugar-jdk-libs = "2.0.4"
+kover = "0.9.8"
 
 [libraries]
 protobuf-kotlin = { module = "com.google.protobuf:protobuf-kotlin", version.ref = "protobuf" }
@@ -37,6 +41,9 @@ compose-foundation = { module = "androidx.compose.foundation:foundation" }
 activity-compose = { module = "androidx.activity:activity-compose", version.ref = "activity-compose" }
 junit-api = { module = "org.junit.jupiter:junit-jupiter-api", version.ref = "junit" }
 junit-engine = { module = "org.junit.jupiter:junit-jupiter-engine", version.ref = "junit" }
+lifecycle-process = { module = "androidx.lifecycle:lifecycle-process", version.ref = "lifecycle-process" }
+security-crypto = { module = "androidx.security:security-crypto", version.ref = "security-crypto" }
+desugar-jdk-libs = { module = "com.android.tools:desugar_jdk_libs", version.ref = "desugar-jdk-libs" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }
@@ -46,3 +53,4 @@ protobuf = { id = "com.google.protobuf", version.ref = "protobuf-plugin" }
 sqldelight = { id = "app.cash.sqldelight", version.ref = "sqldelight" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 compose-compiler = { id = "org.jetbrains.kotlin.plugin.compose", version.ref = "kotlin" }
+kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
