@@ -4,7 +4,7 @@
 # libraries built with a newer Kotlin, so bumping this past pix's RN makes
 # the kit unconsumable. Bump ONLY in lockstep with a pix RN upgrade.
 # Dependabot is configured to leave org.jetbrains.kotlin:* alone.
-kotlin = "2.1.20"
+kotlin = "2.4.0"
 protobuf-plugin = "0.9.4"
 protobuf = "4.35.1"
 sqldelight = "2.0.2"
