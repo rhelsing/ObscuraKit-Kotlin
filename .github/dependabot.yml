@@ -34,7 +34,15 @@ updates:
       # unconsumable by pix. A dependabot 2.1 -> 2.4 minor already caused
       # exactly that (caught by pix's composite build). Bump by hand, in
       # lockstep with a pix RN upgrade.
+      #
+      # NOTE the two patterns: dependabot tracks the Kotlin GRADLE PLUGIN
+      # under its plugin id `org.jetbrains.kotlin.jvm` (and
+      # `org.jetbrains.kotlin.plugin.serialization`), which the colon form
+      # `org.jetbrains.kotlin:*` does NOT match — that gap let a 2.4.0 bump
+      # PR through once. The dotted pattern catches the plugin ids; the
+      # colon pattern catches the artifacts (kotlin-gradle-plugin, stdlib).
       - dependency-name: "org.jetbrains.kotlin:*"
+      - dependency-name: "org.jetbrains.kotlin.*"
       # kotlinx-coroutines / kotlinx-serialization track the Kotlin release;
       # newer versions require Kotlin 2.2+ and fail :lib:compileKotlin with
       # an internal compiler error against the pinned 2.1.20. Move these
@@ -44,8 +52,16 @@ updates:
       # releases require a newer Kotlin than the pinned 2.1.20 (verified: a
       # sqldelight group bump crashed :lib:compileKotlin). Block until the
       # Kotlin pin moves; a 2->3 bump is also a schema migration to gate
-      # by hand.
+      # by hand. Both patterns for the same reason as Kotlin above: the
+      # colon form catches the driver/runtime artifacts, the bare id catches
+      # the `app.cash.sqldelight` gradle plugin.
       - dependency-name: "app.cash.sqldelight:*"
+      - dependency-name: "app.cash.sqldelight"
+      # JUnit 6 is a major migration (JUnit Platform 6, new Java baseline,
+      # API surface changes) — it fails CI outright and needs a deliberate
+      # port. Patches/minors within 5.x still auto-PR.
+      - dependency-name: "org.junit.jupiter:*"
+        update-types: ["version-update:semver-major"]
 
   # ─── GitHub Actions ─────────────────────────────────────
   - package-ecosystem: "github-actions"
