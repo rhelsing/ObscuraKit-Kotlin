@@ -112,8 +112,17 @@ dependencies {
     implementation(libs.coroutines.core)
 
     // Testing — shared by both suites via the extendsFrom above.
+    // The junit-bom aligns jupiter (5.x) with junit-platform (1.x) so a
+    // single `junit` version bump moves the api, engine, and launcher in
+    // lockstep. The platform-launcher is declared explicitly: Gradle 8.7's
+    // bundled launcher is older than jupiter's engine, and relying on the
+    // auto-loaded one both breaks newer junit (executor errors) and is
+    // deprecated by Gradle. testImplementation so both the unit and
+    // integrationTest source sets (extendsFrom testImplementation) get it.
+    testImplementation(platform(libs.junit.bom))
     testImplementation(libs.junit.api)
     testRuntimeOnly(libs.junit.engine)
+    testRuntimeOnly(libs.junit.platform.launcher)
     testImplementation(libs.coroutines.test)
 }
 

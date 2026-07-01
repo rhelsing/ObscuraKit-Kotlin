@@ -59,8 +59,18 @@ updates:
       - dependency-name: "app.cash.sqldelight"
       # JUnit 6 is a major migration (JUnit Platform 6, new Java baseline,
       # API surface changes) — it fails CI outright and needs a deliberate
-      # port. Patches/minors within 5.x still auto-PR.
+      # port. Patches/minors within 5.x still auto-PR (the junit-bom +
+      # explicit junit-platform-launcher in lib/build.gradle.kts keep the
+      # api/engine/launcher aligned so 5.x bumps actually build).
       - dependency-name: "org.junit.jupiter:*"
+        update-types: ["version-update:semver-major"]
+      # Gradle wrapper: kept current within Gradle 8.x (8.14.x, matching
+      # pix). A 9.x MAJOR is gated by hand — it removes APIs and last
+      # verified as a red CI run (PR #25, gradle 9.6.1) — so it needs a
+      # deliberate Gradle-9 readiness pass. Within-8.x minors flow freely.
+      - dependency-name: "gradle"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "gradle-wrapper"
         update-types: ["version-update:semver-major"]
 
   # ─── GitHub Actions ─────────────────────────────────────
