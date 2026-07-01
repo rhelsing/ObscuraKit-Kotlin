@@ -11,7 +11,7 @@ sqldelight = "2.0.2"
 libsignal = "0.72.0"
 okhttp = "4.12.0"
 coroutines = "1.8.1"
-junit = "5.10.2"
+junit = "5.14.4"
 serialization = "1.6.3"
 kover = "0.9.8"
 
