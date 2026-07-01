@@ -22,4 +22,3 @@ dependencyResolutionManagement {
 rootProject.name = "obscura-client-kotlin"
 
 include("lib")
-include("app")

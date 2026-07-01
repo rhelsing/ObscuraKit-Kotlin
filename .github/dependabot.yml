@@ -1,12 +1,17 @@
 version: 2
 updates:
 
-  # ─── Gradle (lib + app share the same version catalog) ───
-  # The lib is the foundation that pix's Android build resolves against
-  # via mavenLocal, so bumps here are gated by both this repo's CI and
-  # pix's CI (which clones+publishes-local before building its release
-  # APK). That's the correct couple — if a kit bump breaks pix, we
-  # learn about it on the kit PR.
+  # ─── Gradle (the :lib module — pure JVM) ─────────────────
+  # The lib is the foundation that obscura-pix's Android build compiles
+  # against via a Gradle composite build (includeBuild). Bumps here are
+  # gated by this repo's CI AND pix's CI (which builds the kit from source
+  # on every run). If a kit bump breaks pix, we learn about it on the kit PR.
+  #
+  # Two dependency families are NOT free to move and are blocked below,
+  # because the kit's Kotlin is pinned to obscura-pix's React-Native-pinned
+  # Kotlin (RN 0.86 -> Kotlin 2.1.20). A Kotlin 2.1 compiler cannot read a
+  # library built with newer Kotlin, and several JetBrains/Square libraries
+  # track the Kotlin release closely.
   - package-ecosystem: "gradle"
     directory: "/"
     schedule:
@@ -14,46 +19,33 @@ updates:
       day: "monday"
     open-pull-requests-limit: 5
     groups:
-      kotlinx:
-        patterns:
-          - "org.jetbrains.kotlinx:*"
-      sqldelight:
-        patterns:
-          - "app.cash.sqldelight:*"
       protobuf:
         patterns:
           - "com.google.protobuf:*"
-      androidx:
-        patterns:
-          - "androidx.*"
-      compose:
-        patterns:
-          - "androidx.compose:*"
-          - "androidx.compose.*"
     ignore:
       # libsignal is internal-Signal-Rust; APIs change without notice.
       # Bumps must be done by hand against the published binding jars
       # and tested end-to-end (verified painful with 0.72 — touched
       # auth surface). Block dependabot.
       - dependency-name: "org.signal:libsignal-client"
-      - dependency-name: "org.signal:libsignal-android"
-      # AGP majors are coordinated with kotlin+gradle wrapper; do those
-      # by hand. Patches still useful.
-      - dependency-name: "com.android.tools.build:gradle"
-        update-types: ["version-update:semver-major"]
-      # Kotlin is NOT free to bump here. The kit is consumed by obscura-pix,
-      # a React Native app. RN 0.86 pins the whole Android build to Kotlin
-      # 2.1.20, and a Kotlin 2.1 compiler physically cannot read a library
-      # compiled with a newer Kotlin (metadata binary version mismatch).
-      # A dependabot 2.1 -> 2.4 minor bump here silently made the kit
-      # unconsumable by pix (caught by pix's composite build). So: block
-      # ALL Kotlin updates. This version must be bumped by hand, in lockstep
-      # with pix's React Native upgrade, keeping the two at the same Kotlin.
+      # Kotlin is pinned to obscura-pix's React-Native Kotlin (RN 0.86 ->
+      # 2.1.20). A Kotlin 2.1 compiler cannot read a library compiled with a
+      # newer Kotlin (metadata mismatch), so bumping this makes the kit
+      # unconsumable by pix. A dependabot 2.1 -> 2.4 minor already caused
+      # exactly that (caught by pix's composite build). Bump by hand, in
+      # lockstep with a pix RN upgrade.
       - dependency-name: "org.jetbrains.kotlin:*"
-      # SQLDelight 2->3 will be a migration; gate manually when it
-      # ships. Patches/minors are fine.
+      # kotlinx-coroutines / kotlinx-serialization track the Kotlin release;
+      # newer versions require Kotlin 2.2+ and fail :lib:compileKotlin with
+      # an internal compiler error against the pinned 2.1.20. Move these
+      # together with the Kotlin bump above, by hand.
+      - dependency-name: "org.jetbrains.kotlinx:*"
+      # SQLDelight's compiler plugin is Kotlin-version-sensitive; newer
+      # releases require a newer Kotlin than the pinned 2.1.20 (verified: a
+      # sqldelight group bump crashed :lib:compileKotlin). Block until the
+      # Kotlin pin moves; a 2->3 bump is also a schema migration to gate
+      # by hand.
       - dependency-name: "app.cash.sqldelight:*"
-        update-types: ["version-update:semver-major"]
 
   # ─── GitHub Actions ─────────────────────────────────────
   - package-ecosystem: "github-actions"
