@@ -41,9 +41,15 @@ updates:
       # by hand. Patches still useful.
       - dependency-name: "com.android.tools.build:gradle"
         update-types: ["version-update:semver-major"]
-      # Kotlin majors touch every consumer (pix, app). By hand.
+      # Kotlin is NOT free to bump here. The kit is consumed by obscura-pix,
+      # a React Native app. RN 0.86 pins the whole Android build to Kotlin
+      # 2.1.20, and a Kotlin 2.1 compiler physically cannot read a library
+      # compiled with a newer Kotlin (metadata binary version mismatch).
+      # A dependabot 2.1 -> 2.4 minor bump here silently made the kit
+      # unconsumable by pix (caught by pix's composite build). So: block
+      # ALL Kotlin updates. This version must be bumped by hand, in lockstep
+      # with pix's React Native upgrade, keeping the two at the same Kotlin.
       - dependency-name: "org.jetbrains.kotlin:*"
-        update-types: ["version-update:semver-major"]
       # SQLDelight 2->3 will be a migration; gate manually when it
       # ships. Patches/minors are fine.
       - dependency-name: "app.cash.sqldelight:*"
