@@ -134,7 +134,7 @@ sqldelight {
     databases {
         create("ObscuraDatabase") {
             packageName.set("com.obscura.kit.db")
-            dialect("app.cash.sqldelight:sqlite-3-38-dialect:2.0.2")
+            dialect("app.cash.sqldelight:sqlite-3-38-dialect:2.3.2")
         }
     }
 }
