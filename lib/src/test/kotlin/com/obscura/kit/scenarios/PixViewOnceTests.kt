@@ -1,4 +1,4 @@
-package scenarios
+package com.obscura.kit.scenarios
 
 import com.obscura.kit.newInMemoryStore
 import com.obscura.kit.orm.OrmEntry
@@ -90,5 +90,56 @@ class PixViewOnceTests {
 
         assertNotNull(pix.get("pix_3")?.data?.get("viewedAt"),
             "a stale un-viewed write must not clear viewedAt")
+    }
+
+    /**
+     * LWW conflict resolution is strict-greater-than, so an un-viewed write with
+     * the SAME timestamp as the viewed one must lose too — otherwise a concurrent
+     * (equal-clock) un-viewed copy could tie-break its way to clearing viewedAt.
+     */
+    @Test
+    fun `an equal-timestamp un-viewed write cannot clear viewedAt`() = runTest {
+        val pix = LWWMap(newInMemoryStore(), "pix")
+
+        pix.set(entry("pix_4",
+            mapOf("conversationId" to "uA_uB", "senderUsername" to "alice", "viewedAt" to 1_700_000_000_000L),
+            timestamp = 3000))
+
+        // Same timestamp, no viewedAt — must NOT overwrite (LWW keeps the incumbent).
+        pix.merge(listOf(entry("pix_4",
+            mapOf("conversationId" to "uA_uB", "senderUsername" to "alice"),
+            timestamp = 3000)))
+
+        assertNotNull(pix.get("pix_4")?.data?.get("viewedAt"),
+            "an equal-timestamp un-viewed write must not clear viewedAt")
+    }
+
+    /**
+     * View-once must survive an app restart. The LWWMap writes through to the
+     * store, so a fresh map re-hydrated from the same store must still see
+     * `viewedAt` — otherwise a viewed pix would reappear as unopened after
+     * relaunch, the classic "unlimited views" regression.
+     */
+    @Test
+    fun `viewedAt survives a reload from the store`() = runTest {
+        val store = newInMemoryStore()
+
+        val base = mapOf(
+            "conversationId" to "uA_uB", "recipientUsername" to "bob",
+            "senderUsername" to "alice", "mediaRef" to "att5",
+            "contentKey" to "k", "nonce" to "n", "displayDuration" to 5,
+        )
+        LWWMap(store, "pix").apply {
+            set(entry("pix_5", base, timestamp = 1000))
+            set(entry("pix_5", base + ("viewedAt" to 1_700_000_000_000L), timestamp = 2000))
+        }
+
+        // Simulate a restart: a brand-new LWWMap loads state from the same store.
+        val reloaded = LWWMap(store, "pix")
+        val after = reloaded.get("pix_5")
+        assertNotNull(after?.data?.get("viewedAt"),
+            "viewedAt must persist across a store reload (app restart)")
+        assertEquals("att5", after?.data?.get("mediaRef"),
+            "other fields must also survive the reload")
     }
 }
