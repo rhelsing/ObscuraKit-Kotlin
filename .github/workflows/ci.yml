@@ -87,6 +87,14 @@ jobs:
             obscura-server:
               image: ghcr.io/barrelmaker97/obscura-server:latest
               pull_policy: always
+              environment:
+                # Prod runs 3 load-balanced instances (~3x effective limits); this
+                # single container would rate-limit the 230-test suite partway
+                # through. Rate limiting isn't under test here — effectively disable.
+                OBSCURA_RATE_LIMIT_PER_SECOND: 1000
+                OBSCURA_RATE_LIMIT_BURST: 2000
+                OBSCURA_RATE_LIMIT_AUTH_PER_SECOND: 1000
+                OBSCURA_RATE_LIMIT_AUTH_BURST: 2000
           EOF
           docker compose -f docker-compose.yml -f compose.ci.yml up -d --wait
 
