@@ -17,7 +17,11 @@ import java.util.*
 class APIClient(private val baseUrl: String) {
 
     private val httpClient = OkHttpClient.Builder()
-        .connectionSpecs(listOf(ConnectionSpec.MODERN_TLS))
+        .connectionSpecs(
+            // Cleartext only for http:// base URLs, which ObscuraConfig restricts to loopback
+            if (baseUrl.startsWith("http://")) listOf(ConnectionSpec.MODERN_TLS, ConnectionSpec.CLEARTEXT)
+            else listOf(ConnectionSpec.MODERN_TLS)
+        )
         .connectTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
         .readTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
         .writeTimeout(15, java.util.concurrent.TimeUnit.SECONDS)
