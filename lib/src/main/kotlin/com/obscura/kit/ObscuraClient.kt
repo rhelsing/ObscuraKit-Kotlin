@@ -270,7 +270,8 @@ class ObscuraClient(
                 db.signalKeyQueries.deleteAllSenderKeys()
                 db.modelEntryQueries.deleteAllEntries()
                 db.modelEntryQueries.deleteAllAssociations()
-            }
+            },
+            onSessionChanged = { persistSession() }
         )
 
         messageSender = MessageSender(messenger, authManager)

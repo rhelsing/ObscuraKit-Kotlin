@@ -25,7 +25,8 @@ internal class AuthManager(
     private val setDisconnected: () -> Unit,
     private val loggerProvider: () -> ObscuraLogger,
     private val onLogout: suspend () -> Unit,
-    private val onWipeDevice: suspend () -> Unit
+    private val onWipeDevice: suspend () -> Unit,
+    private val onSessionChanged: () -> Unit
 ) {
     private val session get() = ctx.session
     private val api get() = ctx.api
@@ -263,6 +264,10 @@ internal class AuthManager(
                 api.token = result.token
                 session.refreshToken = result.refreshToken
                 consecutiveRefreshFailures = 0
+                // Persist the rotated (single-use) refresh token — the background
+                // refresh loop otherwise leaves a consumed token in storage → 401
+                // on next launch. Mirrors iOS refreshTokenNow → onSessionChanged.
+                onSessionChanged()
                 true
             } catch (e: Exception) {
                 consecutiveRefreshFailures++
