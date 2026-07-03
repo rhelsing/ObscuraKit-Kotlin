@@ -9,6 +9,8 @@ data class ObscuraConfig(
     val enableRecoveryPhrase: Boolean = false // opt-in: enables BIP39 recovery, remote device revocation, encrypted backups
 ) {
     init {
-        require(apiUrl.startsWith("https://")) { "API URL must use HTTPS: $apiUrl" }
+        // Plain HTTP is allowed only for loopback (local containerized server in tests/CI)
+        val isLoopback = apiUrl.startsWith("http://localhost") || apiUrl.startsWith("http://127.0.0.1")
+        require(apiUrl.startsWith("https://") || isLoopback) { "API URL must use HTTPS: $apiUrl" }
     }
 }
