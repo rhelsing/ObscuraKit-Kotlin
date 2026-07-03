@@ -97,6 +97,11 @@ jobs:
                 OBSCURA_RATE_LIMIT_AUTH_BURST: 2000
           EOF
           docker compose -f docker-compose.yml -f compose.ci.yml up -d --wait
+          # The server never creates its S3 bucket (no create_bucket in source);
+          # prod's bucket was provisioned out-of-band. Fresh MinIO needs it made.
+          AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+            aws --endpoint-url http://localhost:9000 --region us-east-1 \
+            s3api create-bucket --bucket test-bucket
 
       - name: Wait for server ready
         run: |
