@@ -1,12 +1,17 @@
 version: 2
 updates:
 
-  # ─── Gradle (lib + app share the same version catalog) ───
-  # The lib is the foundation that pix's Android build resolves against
-  # via mavenLocal, so bumps here are gated by both this repo's CI and
-  # pix's CI (which clones+publishes-local before building its release
-  # APK). That's the correct couple — if a kit bump breaks pix, we
-  # learn about it on the kit PR.
+  # ─── Gradle (the :lib module — pure JVM) ─────────────────
+  # The lib is the foundation that obscura-pix's Android build compiles
+  # against via a Gradle composite build (includeBuild). Bumps here are
+  # gated by this repo's CI AND pix's CI (which builds the kit from source
+  # on every run). If a kit bump breaks pix, we learn about it on the kit PR.
+  #
+  # Two dependency families are NOT free to move and are blocked below,
+  # because the kit's Kotlin is pinned to obscura-pix's React-Native-pinned
+  # Kotlin (RN 0.86 -> Kotlin 2.1.20). A Kotlin 2.1 compiler cannot read a
+  # library built with newer Kotlin, and several JetBrains/Square libraries
+  # track the Kotlin release closely.
   - package-ecosystem: "gradle"
     directory: "/"
     schedule:
@@ -14,39 +19,58 @@ updates:
       day: "monday"
     open-pull-requests-limit: 5
     groups:
-      kotlinx:
-        patterns:
-          - "org.jetbrains.kotlinx:*"
-      sqldelight:
-        patterns:
-          - "app.cash.sqldelight:*"
       protobuf:
         patterns:
           - "com.google.protobuf:*"
-      androidx:
-        patterns:
-          - "androidx.*"
-      compose:
-        patterns:
-          - "androidx.compose:*"
-          - "androidx.compose.*"
     ignore:
       # libsignal is internal-Signal-Rust; APIs change without notice.
       # Bumps must be done by hand against the published binding jars
       # and tested end-to-end (verified painful with 0.72 — touched
       # auth surface). Block dependabot.
       - dependency-name: "org.signal:libsignal-client"
-      - dependency-name: "org.signal:libsignal-android"
-      # AGP majors are coordinated with kotlin+gradle wrapper; do those
-      # by hand. Patches still useful.
-      - dependency-name: "com.android.tools.build:gradle"
-        update-types: ["version-update:semver-major"]
-      # Kotlin majors touch every consumer (pix, app). By hand.
+      # Kotlin is pinned to obscura-pix's React-Native Kotlin (RN 0.86 ->
+      # 2.1.20). A Kotlin 2.1 compiler cannot read a library compiled with a
+      # newer Kotlin (metadata mismatch), so bumping this makes the kit
+      # unconsumable by pix. A dependabot 2.1 -> 2.4 minor already caused
+      # exactly that (caught by pix's composite build). Bump by hand, in
+      # lockstep with a pix RN upgrade.
+      #
+      # NOTE the two patterns: dependabot tracks the Kotlin GRADLE PLUGIN
+      # under its plugin id `org.jetbrains.kotlin.jvm` (and
+      # `org.jetbrains.kotlin.plugin.serialization`), which the colon form
+      # `org.jetbrains.kotlin:*` does NOT match — that gap let a 2.4.0 bump
+      # PR through once. The dotted pattern catches the plugin ids; the
+      # colon pattern catches the artifacts (kotlin-gradle-plugin, stdlib).
       - dependency-name: "org.jetbrains.kotlin:*"
-        update-types: ["version-update:semver-major"]
-      # SQLDelight 2->3 will be a migration; gate manually when it
-      # ships. Patches/minors are fine.
+      - dependency-name: "org.jetbrains.kotlin.*"
+      # kotlinx-coroutines / kotlinx-serialization track the Kotlin release;
+      # newer versions require Kotlin 2.2+ and fail :lib:compileKotlin with
+      # an internal compiler error against the pinned 2.1.20. Move these
+      # together with the Kotlin bump above, by hand.
+      - dependency-name: "org.jetbrains.kotlinx:*"
+      # SQLDelight's compiler plugin is Kotlin-version-sensitive; newer
+      # releases require a newer Kotlin than the pinned 2.1.20 (verified: a
+      # sqldelight group bump crashed :lib:compileKotlin). Block until the
+      # Kotlin pin moves; a 2->3 bump is also a schema migration to gate
+      # by hand. Both patterns for the same reason as Kotlin above: the
+      # colon form catches the driver/runtime artifacts, the bare id catches
+      # the `app.cash.sqldelight` gradle plugin.
       - dependency-name: "app.cash.sqldelight:*"
+      - dependency-name: "app.cash.sqldelight"
+      # JUnit 6 is a major migration (JUnit Platform 6, new Java baseline,
+      # API surface changes) — it fails CI outright and needs a deliberate
+      # port. Patches/minors within 5.x still auto-PR (the junit-bom +
+      # explicit junit-platform-launcher in lib/build.gradle.kts keep the
+      # api/engine/launcher aligned so 5.x bumps actually build).
+      - dependency-name: "org.junit.jupiter:*"
+        update-types: ["version-update:semver-major"]
+      # Gradle wrapper: kept current within Gradle 8.x (8.14.x, matching
+      # pix). A 9.x MAJOR is gated by hand — it removes APIs and last
+      # verified as a red CI run (PR #25, gradle 9.6.1) — so it needs a
+      # deliberate Gradle-9 readiness pass. Within-8.x minors flow freely.
+      - dependency-name: "gradle"
+        update-types: ["version-update:semver-major"]
+      - dependency-name: "gradle-wrapper"
         update-types: ["version-update:semver-major"]
 
   # ─── GitHub Actions ─────────────────────────────────────

@@ -14,7 +14,15 @@ import com.obscura.kit.orm.ModelStore
  * so it's safe to call per test.
  */
 fun newInMemoryStore(): ModelStore {
+    return ModelStore(newInMemoryDatabase())
+}
+
+/**
+ * Raw in-memory ObscuraDatabase for tests that exercise queries outside
+ * the ORM layer (DeviceDomain, FriendDomain, MessageDomain, etc.).
+ */
+fun newInMemoryDatabase(): ObscuraDatabase {
     val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
     ObscuraDatabase.Schema.create(driver)
-    return ModelStore(ObscuraDatabase(driver))
+    return ObscuraDatabase(driver)
 }

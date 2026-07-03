@@ -82,18 +82,14 @@ Tested with 210+ tests (unit + integration against live server):
 - `observe()` on queries with `include()` — observation works, eager loading works, not together yet
 - Counter CRDT (only GSet and LWWMap)
 
-## Demo App
-
-The `app/` module is a working Android app with 5 tabs (Friends, Chat, Stories, Profile, Settings), all using typed ORM models. See `app/src/main/kotlin/com/obscura/app/MainActivity.kt`.
-
 ## Build & Test
 
 ```bash
 export JAVA_HOME=/path/to/jdk-21
 
-./gradlew :lib:test                              # all tests
-./gradlew :lib:test --tests "scenarios.CRDTTests" # specific suite
-./gradlew :app:assembleDebug                      # build Android app
+./gradlew :lib:test                              # unit tests (fast, no network)
+./gradlew :lib:integrationTest                   # scenario suite (needs a live server)
+./gradlew :lib:koverHtmlReport                   # coverage report
 ```
 
 ## Docs

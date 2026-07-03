@@ -29,6 +29,13 @@ jobs:
       - name: Unit tests
         run: ./gradlew :lib:test --no-daemon
 
+      # Coverage report from the unit suite only. Uploaded as an artifact
+      # so reviewers can eyeball the HTML report on any PR without needing
+      # to run gradle locally. To add a Codecov/Coveralls upload step,
+      # plug in here — the XML report is at lib/build/reports/kover/xml.
+      - name: Coverage report (unit)
+        run: ./gradlew :lib:koverHtmlReport :lib:koverXmlReport --no-daemon
+
       - name: Publish lib to local Maven (smoke)
         run: ./gradlew :lib:publishToMavenLocal --no-daemon
 
@@ -40,24 +47,15 @@ jobs:
           path: lib/build/reports/tests/test/
           retention-days: 7
 
-  # Catches Compose/AGP/Kotlin compiler regressions the :lib JVM build can't
-  # see (different toolchain, different targets). Debug only — release would
-  # need a keystore.
-  app:
-    name: App (Android assemble)
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v7
-
-      - uses: actions/setup-java@v5
+      - name: Upload coverage report
+        if: always()
+        uses: actions/upload-artifact@v7
         with:
-          distribution: 'temurin'
-          java-version: '21'
-
-      - uses: gradle/actions/setup-gradle@v6
-
-      - name: Assemble debug APK
-        run: ./gradlew :app:assembleDebug --no-daemon
+          name: lib-coverage-report
+          path: |
+            lib/build/reports/kover/html/
+            lib/build/reports/kover/report.xml
+          retention-days: 14
 
   # Server-dependent scenario suite (256 tests, ~5 min) against the live
   # Obscura server. Runs on main pushes only — PR feedback stays fast.
