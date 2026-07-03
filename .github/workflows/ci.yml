@@ -59,15 +59,15 @@ jobs:
       - name: Assemble debug APK
         run: ./gradlew :app:assembleDebug --no-daemon
 
-  # Server-dependent scenario suite (256 tests, ~5 min) against the live
-  # Obscura server. Runs on main pushes only — PR feedback stays fast.
-  # The tests use JUnit Assumptions.assumeTrue(checkServer()) so a server
-  # outage shows as "skipped" rather than red. Worth eyeballing the report
-  # after each main run until we move to a containerized test server.
+  # Server-dependent scenario suite (256 tests) against a CONTAINERIZED
+  # obscura-server (pinned) instead of live prod — so it's deterministic,
+  # isolated, and safe to run on every PR (no rate limits, no prod pollution).
+  # OBSCURA_TEST_API points the tests at the local container.
   lib-integration:
-    name: Lib (integration tests, live server)
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Lib (integration tests, containerized server)
     runs-on: ubuntu-latest
+    env:
+      OBSCURA_SERVER_REF: 010868e00a7d4e54724ca724622d25ea2b21c3a4  # release v0.9.1
     steps:
       - uses: actions/checkout@v7
 
@@ -78,7 +78,26 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v6
 
+      - name: Start obscura-server (pinned)
+        run: |
+          git clone https://github.com/barrelmaker97/obscura-server /tmp/obscura-server
+          cd /tmp/obscura-server
+          git checkout "$OBSCURA_SERVER_REF"
+          docker compose up -d --build --wait
+
+      - name: Wait for server ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://localhost:3000/; then echo "server up"; exit 0; fi
+            sleep 5
+          done
+          echo "server did not become ready" >&2
+          (cd /tmp/obscura-server && docker compose logs obscura-server | tail -50)
+          exit 1
+
       - name: Integration tests
+        env:
+          OBSCURA_TEST_API: http://localhost:3000
         run: ./gradlew :lib:integrationTest --no-daemon
 
       - name: Upload integration-test report
