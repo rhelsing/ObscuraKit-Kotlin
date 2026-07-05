@@ -5,6 +5,7 @@ import com.obscura.kit.orm.OrmEntry
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -156,5 +157,16 @@ class LWWMapTest {
     fun `get on missing id returns null without loading errors`() = runTest {
         val map = LWWMap(newInMemoryStore(), "profile")
         assertNull(map.get("never-set"))
+    }
+
+    @Test
+    fun `entries survive reload from the same store`() = runTest {
+        // A fresh LWWMap over the same DB must rehydrate the winning value.
+        val store = newInMemoryStore()
+        LWWMap(store, "settings").set(entry("cfg1", 1000, data = mapOf("theme" to "dark")))
+
+        val reloaded = LWWMap(store, "settings").get("cfg1")
+        assertNotNull(reloaded)
+        assertEquals("dark", reloaded!!.data["theme"])
     }
 }

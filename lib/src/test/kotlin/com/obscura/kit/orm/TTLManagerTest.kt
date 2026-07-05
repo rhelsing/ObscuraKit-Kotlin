@@ -102,6 +102,14 @@ class TTLManagerTest {
     }
 
     @Test
+    fun `expired entries return null from ModelStore find`() {
+        val f = Fixture()
+        f.put("s1")
+        f.store.setTTL("story", "s1", System.currentTimeMillis() - 1_000)
+        assertNull(f.store.find("story", "s1"))
+    }
+
+    @Test
     fun `expired entries are filtered out of getAll`() {
         val f = Fixture()
         f.put("alive")

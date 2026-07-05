@@ -300,4 +300,24 @@ class QueryBuilderTests {
         val likes = result.map { (it.data["likes"] as Number).toInt() }
         assertEquals(listOf(100, 25), likes)
     }
+
+    // ─── Robustness (folded from the former unit QueryBuilderTest) ──
+
+    @Test
+    fun `numeric operator on a string field returns nothing without throwing`() = runBlocking {
+        // A numeric comparison against a string field must degrade to "no
+        // match" rather than crashing the query on every render.
+        val result = posts().where(mapOf("data.author" to mapOf("atLeast" to 5))).exec()
+        assertTrue(result.isEmpty())
+    }
+
+    @Test
+    fun `unknown operator is a no-op that matches everything`() = runBlocking {
+        // A typo'd operator name (the JS app passes operator names as strings)
+        // is currently treated as a no-op — every row passes. This pins that
+        // behavior; if it is ever tightened, review every caller.
+        val all = posts().where(emptyMap<String, Any?>()).exec().size
+        val unknown = posts().where(mapOf("data.likes" to mapOf("bogusOp" to 10))).exec().size
+        assertEquals(all, unknown)
+    }
 }
