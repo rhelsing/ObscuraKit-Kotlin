@@ -198,14 +198,24 @@ kover {
                 )
             }
         }
+        // Coverage floor for the unit suite (`:lib:koverVerify`, wired into the
+        // fast PR gate). A ratchet, not a target — bump these up as coverage
+        // grows so it can't silently regress. Currently ~57% instr / ~67% line.
+        verify {
+            rule("Unit-suite coverage floor") {
+                minBound(62, coverageUnits = kotlinx.kover.gradle.plugin.dsl.CoverageUnit.LINE)
+                minBound(50, coverageUnits = kotlinx.kover.gradle.plugin.dsl.CoverageUnit.INSTRUCTION)
+            }
+        }
     }
 }
 
-// Kover wires `koverXmlReport`/`koverHtmlReport` to depend on every Test
-// task in the project. Without this, the unit-only report still triggers
-// :lib:integrationTest (5 min). Strip that dependency unless the opt-in
-// property is set.
+// Kover wires `koverXmlReport`/`koverHtmlReport`/`koverVerify` to depend on
+// every Test task in the project. Without this, the unit-only report/gate
+// still triggers :lib:integrationTest (5 min). Strip that dependency unless
+// the opt-in property is set.
 if (!includeIntegrationInCoverage) {
-    tasks.matching { it.name.startsWith("kover") && it.name.contains("Report") }
-        .configureEach { setDependsOn(dependsOn.filterNot { it == integrationTest }) }
+    tasks.matching {
+        it.name.startsWith("kover") && (it.name.contains("Report") || it.name.contains("Verify"))
+    }.configureEach { setDependsOn(dependsOn.filterNot { it == integrationTest }) }
 }

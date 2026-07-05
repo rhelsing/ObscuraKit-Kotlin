@@ -36,6 +36,10 @@ jobs:
       - name: Coverage report (unit)
         run: ./gradlew :lib:koverHtmlReport :lib:koverXmlReport --no-daemon
 
+      # Fail the PR if unit coverage drops below the floor in lib/build.gradle.kts.
+      - name: Coverage gate (unit)
+        run: ./gradlew :lib:koverVerify --no-daemon
+
       - name: Publish lib to local Maven (smoke)
         run: ./gradlew :lib:publishToMavenLocal --no-daemon
 
