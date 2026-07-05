@@ -169,4 +169,18 @@ class LWWMapTest {
         assertNotNull(reloaded)
         assertEquals("dark", reloaded!!.data["theme"])
     }
+
+    @Test
+    fun `an older write does not resurrect a tombstone`() = runTest {
+        // delete() stamps the tombstone at now(), which is far newer than the
+        // timestamps below — so a late-arriving stale write must lose the LWW
+        // conflict and NOT un-delete the entry.
+        val map = LWWMap(newInMemoryStore(), "reaction")
+        map.set(entry("r1", 1000, data = mapOf("emoji" to "heart")))
+        map.delete("r1", "d1")
+
+        map.set(entry("r1", 500, device = "d2", data = mapOf("emoji" to "fire")))
+
+        assertTrue(map.get("r1")!!.isDeleted, "a stale write must not resurrect a tombstone")
+    }
 }
