@@ -6,9 +6,9 @@
 
 - **What:** E2E encrypted data layer library (not an app) — any Android/JVM app links against this
 - **Server:** `obscura.barrelmaker.dev` (OpenAPI spec at `/openapi.yaml`)
-- **Reference:** JS source at `/Users/ryanhelsing/Projects/obscura-client-web/`
-- **Build:** `JAVA_HOME=/path/to/jdk-21 ./gradlew test`
-- **Tests:** 40 E2E scenarios against live server, all using `ObscuraClient` public API
+- **Reference:** JS client at `obscura-client-web` (sibling repo); iOS at `ObscuraKit-swift`
+- **Build:** `JAVA_HOME=/path/to/jdk-21 ./gradlew :lib:test`
+- **Tests:** two source sets — `src/test` (297 unit tests, no network) and `src/integrationTest` (109 tests against a containerized/live `obscura-server`, all driving the `ObscuraClient` public API)
 
 ## Three-Level Architecture
 

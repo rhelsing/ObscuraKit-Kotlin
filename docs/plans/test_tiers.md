@@ -1,52 +1,76 @@
-# Test Tiers Plan
+# Test Tiers
 
-## Tier 1: Unit Tests (no server) — CURRENT FOCUS
+Two Gradle source sets, two CI jobs:
 
-Prove Layer 2 and Layer 3 primitives in isolation. These run fast, offline, and must pass before anything else is trustworthy.
+| Suite | Task | Tests | Network | When |
+|---|---|---|---|---|
+| **Unit** | `:lib:test` | 297 | none (in-memory SQLite, pure crypto) | every PR — the fast gate |
+| **Integration** | `:lib:integrationTest` | 109 | live/containerized `obscura-server` | every PR (against a container in CI) |
 
-### Done
-- [x] CRDTTests — GSet idempotency, merge, persistence, sort, filter; LWWMap timestamp conflict, concurrent devices, tombstones, far-future clamping, persistence
-- [x] SignalStoreTests — Identity generation, persistence, reload, TOFU, identity change callback, prekey lifecycle (store/load/remove/count/highest), signed prekeys, session CRUD, multi-device sessions, deleteAll isolation
-- [x] TTLTests — Parse all units (s/m/h/d), schedule expiration, expired entries filtered from getAll/find, cleanup removes expired, isExpired reports correctly
-- [x] ModelTests — Schema definition, create with validation, find, query, upsert (LWW), delete (LWW + GSet rejection), where/first/count, handleSync for both CRDTs, TTL scheduling on create, multi-model isolation
-- [x] VerificationCodeTests — 4-digit codes, deterministic, device list codes
+**Rule:** a test that does not talk to the server belongs in `src/test`, not
+`src/integrationTest`. Integration tests are gated on `assumeTrue(checkServer())`
+so they skip-not-fail when no server is reachable; `OBSCURA_TEST_API` repoints
+them at a local container.
 
-### TODO
-- [ ] SyncManager targeting: belongs_to group members (group-targeted sync)
-- [ ] Association-based targeting in SyncManager (groupMessage → group members)
+Current unit-suite coverage (Kover): ~57% instruction / ~67% line. Regenerate
+with `:lib:koverHtmlReport`.
 
-## Tier 2: Integration Tests (live server) — NEXT
+---
 
-Prove Layer 2 reliability under stress. These require the server but test adversarial/edge conditions.
+## Tier 1 — Unit tests (`src/test`, no server)
 
-### Planned
-- [ ] Prekey exhaustion: drain prekeys, verify replenishment triggers, messaging continues
-- [ ] Session reset recovery: reset session, next message auto-rebuilds via prekey fetch
-- [ ] Concurrent sends: two devices send to same recipient simultaneously, both arrive
-- [ ] Offline queue depth: queue 50+ messages offline, reconnect, all drain
-- [ ] Token refresh during batch send: force expiry mid-send, verify refresh + completion
-- [ ] Decrypt failure: verify graceful handling when envelope is invalid (logged, ACK'd, not crash)
-- [ ] Multi-device MODEL_SYNC: story created on device1, device2 receives via self-sync
-- [ ] Private MODEL_SYNC isolation: settings model sent, friend does NOT receive
-- [ ] Group-targeted MODEL_SYNC: groupMessage targets only group members
+Prove the Layer 2/3 primitives in isolation. Fast, offline, run on every PR.
 
-## Tier 3: Scenario Tests (app developer surface) — LATER
+- **CRDTs** — `GSetTest`, `LWWMapTest`: idempotent add/merge, tombstones,
+  LWW timestamp conflicts + far-future clamp, order-independent convergence,
+  reload-from-DB persistence.
+- **ORM** — `ModelTests`, `ModelValidationTest`, `QueryBuilderTests`,
+  `TypedModelTests`, `TTLManagerTest`, `DeviceIdPropagationTest`,
+  `ObserveAndIncludeTests`: schema define/validate, create/find/upsert/delete,
+  the full query operator + DSL surface, typed encode/decode, TTL parse/expiry/
+  cleanup, observe() + include() eager loading.
+- **Signal** — `SignalStoreTests`, `SignalKeyUtilsTest`, `ConnectionUnitTests`:
+  identity/prekey/session persistence, signed-prekey signature generation,
+  reconnect backoff + signal throttle mechanics.
+- **Crypto** — `Bip39Test`, `BackupCryptoTest`, `RecoveryKeysTest`,
+  `SyncBlobTest`, `AttachmentCryptoTest`, `LinkCodeTest`, `VerificationCodeTest`,
+  `UuidCodecTest`, `Base64ExtensionsTest`.
+- **Stores / misc** — `FriendDomainTest`, `DeviceDomainTest`, `MessageDomainTest`,
+  `FriendCodeTest`, `ObscuraConfigTest`, `ObscuraEventTest`, `ApiTypesTest`,
+  `HttpExceptionTest`, `SyncTargetingTests`, `PixViewOnceTests`.
 
-Prove the "Rails developer" experience end-to-end. Each test reads like an app demo.
+### Known unit gaps (need a server or heavy mocking — covered by Tier 2)
+`ObscuraClient` facade, `AuthManager`, `DeviceManager`, `MessagingManager`,
+`MessageSender`, `APIClient`, `GatewayConnection`, `MessengerDomain`,
+`ClientSyncManager`, `RecoveryManager`, `FriendshipManager` read low in the
+unit-only coverage report because their behavior is exercised by the
+integration suite, not by unit tests.
 
-### Planned
-- [ ] Story lifecycle: create → appears in friend's feed → TTL expires → gone
-- [ ] Group chat: create group → send groupMessage → only members receive → non-members don't
-- [ ] Social feed: stories with comments and reactions, eager-loaded via include()
-- [ ] Private settings: change theme on phone → tablet syncs → friend never sees
-- [ ] Multi-app: snap clone and insta clone define different schemas, same user, same friends, each ignores the other's models
-- [ ] Offline-first: create story while offline → reconnect → friend receives → conversation state correct
-- [ ] Device linking: provision new device → existing stories sync via SYNC_BLOB → new device has full state
+---
 
-## Test Principles
+## Tier 2 — Integration tests (`src/integrationTest`, server-dependent)
 
-1. **Tier 1 tests never touch the network.** In-memory DB, direct class instantiation.
-2. **Tier 2 tests use the public API.** No reaching into internals.
-3. **Tier 3 tests read like app demos.** A product person should understand them.
-4. **If a scenario test reaches into internals, the facade is missing a method.**
-5. **All tests verify state, not just delivery.** Check conversations, friend lists, model entries — not just "message arrived."
+Prove Layer 1/2 reliability end-to-end against a real server. In CI these run
+against `ghcr.io/barrelmaker97/obscura-server:latest` with rate limits disabled.
+
+Implemented (109 tests): core register/login/connect flows, ORM auto-sync +
+offline sync + wire format, messaging + recovery messaging, multi-device
+fan-out + linking + takeover + revocation, device link flow, session
+reset/reconnect + reconnect resilience, attachments + story attachments, push,
+sync + backup, Signal ECS + edge cases, pix flow, refresh-scope parity,
+persistence, general edge cases.
+
+### Remaining Tier 2 candidates (verify not already covered before adding)
+- Prekey exhaustion -> replenishment -> messaging continues
+- Token refresh forced mid-batch-send -> refresh + completion
+- Decrypt failure on a malformed envelope -> logged, ACK'd, no crash
+
+---
+
+## Test principles
+
+1. Tier 1 never touches the network. In-memory DB, direct instantiation.
+2. Tier 2 uses the public API. If a Tier 2 test reaches into internals, the
+   facade is missing a method.
+3. Tests verify state (friend lists, conversations, model entries), not just
+   delivery.
