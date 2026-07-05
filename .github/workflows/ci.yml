@@ -36,6 +36,10 @@ jobs:
       - name: Coverage report (unit)
         run: ./gradlew :lib:koverHtmlReport :lib:koverXmlReport --no-daemon
 
+      # Fail the PR if unit coverage drops below the floor in lib/build.gradle.kts.
+      - name: Coverage gate (unit)
+        run: ./gradlew :lib:koverVerify --no-daemon
+
       - name: Publish lib to local Maven (smoke)
         run: ./gradlew :lib:publishToMavenLocal --no-daemon
 
@@ -57,14 +61,12 @@ jobs:
             lib/build/reports/kover/report.xml
           retention-days: 14
 
-  # Server-dependent scenario suite (256 tests, ~5 min) against the live
-  # Obscura server. Runs on main pushes only — PR feedback stays fast.
-  # The tests use JUnit Assumptions.assumeTrue(checkServer()) so a server
-  # outage shows as "skipped" rather than red. Worth eyeballing the report
-  # after each main run until we move to a containerized test server.
+  # Server-dependent scenario suite (256 tests) against a CONTAINERIZED
+  # obscura-server (latest GHCR image) instead of live prod — so it's
+  # isolated, and safe to run on every PR (no rate limits, no prod pollution).
+  # OBSCURA_TEST_API points the tests at the local container.
   lib-integration:
-    name: Lib (integration tests, live server)
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    name: Lib (integration tests, containerized server)
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
@@ -76,7 +78,49 @@ jobs:
 
       - uses: gradle/actions/setup-gradle@v6
 
+      - name: Start obscura-server (latest prebuilt image)
+        run: |
+          # Clone only for docker-compose.yml (services + env); the server
+          # itself comes prebuilt from GHCR — no Rust build in CI.
+          git clone --depth 1 https://github.com/barrelmaker97/obscura-server /tmp/obscura-server
+          cd /tmp/obscura-server
+          cat > compose.ci.yml <<'EOF'
+          services:
+            obscura-server:
+              image: ghcr.io/barrelmaker97/obscura-server:latest
+              pull_policy: always
+              environment:
+                # Prod runs 3 load-balanced instances (~3x effective limits); this
+                # single container would rate-limit the 230-test suite partway
+                # through. Rate limiting isn't under test here — effectively disable.
+                OBSCURA_RATE_LIMIT_PER_SECOND: 1000
+                OBSCURA_RATE_LIMIT_BURST: 2000
+                OBSCURA_RATE_LIMIT_AUTH_PER_SECOND: 1000
+                OBSCURA_RATE_LIMIT_AUTH_BURST: 2000
+          EOF
+          docker compose -f docker-compose.yml -f compose.ci.yml up -d --wait
+          # The server never creates its S3 bucket (no create_bucket in source);
+          # prod's bucket was provisioned out-of-band. Fresh MinIO needs it made.
+          AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
+            aws --endpoint-url http://localhost:9000 --region us-east-1 \
+            s3api create-bucket --bucket test-bucket
+
+      - name: Wait for server ready
+        run: |
+          for i in $(seq 1 60); do
+            if curl -s -o /dev/null http://localhost:3000/; then echo "server up"; exit 0; fi
+            sleep 5
+          done
+          echo "server did not become ready" >&2
+          (cd /tmp/obscura-server && docker compose logs obscura-server | tail -50)
+          exit 1
+
       - name: Integration tests
+        env:
+          OBSCURA_TEST_API: http://localhost:3000
+          # Client-side pacing exists for prod rate limits; the local container
+          # has them disabled, so drop the 500ms-per-auth-call sleep.
+          AUTH_REQUEST_DELAY_MS: 0
         run: ./gradlew :lib:integrationTest --no-daemon
 
       - name: Upload integration-test report

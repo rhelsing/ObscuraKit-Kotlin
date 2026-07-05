@@ -189,4 +189,31 @@ class TypedModelTests {
         val found = stories.find(entry.id)
         assertEquals("https://example.com/photo.jpg", found!!.value.mediaUrl)
     }
+
+    // ─── Mechanics (folded from the former unit TypedModelTest) ────
+
+    @Test
+    fun `delete removes a typed entry`() = runBlocking {
+        val profiles = TypedModel.wrap<Profile>(schema.model("profile"))
+        val entry = profiles.upsert("p1", Profile(displayName = "Alice"))
+        profiles.delete(entry.id)
+        assertNull(profiles.find("p1"))
+    }
+
+    @Test
+    fun `count reflects the number of typed entries`() = runBlocking {
+        val dms = TypedModel.wrap<DirectMessage>(schema.model("directMessage"))
+        dms.create(DirectMessage(conversationId = "c1", content = "hi", senderUsername = "alice"))
+        dms.create(DirectMessage(conversationId = "c1", content = "yo", senderUsername = "bob"))
+        assertEquals(2, dms.where(mapOf("data.conversationId" to "c1")).count())
+    }
+
+    @Test
+    fun `allSorted returns typed entries newest first`() = runBlocking {
+        val dms = TypedModel.wrap<DirectMessage>(schema.model("directMessage"))
+        dms.create(DirectMessage(conversationId = "c1", content = "first", senderUsername = "alice"))
+        Thread.sleep(2)
+        dms.create(DirectMessage(conversationId = "c1", content = "second", senderUsername = "alice"))
+        assertEquals("second", dms.allSorted(descending = true).first().value.content)
+    }
 }

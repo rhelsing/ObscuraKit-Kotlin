@@ -5,6 +5,7 @@ import com.obscura.kit.orm.OrmEntry
 import kotlinx.coroutines.test.runTest
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertFalse
+import org.junit.jupiter.api.Assertions.assertNotNull
 import org.junit.jupiter.api.Assertions.assertNull
 import org.junit.jupiter.api.Assertions.assertTrue
 import org.junit.jupiter.api.Test
@@ -156,5 +157,30 @@ class LWWMapTest {
     fun `get on missing id returns null without loading errors`() = runTest {
         val map = LWWMap(newInMemoryStore(), "profile")
         assertNull(map.get("never-set"))
+    }
+
+    @Test
+    fun `entries survive reload from the same store`() = runTest {
+        // A fresh LWWMap over the same DB must rehydrate the winning value.
+        val store = newInMemoryStore()
+        LWWMap(store, "settings").set(entry("cfg1", 1000, data = mapOf("theme" to "dark")))
+
+        val reloaded = LWWMap(store, "settings").get("cfg1")
+        assertNotNull(reloaded)
+        assertEquals("dark", reloaded!!.data["theme"])
+    }
+
+    @Test
+    fun `an older write does not resurrect a tombstone`() = runTest {
+        // delete() stamps the tombstone at now(), which is far newer than the
+        // timestamps below — so a late-arriving stale write must lose the LWW
+        // conflict and NOT un-delete the entry.
+        val map = LWWMap(newInMemoryStore(), "reaction")
+        map.set(entry("r1", 1000, data = mapOf("emoji" to "heart")))
+        map.delete("r1", "d1")
+
+        map.set(entry("r1", 500, device = "d2", data = mapOf("emoji" to "fire")))
+
+        assertTrue(map.get("r1")!!.isDeleted, "a stale write must not resurrect a tombstone")
     }
 }

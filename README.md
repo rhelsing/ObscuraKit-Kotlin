@@ -61,7 +61,7 @@ Your app only touches the top. Everything below is invisible.
 
 ## What Works
 
-Tested with 210+ tests (unit + integration against live server):
+Tested with 400+ tests — 297 unit (no network) + 109 integration (against a containerized `obscura-server`):
 
 - **ORM auto-sync** — `model.create()` encrypts and delivers to friends automatically
 - **Typed models** — `@Serializable` data classes with `TypedModel.wrap<T>()`
@@ -87,10 +87,16 @@ Tested with 210+ tests (unit + integration against live server):
 ```bash
 export JAVA_HOME=/path/to/jdk-21
 
-./gradlew :lib:test                              # unit tests (fast, no network)
-./gradlew :lib:integrationTest                   # scenario suite (needs a live server)
+./gradlew :lib:test                              # 297 unit tests (fast, no network)
+./gradlew :lib:integrationTest                   # 109 server-dependent tests
 ./gradlew :lib:koverHtmlReport                   # coverage report
 ```
+
+The integration suite targets `https://obscura.barrelmaker.dev` by default but
+honors `OBSCURA_TEST_API` — CI points it at a containerized `obscura-server`
+(rate limits disabled) so the suite runs on every PR without touching prod.
+Each integration test is gated on `assumeTrue(checkServer())`, so it
+skips-not-fails when no server is reachable.
 
 ## Docs
 

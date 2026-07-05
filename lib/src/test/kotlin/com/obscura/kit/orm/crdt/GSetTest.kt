@@ -103,4 +103,16 @@ class GSetTest {
         val weather = set.filter { it.data["topic"] == "weather" }
         assertEquals(2, weather.size)
     }
+
+    @Test
+    fun `entries survive reload from the same store`() = runTest {
+        // A fresh GSet over the same DB must rehydrate — proves the set is
+        // DB-backed, not in-memory, so content survives an app restart.
+        val store = newInMemoryStore()
+        GSet(store, "message").add(entry("m1", data = mapOf("text" to "persisted")))
+
+        val reloaded = GSet(store, "message").getAll()
+        assertEquals(1, reloaded.size)
+        assertEquals("persisted", reloaded[0].data["text"])
+    }
 }
