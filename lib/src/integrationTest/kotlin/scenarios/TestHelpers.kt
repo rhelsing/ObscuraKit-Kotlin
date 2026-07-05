@@ -7,7 +7,9 @@ import com.obscura.kit.stores.FriendStatus
 import kotlinx.coroutines.delay
 import org.junit.jupiter.api.Assertions.*
 
-const val API = "https://obscura.barrelmaker.dev"
+// Override with OBSCURA_TEST_API to point at a locally containerized
+// obscura-server (`docker compose up` → :3000) instead of the live server.
+val API: String = System.getenv("OBSCURA_TEST_API") ?: "https://obscura.barrelmaker.dev"
 const val TEST_PASSWORD = "testpass123!xyz"
 
 fun checkServer(): Boolean = try {
