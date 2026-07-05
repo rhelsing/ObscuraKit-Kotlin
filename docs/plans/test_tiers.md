@@ -60,10 +60,18 @@ reset/reconnect + reconnect resilience, attachments + story attachments, push,
 sync + backup, Signal ECS + edge cases, pix flow, refresh-scope parity,
 persistence, general edge cases.
 
-### Remaining Tier 2 candidates (verify not already covered before adding)
+### Remaining Tier 2 candidates
+These are genuine gaps, but each currently has **no public API surface** to drive
+or observe it — the relevant logic (`checkAndReplenishPreKeys`, decrypt-failure
+handling, token refresh) is private to `ObscuraClient`. Per principle #2 below,
+testing them cleanly needs a facade hook first (a production change), not
+internals-poking tests. Tracked here so that lands with the feature:
 - Prekey exhaustion -> replenishment -> messaging continues
 - Token refresh forced mid-batch-send -> refresh + completion
 - Decrypt failure on a malformed envelope -> logged, ACK'd, no crash
+
+_Validation note: the full 95-scenario suite has been run green against the
+containerized `obscura-server` locally, confirming the CI setup end-to-end._
 
 ---
 
