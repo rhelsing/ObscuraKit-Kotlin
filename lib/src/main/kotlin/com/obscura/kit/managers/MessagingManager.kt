@@ -17,7 +17,7 @@ internal class MessagingManager(
     private val messageSender get() = ctx.messageSender
     suspend fun send(friendUsername: String, text: String) {
         val friendData = friends.getAccepted().find { it.username == friendUsername }
-            ?: throw IllegalStateException("Not friends with $friendUsername")
+            ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
 
         val msg = ClientMessage.newBuilder()
             .setType(ClientMessage.Type.TEXT).setText(text)
@@ -48,7 +48,7 @@ internal class MessagingManager(
 
     suspend fun sendAttachment(friendUsername: String, attachmentId: String, contentKey: ByteArray, nonce: ByteArray, mimeType: String, sizeBytes: Long) {
         val friendData = friends.getAccepted().find { it.username == friendUsername }
-            ?: throw IllegalStateException("Not friends with $friendUsername")
+            ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
 
         val msg = ClientMessage.newBuilder()
             .setType(ClientMessage.Type.CONTENT_REFERENCE)
@@ -72,7 +72,7 @@ internal class MessagingManager(
 
     suspend fun sendModelSync(friendUsername: String, model: String, entryId: String, op: String = "CREATE", data: Map<String, Any?>) {
         val friendData = friends.getAccepted().find { it.username == friendUsername }
-            ?: throw IllegalStateException("Not friends with $friendUsername")
+            ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
 
         val opEnum = when (op.uppercase()) {
             "UPDATE" -> obscura.v2.Client.ModelSync.Op.UPDATE

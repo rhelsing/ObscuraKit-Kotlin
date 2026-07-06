@@ -39,7 +39,7 @@ class ObserveAndIncludeTests {
     @Test
     fun `observe emits current entries`() = runBlocking {
         schema.define(mapOf(
-            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = "gset")
+            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = SyncStrategy.GSET)
         ))
         val story = schema.model("story")
 
@@ -55,7 +55,7 @@ class ObserveAndIncludeTests {
         schema.define(mapOf(
             "post" to ModelConfig(
                 fields = mapOf("content" to "string", "author" to "string"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         ))
         val post = schema.model("post")
@@ -73,7 +73,7 @@ class ObserveAndIncludeTests {
         schema.define(mapOf(
             "post" to ModelConfig(
                 fields = mapOf("title" to "string", "likes" to "number"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         ))
         val post = schema.model("post")
@@ -95,12 +95,12 @@ class ObserveAndIncludeTests {
         schema.define(mapOf(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string"),
-                sync = "gset",
+                sync = SyncStrategy.GSET,
                 hasMany = listOf("comment")
             ),
             "comment" to ModelConfig(
                 fields = mapOf("text" to "string", "storyId" to "string"),
-                sync = "gset",
+                sync = SyncStrategy.GSET,
                 belongsTo = listOf("story")
             )
         ))
@@ -122,12 +122,12 @@ class ObserveAndIncludeTests {
         schema.define(mapOf(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string"),
-                sync = "gset",
+                sync = SyncStrategy.GSET,
                 hasMany = listOf("comment")
             ),
             "comment" to ModelConfig(
                 fields = mapOf("text" to "string", "storyId" to "string"),
-                sync = "gset",
+                sync = SyncStrategy.GSET,
                 belongsTo = listOf("story")
             )
         ))
@@ -158,12 +158,12 @@ class ObserveAndIncludeTests {
         schema.define(mapOf(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string"),
-                sync = "gset",
+                sync = SyncStrategy.GSET,
                 hasMany = listOf("comment")
             ),
             "comment" to ModelConfig(
                 fields = mapOf("text" to "string", "storyId" to "string"),
-                sync = "gset",
+                sync = SyncStrategy.GSET,
                 belongsTo = listOf("story")
             )
         ))
@@ -181,17 +181,17 @@ class ObserveAndIncludeTests {
         schema.define(mapOf(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string"),
-                sync = "gset",
+                sync = SyncStrategy.GSET,
                 hasMany = listOf("comment", "reaction")
             ),
             "comment" to ModelConfig(
                 fields = mapOf("text" to "string", "storyId" to "string"),
-                sync = "gset",
+                sync = SyncStrategy.GSET,
                 belongsTo = listOf("story")
             ),
             "reaction" to ModelConfig(
                 fields = mapOf("emoji" to "string", "storyId" to "string"),
-                sync = "lww",
+                sync = SyncStrategy.LWW,
                 belongsTo = listOf("story")
             )
         ))

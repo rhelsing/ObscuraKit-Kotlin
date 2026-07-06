@@ -43,7 +43,7 @@ internal class DeviceManager(
 
     suspend fun announceDeviceRevocation(friendUsername: String, remainingDeviceIds: List<String>) {
         val friendData = friends.getAccepted().find { it.username == friendUsername }
-            ?: throw IllegalStateException("Not friends with $friendUsername")
+            ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
 
         val msg = ClientMessage.newBuilder()
             .setType(ClientMessage.Type.DEVICE_ANNOUNCE)

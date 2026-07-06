@@ -48,7 +48,7 @@ class ModelTests {
         val schema = defineSchema(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string", "mediaUrl" to "string?"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         )
         val story = schema.model("story")
@@ -77,7 +77,7 @@ class ModelTests {
     @Test
     fun `Create entry generates ID and timestamp`() = runBlocking {
         val schema = defineSchema(
-            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = "gset")
+            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = SyncStrategy.GSET)
         )
         val story = schema.model("story")
 
@@ -92,7 +92,7 @@ class ModelTests {
     @Test
     fun `Created entry is immediately findable`() = runBlocking {
         val schema = defineSchema(
-            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = "gset")
+            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = SyncStrategy.GSET)
         )
         val story = schema.model("story")
         val entry = story.create(mapOf("content" to "find me"))
@@ -105,7 +105,7 @@ class ModelTests {
     @Test
     fun `Create multiple entries — all queryable`() = runBlocking {
         val schema = defineSchema(
-            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = "gset")
+            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = SyncStrategy.GSET)
         )
         val story = schema.model("story")
 
@@ -122,7 +122,7 @@ class ModelTests {
     @Test
     fun `Required field missing throws ValidationException`() = runBlocking {
         val schema = defineSchema(
-            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = "gset")
+            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = SyncStrategy.GSET)
         )
         val story = schema.model("story")
 
@@ -136,7 +136,7 @@ class ModelTests {
         val schema = defineSchema(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string", "mediaUrl" to "string?"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         )
         val story = schema.model("story")
@@ -149,7 +149,7 @@ class ModelTests {
     @Test
     fun `Wrong type throws ValidationException`() = runBlocking {
         val schema = defineSchema(
-            "story" to ModelConfig(fields = mapOf("count" to "number"), sync = "lww")
+            "story" to ModelConfig(fields = mapOf("count" to "number"), sync = SyncStrategy.LWW)
         )
         val model = schema.model("story")
 
@@ -165,7 +165,7 @@ class ModelTests {
         val schema = defineSchema(
             "settings" to ModelConfig(
                 fields = mapOf("theme" to "string"),
-                sync = "lww"
+                sync = SyncStrategy.LWW
             )
         )
         val settings = schema.model("settings")
@@ -180,7 +180,7 @@ class ModelTests {
         val schema = defineSchema(
             "settings" to ModelConfig(
                 fields = mapOf("theme" to "string"),
-                sync = "lww"
+                sync = SyncStrategy.LWW
             )
         )
         val settings = schema.model("settings")
@@ -200,7 +200,7 @@ class ModelTests {
         val schema = defineSchema(
             "reaction" to ModelConfig(
                 fields = mapOf("emoji" to "string"),
-                sync = "lww"
+                sync = SyncStrategy.LWW
             )
         )
         val reaction = schema.model("reaction")
@@ -215,7 +215,7 @@ class ModelTests {
     @Test
     fun `Delete on GSet model throws`() = runBlocking {
         val schema = defineSchema(
-            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = "gset")
+            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = SyncStrategy.GSET)
         )
         val story = schema.model("story")
         val entry = story.create(mapOf("content" to "permanent"))
@@ -232,7 +232,7 @@ class ModelTests {
         val schema = defineSchema(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string", "author" to "string"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         )
         val story = schema.model("story")
@@ -249,7 +249,7 @@ class ModelTests {
     @Test
     fun `where on authorDeviceId`() = runBlocking {
         val schema = defineSchema(
-            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = "gset")
+            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = SyncStrategy.GSET)
         )
         val story = schema.model("story")
         story.create(mapOf("content" to "mine"))
@@ -261,7 +261,7 @@ class ModelTests {
     @Test
     fun `first returns single entry or null`() = runBlocking {
         val schema = defineSchema(
-            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = "gset")
+            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = SyncStrategy.GSET)
         )
         val story = schema.model("story")
 
@@ -275,7 +275,7 @@ class ModelTests {
     @Test
     fun `count returns correct number`() = runBlocking {
         val schema = defineSchema(
-            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = "gset")
+            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = SyncStrategy.GSET)
         )
         val story = schema.model("story")
 
@@ -290,7 +290,7 @@ class ModelTests {
     @Test
     fun `GSet handleSync merges remote entry`() = runBlocking {
         val schema = defineSchema(
-            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = "gset")
+            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = SyncStrategy.GSET)
         )
         val story = schema.model("story")
 
@@ -312,7 +312,7 @@ class ModelTests {
     @Test
     fun `LWWMap handleSync respects timestamps`() = runBlocking {
         val schema = defineSchema(
-            "settings" to ModelConfig(fields = mapOf("theme" to "string"), sync = "lww")
+            "settings" to ModelConfig(fields = mapOf("theme" to "string"), sync = SyncStrategy.LWW)
         )
         val settings = schema.model("settings")
 
@@ -338,7 +338,7 @@ class ModelTests {
         val schema = defineSchema(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string"),
-                sync = "gset",
+                sync = SyncStrategy.GSET,
                 ttl = "24h"
             )
         )
@@ -355,8 +355,8 @@ class ModelTests {
     @Test
     fun `Multiple models in same schema are isolated`() = runBlocking {
         val schema = defineSchema(
-            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = "gset"),
-            "settings" to ModelConfig(fields = mapOf("theme" to "string"), sync = "lww")
+            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = SyncStrategy.GSET),
+            "settings" to ModelConfig(fields = mapOf("theme" to "string"), sync = SyncStrategy.LWW)
         )
 
         schema.model("story").create(mapOf("content" to "a story"))
@@ -369,9 +369,9 @@ class ModelTests {
     @Test
     fun `allModels returns the full registry`() {
         val schema = defineSchema(
-            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = "gset"),
-            "settings" to ModelConfig(fields = mapOf("theme" to "string"), sync = "lww"),
-            "reaction" to ModelConfig(fields = mapOf("emoji" to "string"), sync = "lww")
+            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = SyncStrategy.GSET),
+            "settings" to ModelConfig(fields = mapOf("theme" to "string"), sync = SyncStrategy.LWW),
+            "reaction" to ModelConfig(fields = mapOf("emoji" to "string"), sync = SyncStrategy.LWW)
         )
         assertEquals(3, schema.allModels().size)
         assertTrue(schema.allModels().containsKey("story"))

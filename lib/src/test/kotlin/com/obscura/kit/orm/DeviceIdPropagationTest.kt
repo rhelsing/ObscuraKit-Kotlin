@@ -35,7 +35,7 @@ class DeviceIdPropagationTest {
         ).apply {
             define(mapOf("note" to ModelConfig(
                 fields = mapOf("text" to "string"),
-                sync = "lww"
+                sync = SyncStrategy.LWW
             )))
         }
     }

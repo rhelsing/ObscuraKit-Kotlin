@@ -135,7 +135,10 @@ class GatewayConnection(
                             }
                         }
                     }
-                } catch (_: Exception) {}
+                } catch (e: Exception) {
+                    // Corrupt/undecodable frame on the wire: drop it and keep the socket
+                    // alive. Non-fatal and self-limiting; the transport has no logger.
+                }
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {

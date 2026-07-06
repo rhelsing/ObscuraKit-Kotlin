@@ -39,7 +39,7 @@ class QueryBuilderTests {
                     "likes" to "number",
                     "published" to "boolean"
                 ),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         ))
 

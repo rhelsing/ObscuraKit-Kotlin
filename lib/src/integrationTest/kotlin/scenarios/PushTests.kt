@@ -4,6 +4,7 @@ import com.obscura.kit.ConnectionState
 import com.obscura.kit.ObscuraClient
 import com.obscura.kit.ObscuraConfig
 import com.obscura.kit.orm.ModelConfig
+import com.obscura.kit.orm.SyncStrategy
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.*
@@ -53,7 +54,7 @@ class PushTests {
                     "senderUsername" to "string",
                     "mediaRef" to "string"
                 ),
-                sync = "lww"
+                sync = SyncStrategy.LWW
             ),
             "directMessage" to ModelConfig(
                 fields = mapOf(
@@ -61,7 +62,7 @@ class PushTests {
                     "content" to "string",
                     "senderUsername" to "string"
                 ),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         )
         alice.orm.define(schema)

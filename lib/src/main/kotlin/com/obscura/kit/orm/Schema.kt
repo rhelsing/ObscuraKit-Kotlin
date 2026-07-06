@@ -23,7 +23,7 @@ class Schema(
 
     fun define(definitions: Map<String, ModelConfig>) {
         for ((name, config) in definitions) {
-            val model = if (config.sync == "lww") {
+            val model = if (config.sync == SyncStrategy.LWW) {
                 Model(
                     name = name, config = config,
                     lwwMap = LWWMap(store, name),

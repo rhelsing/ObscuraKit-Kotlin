@@ -1,6 +1,7 @@
 package scenarios
 
 import com.obscura.kit.orm.ModelConfig
+import com.obscura.kit.orm.SyncStrategy
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
@@ -30,7 +31,7 @@ class ORMWireTests {
         val profileConfig = mapOf(
             "profile" to ModelConfig(
                 fields = mapOf("displayName" to "string", "bio" to "string?"),
-                sync = "lww"
+                sync = SyncStrategy.LWW
             )
         )
         alice.orm.define(profileConfig)
@@ -76,7 +77,7 @@ class ORMWireTests {
                     "likes" to "number",
                     "published" to "boolean"
                 ),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         )
         alice.orm.define(storyConfig)
@@ -118,11 +119,11 @@ class ORMWireTests {
         val multiSchema = mapOf(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             ),
             "profile" to ModelConfig(
                 fields = mapOf("displayName" to "string"),
-                sync = "lww"
+                sync = SyncStrategy.LWW
             )
         )
         alice.orm.define(multiSchema)
@@ -170,7 +171,7 @@ class ORMWireTests {
         client1.orm.define(mapOf(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         ))
 
@@ -198,7 +199,7 @@ class ORMWireTests {
         client2.orm.define(mapOf(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         ))
 

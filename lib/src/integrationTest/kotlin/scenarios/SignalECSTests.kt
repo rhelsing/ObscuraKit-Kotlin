@@ -1,6 +1,7 @@
 package scenarios
 
 import com.obscura.kit.orm.ModelConfig
+import com.obscura.kit.orm.SyncStrategy
 import com.obscura.kit.orm.SignalManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
@@ -113,7 +114,7 @@ class SignalECSTests {
         val msgSchema = mapOf(
             "directMessage" to ModelConfig(
                 fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         )
         alice.orm.define(msgSchema)
@@ -146,7 +147,7 @@ class SignalECSTests {
         val msgSchema = mapOf(
             "directMessage" to ModelConfig(
                 fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         )
         alice.orm.define(msgSchema)

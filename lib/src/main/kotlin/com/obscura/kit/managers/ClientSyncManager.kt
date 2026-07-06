@@ -87,7 +87,9 @@ internal class ClientSyncManager(
     suspend fun resetAllSessions(reason: String = "manual") {
         val allFriends = friends.getAccepted()
         for (friend in allFriends) {
-            try { resetSessionWith(friend.userId, reason) } catch (e: Exception) { }
+            try { resetSessionWith(friend.userId, reason) } catch (e: Exception) {
+                // Best-effort: one friend's session reset must not abort resetting the rest.
+            }
         }
     }
 }

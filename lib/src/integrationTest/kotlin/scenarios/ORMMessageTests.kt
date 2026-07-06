@@ -1,6 +1,7 @@
 package scenarios
 
 import com.obscura.kit.orm.ModelConfig
+import com.obscura.kit.orm.SyncStrategy
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
@@ -20,7 +21,7 @@ class ORMMessageTests {
     private val messageSchema = mapOf(
         "directMessage" to ModelConfig(
             fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"),
-            sync = "gset"
+            sync = SyncStrategy.GSET
         )
     )
 

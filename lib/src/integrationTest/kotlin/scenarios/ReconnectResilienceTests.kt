@@ -2,6 +2,7 @@ package scenarios
 
 import com.obscura.kit.ConnectionState
 import com.obscura.kit.orm.ModelConfig
+import com.obscura.kit.orm.SyncStrategy
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
@@ -84,7 +85,7 @@ class ReconnectResilienceTests {
         becomeFriends(alice, bob)
 
         val storyConfig = mapOf(
-            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = "gset")
+            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = SyncStrategy.GSET)
         )
         alice.orm.define(storyConfig)
         bob.orm.define(storyConfig)

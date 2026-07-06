@@ -43,7 +43,7 @@ class Model(
             signature = sign(name, id, data)
         )
 
-        if (config.sync == "lww") {
+        if (config.sync == SyncStrategy.LWW) {
             lwwMap!!.add(entry)
         } else {
             gset!!.add(entry)
@@ -89,7 +89,7 @@ class Model(
     }
 
     suspend fun find(id: String): OrmEntry? {
-        return if (config.sync == "lww") lwwMap?.get(id) else gset?.get(id)
+        return if (config.sync == SyncStrategy.LWW) lwwMap?.get(id) else gset?.get(id)
     }
 
     fun where(conditions: Map<String, Any?>): QueryBuilder {
@@ -107,11 +107,11 @@ class Model(
     }
 
     suspend fun all(): List<OrmEntry> {
-        return if (config.sync == "lww") lwwMap?.getAll() ?: emptyList() else gset?.getAll() ?: emptyList()
+        return if (config.sync == SyncStrategy.LWW) lwwMap?.getAll() ?: emptyList() else gset?.getAll() ?: emptyList()
     }
 
     suspend fun allSorted(descending: Boolean = true): List<OrmEntry> {
-        return if (config.sync == "lww") lwwMap?.getAllSorted(descending) ?: emptyList()
+        return if (config.sync == SyncStrategy.LWW) lwwMap?.getAllSorted(descending) ?: emptyList()
         else gset?.getAllSorted(descending) ?: emptyList()
     }
 
@@ -147,7 +147,7 @@ class Model(
     }
 
     suspend fun delete(id: String) {
-        if (config.sync != "lww") throw IllegalStateException("Delete only supported for LWW models")
+        if (config.sync != SyncStrategy.LWW) throw IllegalStateException("Delete only supported for LWW models")
         lwwMap?.delete(id, deviceIdProvider())
     }
 
@@ -199,7 +199,7 @@ class Model(
             signature = modelSync.signature
         )
 
-        val merged = if (config.sync == "lww") {
+        val merged = if (config.sync == SyncStrategy.LWW) {
             lwwMap?.merge(listOf(entry)) ?: emptyList()
         } else {
             gset?.merge(listOf(entry)) ?: emptyList()
@@ -210,8 +210,7 @@ class Model(
 
     fun validate(data: Map<String, Any?>) {
         for ((field, type) in config.fields) {
-            val isOptional = type.endsWith("?")
-            val baseType = type.removeSuffix("?")
+            val (baseType, isOptional) = FieldTypes.parse(field, type)
             val value = data[field]
 
             if (value == null) {
@@ -226,12 +225,6 @@ class Model(
                 "timestamp" -> if (value !is Number || value.toLong() < 0) throw ValidationException("$field must be positive timestamp")
             }
         }
-    }
-
-    fun getTargetingAssociation(): Pair<String, String>? {
-        if (config.belongsTo.isEmpty()) return null
-        val parent = config.belongsTo[0]
-        return Pair(parent, "${parent}Id")
     }
 
     private fun sign(model: String, id: String, data: Map<String, Any?>): ByteArray {

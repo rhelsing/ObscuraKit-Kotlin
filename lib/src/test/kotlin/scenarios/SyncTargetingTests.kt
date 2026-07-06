@@ -1,8 +1,10 @@
 package scenarios
 
+import com.obscura.kit.orm.Audience
 import com.obscura.kit.orm.Model
 import com.obscura.kit.orm.ModelConfig
 import com.obscura.kit.orm.OrmEntry
+import com.obscura.kit.orm.SyncStrategy
 import com.obscura.kit.orm.SyncManager
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.assertEquals
@@ -58,7 +60,7 @@ class SyncTargetingTests {
     fun `directMessage goes only to the two participants, never to other friends`() = runBlocking {
         val recorded = mutableListOf<String>()
         val sm = newSyncManager(recorded)
-        val dm = Model("directMessage", ModelConfig(sync = "gset", direct = true))
+        val dm = Model("directMessage", ModelConfig(sync = SyncStrategy.GSET, audience = Audience.Conversation("conversationId")))
 
         sm.broadcast(dm, entry(mapOf(
             "conversationId" to conversationId(selfUserId, "uB"), // me ↔ bob
@@ -76,7 +78,7 @@ class SyncTargetingTests {
     fun `pix goes only to its recipient, never to other friends`() = runBlocking {
         val recorded = mutableListOf<String>()
         val sm = newSyncManager(recorded)
-        val pix = Model("pix", ModelConfig(sync = "lww", direct = true))
+        val pix = Model("pix", ModelConfig(sync = SyncStrategy.LWW, audience = Audience.Recipient("recipientUsername")))
 
         sm.broadcast(pix, entry(mapOf(
             "recipientUsername" to "alice",
@@ -94,7 +96,7 @@ class SyncTargetingTests {
     fun `story still broadcasts to all friends`() = runBlocking {
         val recorded = mutableListOf<String>()
         val sm = newSyncManager(recorded)
-        val story = Model("story", ModelConfig(sync = "gset", ttl = "24h"))
+        val story = Model("story", ModelConfig(sync = SyncStrategy.GSET, ttl = "24h"))
 
         sm.broadcast(story, entry(mapOf("content" to "hi all", "authorUsername" to "me")))
 
@@ -106,7 +108,7 @@ class SyncTargetingTests {
     fun `profile still broadcasts to all friends`() = runBlocking {
         val recorded = mutableListOf<String>()
         val sm = newSyncManager(recorded)
-        val profile = Model("profile", ModelConfig(sync = "lww"))
+        val profile = Model("profile", ModelConfig(sync = SyncStrategy.LWW))
 
         sm.broadcast(profile, entry(mapOf("displayName" to "Me", "bio" to "hi")))
 
@@ -118,7 +120,7 @@ class SyncTargetingTests {
     fun `private settings goes only to own devices`() = runBlocking {
         val recorded = mutableListOf<String>()
         val sm = newSyncManager(recorded)
-        val settings = Model("settings", ModelConfig(sync = "lww", private = true))
+        val settings = Model("settings", ModelConfig(sync = SyncStrategy.LWW, audience = Audience.Self))
 
         sm.broadcast(settings, entry(mapOf("theme" to "dark", "notificationsEnabled" to true)))
 
@@ -130,10 +132,10 @@ class SyncTargetingTests {
     fun `direct model with an unrecognized conversationId throws instead of broadcasting`() = runBlocking {
         val recorded = mutableListOf<String>()
         val sm = newSyncManager(recorded)
-        val dm = Model("directMessage", ModelConfig(sync = "gset", direct = true))
+        val dm = Model("directMessage", ModelConfig(sync = SyncStrategy.GSET, audience = Audience.Conversation("conversationId")))
 
         // A malformed / multi-party id (not exactly two parts) must NOT silently broadcast.
-        val ex = assertThrows<IllegalStateException> {
+        val ex = assertThrows<com.obscura.kit.ObscuraError.DirectRoutingUnresolved> {
             runBlocking {
                 sm.broadcast(dm, entry(mapOf(
                     "conversationId" to "uMe_uB_uC",
@@ -142,7 +144,7 @@ class SyncTargetingTests {
                 )))
             }
         }
-        assert(ex.message?.contains("direct") == true) { "error must explain why it refused" }
+        assert(ex.message?.contains("Refusing to broadcast") == true) { "error must explain why it refused" }
         assertEquals(emptyList<String>(), recorded,
             "nothing may be sent when a direct recipient cannot be resolved")
     }
@@ -151,10 +153,10 @@ class SyncTargetingTests {
     fun `direct model with no recipient data at all throws`() = runBlocking {
         val recorded = mutableListOf<String>()
         val sm = newSyncManager(recorded)
-        val pix = Model("pix", ModelConfig(sync = "lww", direct = true))
+        val pix = Model("pix", ModelConfig(sync = SyncStrategy.LWW, audience = Audience.Recipient("recipientUsername")))
 
         // No recipientUsername, no conversationId — the audience is undeclared.
-        assertThrows<IllegalStateException> {
+        assertThrows<com.obscura.kit.ObscuraError.DirectRoutingUnresolved> {
             runBlocking {
                 sm.broadcast(pix, entry(mapOf("mediaRef" to "ref-1", "senderUsername" to "me")))
             }

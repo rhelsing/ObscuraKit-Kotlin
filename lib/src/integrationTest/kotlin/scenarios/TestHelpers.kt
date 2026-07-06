@@ -3,9 +3,15 @@ package scenarios
 import com.obscura.kit.ObscuraClient
 import com.obscura.kit.ObscuraConfig
 import com.obscura.kit.AuthState
+import com.obscura.kit.ReceivedMessage
 import com.obscura.kit.stores.FriendStatus
 import kotlinx.coroutines.delay
+import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.*
+
+/** Test-only: suspend until the next inbound message (or time out). */
+suspend fun ObscuraClient.waitForMessage(timeoutMs: Long = 15_000): ReceivedMessage =
+    withTimeout(timeoutMs) { incomingMessages.receive() }
 
 // Override with OBSCURA_TEST_API to point at a locally containerized
 // obscura-server (`docker compose up` → :3000) instead of the live server.

@@ -29,6 +29,7 @@ import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
 import com.obscura.kit.orm.ModelConfig
+import com.obscura.kit.orm.SyncStrategy
 import com.obscura.kit.persistence.NoOpSessionStorage
 import com.obscura.kit.persistence.SessionStorage
 import obscura.v2.Client.ClientMessage
@@ -169,7 +170,13 @@ class ObscuraClient(
     /** Structured logger for security events. Set to a custom implementation for production. */
     var logger: ObscuraLogger = NoOpLogger
 
-    // Test convenience — single-consumer channel
+    /**
+     * The kit's inbound-message stream and the intended public consumer API:
+     * exactly one consumer should drain this channel (e.g. the app's
+     * process-scoped session), classify each [ReceivedMessage], and fan out to
+     * UI/notifications. Buffered so messages that arrive before a consumer
+     * attaches (e.g. an FCM cold-start) are not dropped.
+     */
     val incomingMessages = Channel<ReceivedMessage>(capacity = 1000)
 
     /** Debug log — ring buffer of last 200 events. Thread-safe. */
@@ -209,7 +216,7 @@ class ObscuraClient(
     init {
         if (externalDriver == null) {
             ObscuraDatabase.Schema.create(driver)
-            try { driver.execute(null, "PRAGMA secure_delete = ON", 0) } catch (_: Exception) {}
+            try { driver.execute(null, "PRAGMA secure_delete = ON", 0) } catch (e: Exception) { log("PRAGMA secure_delete failed: ${e.message}") }
         }
         db = ObscuraDatabase(driver)
 
@@ -312,7 +319,7 @@ class ObscuraClient(
                 var deviceIds = messenger.getDeviceIdsForUser(f.userId)
                 if (deviceIds.isEmpty()) {
                     // Discover devices via prekey bundle fetch (same as MessageSender)
-                    try { messenger.fetchPreKeyBundles(f.userId) } catch (_: Exception) {}
+                    try { messenger.fetchPreKeyBundles(f.userId) } catch (e: Exception) { log("prekey bundle fetch failed: ${e.message}") }
                     deviceIds = messenger.getDeviceIdsForUser(f.userId)
                 }
                 targets.addAll(deviceIds)
@@ -340,7 +347,7 @@ class ObscuraClient(
             if (friend != null) {
                 var deviceIds = messenger.getDeviceIdsForUser(friend.userId)
                 if (deviceIds.isEmpty()) {
-                    try { messenger.fetchPreKeyBundles(friend.userId) } catch (_: Exception) {}
+                    try { messenger.fetchPreKeyBundles(friend.userId) } catch (e: Exception) { log("prekey bundle fetch failed: ${e.message}") }
                     deviceIds = messenger.getDeviceIdsForUser(friend.userId)
                 }
                 deviceIds
@@ -356,7 +363,7 @@ class ObscuraClient(
             if (isFriend) {
                 var deviceIds = messenger.getDeviceIdsForUser(userId)
                 if (deviceIds.isEmpty()) {
-                    try { messenger.fetchPreKeyBundles(userId) } catch (_: Exception) {}
+                    try { messenger.fetchPreKeyBundles(userId) } catch (e: Exception) { log("prekey bundle fetch failed: ${e.message}") }
                     deviceIds = messenger.getDeviceIdsForUser(userId)
                 }
                 deviceIds
@@ -386,7 +393,7 @@ class ObscuraClient(
             for (f in accepted) {
                 var deviceIds = messenger.getDeviceIdsForUser(f.userId)
                 if (deviceIds.isEmpty()) {
-                    try { messenger.fetchPreKeyBundles(f.userId) } catch (_: Exception) {}
+                    try { messenger.fetchPreKeyBundles(f.userId) } catch (e: Exception) { log("prekey bundle fetch failed: ${e.message}") }
                     deviceIds = messenger.getDeviceIdsForUser(f.userId)
                 }
                 for (devId in deviceIds) {
@@ -562,7 +569,11 @@ class ObscuraClient(
 
     /**
      * Parse ORM schema from JSON (matches schema.ts format) and define models.
-     * JSON shape: {"modelName": {"fields": {"name": "string"}, "sync": "gset", "ttl": "24h", "private": false}}
+     * JSON shape:
+     *   {"modelName": {"fields": {"name": "string"}, "sync": "gset", "ttl": "24h",
+     *                  "audience": {"kind": "conversation", "field": "conversationId"}}}
+     * `audience` is optional (defaults to broadcast-to-friends). Supported kinds:
+     * "friends", "self", "recipient" (+field), "conversation" (+field).
      */
     suspend fun defineModelsFromJson(jsonString: String) {
         val schema = JSONObject(jsonString)
@@ -572,12 +583,15 @@ class ObscuraClient(
             val fieldsObj = model.getJSONObject("fields")
             val fields = mutableMapOf<String, String>()
             for (key in fieldsObj.keys()) fields[key] = fieldsObj.getString(key)
+            val audienceObj = model.optJSONObject("audience")
             models[name] = ModelConfig(
                 fields = fields,
-                sync = model.optString("sync", "gset"),
+                sync = SyncStrategy.fromWire(model.optString("sync", "gset")),
                 ttl = if (model.has("ttl") && !model.isNull("ttl")) model.getString("ttl") else null,
-                private = model.optBoolean("private", false),
-                direct = model.optBoolean("direct", false)
+                audience = com.obscura.kit.orm.Audience.fromWire(
+                    kind = audienceObj?.optString("kind"),
+                    field = audienceObj?.optString("field"),
+                ),
             )
         }
         orm.define(models)
@@ -608,8 +622,8 @@ class ObscuraClient(
      * Generate a friend code for sharing. Returns base64-encoded JSON.
      */
     fun friendCode(): String {
-        val uid = userId ?: throw IllegalStateException("Not authenticated")
-        val uname = username ?: throw IllegalStateException("Not authenticated")
+        val uid = userId ?: throw com.obscura.kit.ObscuraError.NotAuthenticated()
+        val uname = username ?: throw com.obscura.kit.ObscuraError.NotAuthenticated()
         val json = JSONObject().apply { put("n", uname); put("u", uid) }
         return Base64.getEncoder().encodeToString(json.toString().toByteArray())
     }
@@ -624,7 +638,7 @@ class ObscuraClient(
         eventForwardingJob?.cancel()
         authManager.tokenRefreshJob?.cancel()
         gateway.disconnect() // fires onStateChanged → _connectionState = DISCONNECTED
-        try { authManager.logout() } catch (_: Exception) {}
+        try { authManager.logout() } catch (e: Exception) { log("logout during fullLogout failed: ${e.message}") }
         _authState.value = AuthState.LOGGED_OUT
         _friendList.value = emptyList()
         _pendingRequests.value = emptyList()
@@ -831,7 +845,7 @@ class ObscuraClient(
 
                 if (isDecryptRateLimited(senderId)) {
                     log("RECV BLOCKED rate-limited sender=$senderId")
-                    try { gateway.ack(listOf(envelope.id)) } catch (_: Exception) { }
+                    try { gateway.ack(listOf(envelope.id)) } catch (e: Exception) { log("envelope ack failed: ${e.message}") }
                     continue
                 }
 
@@ -863,7 +877,7 @@ class ObscuraClient(
                     logger.decryptFailed(senderId, e.message ?: "unknown")
                 }
 
-                try { gateway.ack(listOf(envelope.id)) } catch (e: Exception) { }
+                try { gateway.ack(listOf(envelope.id)) } catch (e: Exception) { log("envelope ack failed: ${e.message}") }
             }
         }
     }
@@ -1011,7 +1025,7 @@ class ObscuraClient(
                 timestamp = sync.timestamp, authorDeviceId = sync.authorDeviceId
             )
             _typedEvents.tryEmit(ObscuraEvent.MessageReceived(sync.model, entry))
-        } catch (_: Exception) {}
+        } catch (e: Exception) { log("typed-event emit for '${sync.model}' failed: ${e.message}") }
 
         // DirectMessage MODEL_SYNC → also route to conversations for chat UI
         if (sync.model == "directMessage") {
@@ -1028,7 +1042,7 @@ class ObscuraClient(
                 )
                 messagesDomain.add(conversationWith, msgData)
                 refreshConversation(conversationWith)
-            } catch (_: Exception) {}
+            } catch (e: Exception) { log("directMessage conversation routing failed: ${e.message}") }
         }
     }
 
@@ -1098,7 +1112,7 @@ class ObscuraClient(
         if (approval.friendsExport.size() > 0) {
             try {
                 friends.importAll(String(approval.friendsExport.toByteArray()))
-            } catch (_: Exception) {}
+            } catch (e: Exception) { log("friend import from link approval failed: ${e.message}") }
         }
 
         session.pendingLinkChallenge = null
@@ -1129,7 +1143,7 @@ class ObscuraClient(
         val directMessage = orm.modelOrNull("directMessage")
         if (directMessage != null) {
             val friendData = friends.getAccepted().find { it.username == friendUsername }
-                ?: throw IllegalStateException("Not friends with $friendUsername")
+                ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
             val convId = listOf(userId ?: "", friendData.userId).sorted().joinToString("_")
             // Create via ORM — auto-syncs to friend via MODEL_SYNC
             val entry = directMessage.create(mapOf(
@@ -1176,7 +1190,7 @@ class ObscuraClient(
      * The existing device scans this and calls validateAndApproveLink().
      */
     fun generateLinkCode(): String {
-        val did = deviceId ?: throw IllegalStateException("Not provisioned — call loginAndProvision first")
+        val did = deviceId ?: throw com.obscura.kit.ObscuraError.NotProvisioned("Not provisioned — call loginAndProvision first")
         val identityKey = signalStore.getIdentityKeyPair().publicKey.serialize()
         val generated = com.obscura.kit.crypto.LinkCode.generate(did, did, identityKey)
         session.pendingLinkChallenge = generated.challenge
@@ -1229,8 +1243,4 @@ class ObscuraClient(
     suspend fun resetAllSessions(reason: String = "manual") = clientSyncManager.resetAllSessions(reason)
     suspend fun requestSync() = clientSyncManager.requestSync()
     suspend fun pushHistoryToDevice(targetDeviceId: String) = clientSyncManager.pushHistoryToDevice(targetDeviceId)
-
-    suspend fun waitForMessage(timeoutMs: Long = 15_000): ReceivedMessage {
-        return kotlinx.coroutines.withTimeout(timeoutMs) { incomingMessages.receive() }
-    }
 }
