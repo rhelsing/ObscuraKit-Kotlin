@@ -9,6 +9,7 @@ import com.obscura.kit.managers.*
 import com.obscura.kit.managers.SignalKeyUtils.toApiJson
 import com.obscura.kit.network.APIClient
 import com.obscura.kit.network.GatewayConnection
+import com.obscura.kit.network.GatewayState
 import com.obscura.kit.network.UploadDeviceKeysRequest
 import com.obscura.kit.orm.ModelStore
 import com.obscura.kit.orm.SignalManager
@@ -25,6 +26,8 @@ import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharedFlow
 import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import com.obscura.kit.orm.ModelConfig
 import com.obscura.kit.persistence.NoOpSessionStorage
 import com.obscura.kit.persistence.SessionStorage
@@ -43,7 +46,14 @@ data class ReceivedMessage(
     val raw: ClientMessage? = null
 )
 
-enum class ConnectionState { DISCONNECTED, CONNECTING, CONNECTED }
+/**
+ * Public connection state. 1:1 with the network layer's [GatewayState] and with
+ * the Swift kit's ConnectionState (disconnected/connecting/reconnecting/connected):
+ *   CONNECTING   — first connection attempt in progress
+ *   RECONNECTING — a dropped connection is being retried (backoff)
+ *   CONNECTED    — websocket open
+ */
+enum class ConnectionState { DISCONNECTED, CONNECTING, RECONNECTING, CONNECTED }
 
 enum class AuthState { LOGGED_OUT, PENDING_APPROVAL, AUTHENTICATED }
 
@@ -250,14 +260,12 @@ class ObscuraClient(
             loggerProvider = { logger },
             onLogout = {
                 envelopeJob?.cancel()
-                gateway.disconnect()
-                _connectionState.value = ConnectionState.DISCONNECTED
+                gateway.disconnect() // fires onStateChanged → _connectionState = DISCONNECTED
                 // Data stays — logout is not a wipe. Login again restores full state.
             },
             onWipeDevice = {
                 envelopeJob?.cancel()
-                gateway.disconnect()
-                _connectionState.value = ConnectionState.DISCONNECTED
+                gateway.disconnect() // fires onStateChanged → _connectionState = DISCONNECTED
                 db.friendQueries.deleteAll()
                 db.messageQueries.deleteAll()
                 db.deviceQueries.deleteAllDevices()
@@ -279,6 +287,21 @@ class ObscuraClient(
 
         // Wire gateway reconnect token refresh
         gateway.ensureFreshToken = { authManager.ensureFreshToken() }
+
+        // connectionState is a pure projection of the real socket state. The
+        // gateway owns the socket lifecycle (connect, background drop, auto-
+        // reconnect); this callback is the SINGLE writer of _connectionState, so
+        // there's exactly one source of truth. It fires synchronously from the
+        // gateway (see GatewayConnection.setState), which is why connect() — after
+        // awaiting the open signal — observes CONNECTED without a race.
+        gateway.onStateChanged = { gs ->
+            _connectionState.value = when (gs) {
+                GatewayState.DISCONNECTED -> ConnectionState.DISCONNECTED
+                GatewayState.CONNECTING   -> ConnectionState.CONNECTING
+                GatewayState.RECONNECTING -> ConnectionState.RECONNECTING
+                GatewayState.CONNECTED    -> ConnectionState.CONNECTED
+            }
+        }
 
         // Wire ORM auto-sync: model.create() → encrypt → fan out → flush
         syncManager.getSelfSyncTargets = { devices.getSelfSyncTargets() }
@@ -453,7 +476,17 @@ class ObscuraClient(
     }
 
     fun hasSession(): Boolean = authManager.hasSession()
-    suspend fun logout() = authManager.logout()
+
+    /**
+     * Log out: tears down the connection and forgets the session, INCLUDING the
+     * persisted [sessionStorage] blob, so the app won't try to restore it next
+     * launch. Local data (friends, messages, ORM) is kept — see [wipeDevice] /
+     * [fullLogout] to also erase that. Symmetric with [persistSession].
+     */
+    suspend fun logout() {
+        authManager.logout()
+        sessionStorage.clear()
+    }
     suspend fun wipeDevice() = authManager.wipeDevice()
     suspend fun ensureFreshToken(): Boolean = authManager.ensureFreshToken()
 
@@ -461,14 +494,17 @@ class ObscuraClient(
 
     /** Persist current session to storage. Auto-called on auth/connect. */
     fun persistSession() {
-        val data = mapOf<String, Any?>(
-            "token" to token,
-            "refreshToken" to refreshToken,
-            "userId" to userId,
-            "deviceId" to deviceId,
-            "username" to username,
-            "registrationId" to registrationId
-        )
+        // Merge onto existing storage so non-session metadata (e.g. cachedSchema,
+        // written by defineModelsFromJson) survives a session-only save regardless
+        // of whether the SessionStorage impl patches keys or replaces the blob.
+        val data = (sessionStorage.load()?.toMutableMap() ?: mutableMapOf()).apply {
+            put("token", token)
+            put("refreshToken", refreshToken)
+            put("userId", userId)
+            put("deviceId", deviceId)
+            put("username", username)
+            put("registrationId", registrationId)
+        }
         sessionStorage.save(data)
         log("SESSION persisted user=$username")
     }
@@ -539,8 +575,9 @@ class ObscuraClient(
             models[name] = ModelConfig(
                 fields = fields,
                 sync = model.optString("sync", "gset"),
-                ttl = model.optString("ttl", null),
-                private = model.optBoolean("private", false)
+                ttl = if (model.has("ttl") && !model.isNull("ttl")) model.getString("ttl") else null,
+                private = model.optBoolean("private", false),
+                direct = model.optBoolean("direct", false)
             )
         }
         orm.define(models)
@@ -586,8 +623,7 @@ class ObscuraClient(
         envelopeJob?.cancel()
         eventForwardingJob?.cancel()
         authManager.tokenRefreshJob?.cancel()
-        gateway.disconnect()
-        _connectionState.value = ConnectionState.DISCONNECTED
+        gateway.disconnect() // fires onStateChanged → _connectionState = DISCONNECTED
         try { authManager.logout() } catch (_: Exception) {}
         _authState.value = AuthState.LOGGED_OUT
         _friendList.value = emptyList()
@@ -626,13 +662,24 @@ class ObscuraClient(
 
     // ─── Connect / Disconnect ───────────────────────────────
 
-    suspend fun connect() {
+    // Serializes connect() so a foreground ensureConnected() and a bridge connect()
+    // (or overlapping lifecycle events) can't run the connect body concurrently.
+    private val connectMutex = Mutex()
+
+    suspend fun connect() = connectMutex.withLock {
+        if (_connectionState.value == ConnectionState.CONNECTED) return@withLock
         log("CONNECT start")
-        ensureFreshToken()
-        _connectionState.value = ConnectionState.CONNECTING
-        messenger.rebuildDeviceMap(friends.getAccepted())
-        gateway.connect()
-        _connectionState.value = ConnectionState.CONNECTED
+        try {
+            ensureFreshToken()
+            messenger.rebuildDeviceMap(friends.getAccepted())
+            // gateway.connect() drives _connectionState via onStateChanged (the sole
+            // writer): CONNECTING now, then CONNECTED on open — set synchronously
+            // before this suspends-return — or DISCONNECTED if the open fails (throws).
+            gateway.connect()
+        } catch (e: Exception) {
+            log("CONNECT failed — ${e.message}")
+            throw e
+        }
         log("CONNECT ok — websocket open")
         startEnvelopeLoop()
         startEventForwarding()
@@ -641,13 +688,25 @@ class ObscuraClient(
         persistSession() // auto-save refreshed tokens
     }
 
+    /**
+     * Idempotent reconnect entrypoint for app lifecycle events (e.g. foreground
+     * resume). Reconnects only when authenticated and fully disconnected, so the
+     * app can call it unconditionally on resume: it no-ops while a connect or the
+     * gateway's own auto-reconnect (CONNECTING) is already in flight, and only
+     * kicks off a fresh connect when the socket is genuinely down.
+     */
+    suspend fun ensureConnected() {
+        if (authState.value != AuthState.AUTHENTICATED) return
+        if (connectionState.value != ConnectionState.DISCONNECTED) return
+        connect()
+    }
+
     fun disconnect() {
         log("DISCONNECT")
         authManager.tokenRefreshJob?.cancel()
         envelopeJob?.cancel()
         eventForwardingJob?.cancel()
-        gateway.disconnect()
-        _connectionState.value = ConnectionState.DISCONNECTED
+        gateway.disconnect() // fires onStateChanged → _connectionState = DISCONNECTED
     }
 
     // ─── Push Notifications ─────────────────────────────────
@@ -721,8 +780,10 @@ class ObscuraClient(
         return Triple(0, 0, 1)
     }
 
+    private var preKeyStatusJob: Job? = null
     private fun startPreKeyStatusListener() {
-        scope.launch {
+        preKeyStatusJob?.cancel()
+        preKeyStatusJob = scope.launch {
             for (status in gateway.preKeyStatus) {
                 if (status.oneTimePreKeyCount < status.minThreshold) {
                     replenishPreKeys()
@@ -760,6 +821,7 @@ class ObscuraClient(
     }
 
     private fun startEnvelopeLoop() {
+        envelopeJob?.cancel()
         envelopeJob = scope.launch {
             for (envelope in gateway.envelopes) {
                 val senderId = try {

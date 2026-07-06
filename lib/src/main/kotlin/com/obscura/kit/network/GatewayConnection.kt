@@ -39,30 +39,56 @@ class GatewayConnection(
     private var reconnectAttempts = 0
     private var shouldReconnect = true
 
+    // Completed on onOpen, completed exceptionally on onFailure/onClosed. Lets
+    // connect() suspend until the socket is actually open (or has failed) instead
+    // of returning the instant OkHttp's async newWebSocket() is kicked off.
+    private var openSignal: CompletableDeferred<Unit>? = null
+
+    // Current socket state, exposed two complementary ways:
+    //   • [state]          — observable holder (StateFlow) for pull / flow collection
+    //   • [onStateChanged] — synchronous push, invoked inline from setState() so the
+    //                        one in-process mirror (ObscuraClient.connectionState) is
+    //                        updated with zero latency — see setState() below.
+    // Both are driven by the single mutation point setState(); callers never touch
+    // _state directly.
     private val _state = MutableStateFlow(GatewayState.DISCONNECTED)
     val state: StateFlow<GatewayState> = _state
 
+    /** Fired synchronously on every socket state transition. Set by ObscuraClient. */
+    var onStateChanged: ((GatewayState) -> Unit)? = null
+
+    /** The only writer of [_state]; keeps the flow and the callback in lockstep. */
+    private fun setState(s: GatewayState) {
+        _state.value = s
+        onStateChanged?.invoke(s)
+    }
+
     val envelopes = Channel<Envelope>(capacity = 1000)
     val preKeyStatus = Channel<PreKeyStatus>(capacity = 10)
-
-    var onConnected: (() -> Unit)? = null
-    var onDisconnected: (() -> Unit)? = null
 
     /** Called before reconnect to ensure token is fresh. Set by ObscuraClient. */
     var ensureFreshToken: (suspend () -> Boolean) = { true }
 
     suspend fun connect() {
         if (_state.value == GatewayState.CONNECTED || _state.value == GatewayState.CONNECTING) return
-        _state.value = GatewayState.CONNECTING
+        setState(GatewayState.CONNECTING)
         shouldReconnect = true
 
+        val signal = CompletableDeferred<Unit>()
+        openSignal = signal
         try {
             val ticket = api.fetchGatewayTicket()
             val url = api.getGatewayUrl(ticket)
             openWebSocket(url)
+            // Suspend until the socket truly opens (onOpen) or fails (onFailure/
+            // onClosed). This makes "connect() returned" mean "connected", and
+            // lets the listener callbacks be the single owner of the state flow.
+            signal.await()
         } catch (e: Exception) {
-            _state.value = GatewayState.DISCONNECTED
+            if (_state.value != GatewayState.DISCONNECTED) setState(GatewayState.DISCONNECTED)
             throw e
+        } finally {
+            if (openSignal === signal) openSignal = null
         }
     }
 
@@ -70,10 +96,10 @@ class GatewayConnection(
         shouldReconnect = false
         reconnectJob?.cancel()
         reconnectJob = null
+        openSignal?.completeExceptionally(IllegalStateException("disconnected during connect"))
         webSocket?.close(1000, "Client disconnect")
         webSocket = null
-        _state.value = GatewayState.DISCONNECTED
-        onDisconnected?.invoke()
+        setState(GatewayState.DISCONNECTED)
     }
 
     fun ack(messageIds: List<com.google.protobuf.ByteString>) {
@@ -93,9 +119,9 @@ class GatewayConnection(
 
         webSocket = client.newWebSocket(request, object : WebSocketListener() {
             override fun onOpen(webSocket: WebSocket, response: Response) {
-                _state.value = GatewayState.CONNECTED
+                setState(GatewayState.CONNECTED)
                 reconnectAttempts = 0
-                onConnected?.invoke()
+                openSignal?.complete(Unit)
             }
 
             override fun onMessage(webSocket: WebSocket, bytes: ByteString) {
@@ -113,13 +139,16 @@ class GatewayConnection(
             }
 
             override fun onFailure(webSocket: WebSocket, t: Throwable, response: Response?) {
-                _state.value = GatewayState.DISCONNECTED
+                setState(GatewayState.DISCONNECTED)
+                openSignal?.completeExceptionally(t)
                 if (shouldReconnect) scheduleReconnect()
             }
 
             override fun onClosed(webSocket: WebSocket, code: Int, reason: String) {
-                _state.value = GatewayState.DISCONNECTED
-                onDisconnected?.invoke()
+                setState(GatewayState.DISCONNECTED)
+                openSignal?.completeExceptionally(
+                    IllegalStateException("gateway closed before open: $code $reason")
+                )
                 // Reconnect on unexpected close (server restart, timeout, etc.)
                 // Don't reconnect on intentional close (code 1000)
                 if (code != 1000 && shouldReconnect) scheduleReconnect()
@@ -130,7 +159,7 @@ class GatewayConnection(
     private fun scheduleReconnect() {
         reconnectJob?.cancel()
         reconnectJob = scope.launch {
-            _state.value = GatewayState.RECONNECTING
+            setState(GatewayState.RECONNECTING)
 
             // Exponential backoff: 1s, 2s, 4s, 8s, 16s, 30s max
             val delayMs = (1000L * (1L shl reconnectAttempts.coerceAtMost(5))).coerceAtMost(30_000L)

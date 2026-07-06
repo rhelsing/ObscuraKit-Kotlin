@@ -54,7 +54,7 @@ class ObscuraEventTest {
     @Test
     fun `state enums expose the full lifecycle`() {
         assertEquals(
-            listOf("DISCONNECTED", "CONNECTING", "CONNECTED"),
+            listOf("DISCONNECTED", "CONNECTING", "RECONNECTING", "CONNECTED"),
             ConnectionState.entries.map { it.name }
         )
         assertEquals(

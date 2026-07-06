@@ -123,6 +123,23 @@ class ConnectionUnitTests {
     }
 
     @Test
+    fun `onStateChanged fires on every transition`() = runBlocking {
+        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+        val api = com.obscura.kit.network.APIClient("https://obscura.barrelmaker.dev")
+        val gw = GatewayConnection(api, scope)
+
+        val seen = mutableListOf<GatewayState>()
+        gw.onStateChanged = { seen.add(it) }
+
+        // disconnect() is a real state mutation even from DISCONNECTED — verifies
+        // the callback is the single mutation hook consumers rely on.
+        gw.disconnect()
+        assertTrue(seen.contains(GatewayState.DISCONNECTED),
+            "onStateChanged must fire so connectionState can mirror the socket")
+        scope.cancel()
+    }
+
+    @Test
     fun `Token refresh callback is invoked`() = runBlocking {
         var refreshCalled = false
         val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
