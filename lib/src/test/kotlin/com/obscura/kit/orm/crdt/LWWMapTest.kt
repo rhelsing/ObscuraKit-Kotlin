@@ -107,6 +107,36 @@ class LWWMapTest {
     }
 
     @Test
+    fun `merge clamps far-future timestamp on the incoming-sync path too`() = runTest {
+        // The clamp must apply on merge(), not just set() — a spoofed far-future
+        // timestamp arriving over sync is no more trustworthy than a local write,
+        // and must not be allowed to win every future conflict forever.
+        val map = LWWMap(newInMemoryStore(), "profile")
+
+        map.merge(listOf(entry("u1", Long.MAX_VALUE / 2, data = mapOf("v" to "evil"))))
+
+        val stored = map.get("u1")!!
+        assertTrue(stored.timestamp <= System.currentTimeMillis() + 60_000,
+            "Far-future timestamp must be clamped on merge too; was ${stored.timestamp}")
+    }
+
+    @Test
+    fun `merge tie-break on equal timestamp is deterministic by author, independent of order`() = runTest {
+        // Equal timestamp + same id + different data: the higher authorDeviceId
+        // must win regardless of arrival order, or two devices diverge forever.
+        fun winnerFor(ops: List<OrmEntry>): String? {
+            val m = LWWMap(newInMemoryStore(), "settings")
+            ops.forEach { kotlinx.coroutines.runBlocking { m.merge(listOf(it)) } }
+            return kotlinx.coroutines.runBlocking { m.get("cfg")?.data?.get("theme") as? String }
+        }
+        val a = entry("cfg", 5, device = "devA", data = mapOf("theme" to "dark"))
+        val b = entry("cfg", 5, device = "devB", data = mapOf("theme" to "light"))
+
+        assertEquals("light", winnerFor(listOf(a, b)), "higher authorDeviceId (devB) must win")
+        assertEquals("light", winnerFor(listOf(b, a)), "result must not depend on arrival order")
+    }
+
+    @Test
     fun `delete writes a tombstone with the deleting device id`() = runTest {
         val map = LWWMap(newInMemoryStore(), "profile")
         map.set(entry("u1", 100, data = mapOf("name" to "alice")))
