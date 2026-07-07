@@ -22,7 +22,7 @@ internal class ClientSyncManager(
     suspend fun requestSync() {
         val selfTargets = devices.getSelfSyncTargets().filter { it != session.deviceId }
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.SYNC_REQUEST)
+            .setType(ClientMessage.Type.TYPE_SYNC_REQUEST)
             .setTimestamp(System.currentTimeMillis()).build()
 
         for (devId in selfTargets) {
@@ -36,7 +36,7 @@ internal class ClientSyncManager(
         val compressed = com.obscura.kit.crypto.SyncBlob.export(friendList)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.SYNC_BLOB)
+            .setType(ClientMessage.Type.TYPE_SYNC_BLOB)
             .setTimestamp(System.currentTimeMillis())
             .setSyncBlob(obscura.v2.syncBlob {
                 compressedData = com.google.protobuf.ByteString.copyFrom(compressed)
@@ -72,7 +72,7 @@ internal class ClientSyncManager(
         signalStore.deleteAllSessions(targetUserId)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.SESSION_RESET)
+            .setType(ClientMessage.Type.TYPE_SESSION_RESET)
             .setResetReason(reason)
             .setTimestamp(System.currentTimeMillis()).build()
 

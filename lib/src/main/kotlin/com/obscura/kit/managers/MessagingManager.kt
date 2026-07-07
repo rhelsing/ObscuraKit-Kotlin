@@ -20,7 +20,7 @@ internal class MessagingManager(
             ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.TEXT).setText(text)
+            .setType(ClientMessage.Type.TYPE_TEXT).setText(text)
             .setTimestamp(System.currentTimeMillis()).build()
 
         messageSender.sendToAllDevices(friendData.userId, msg)
@@ -30,7 +30,7 @@ internal class MessagingManager(
         if (selfTargets.isNotEmpty()) {
             val msgId = java.util.UUID.randomUUID().toString()
             val sentSync = ClientMessage.newBuilder()
-                .setType(ClientMessage.Type.SENT_SYNC)
+                .setType(ClientMessage.Type.TYPE_SENT_SYNC)
                 .setTimestamp(System.currentTimeMillis())
                 .setSentSync(obscura.v2.sentSync {
                     conversationId = friendUsername
@@ -51,7 +51,7 @@ internal class MessagingManager(
             ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.CONTENT_REFERENCE)
+            .setType(ClientMessage.Type.TYPE_CONTENT_REFERENCE)
             .setTimestamp(System.currentTimeMillis())
             .setContentReference(obscura.v2.contentReference {
                 this.attachmentId = attachmentId
@@ -75,13 +75,13 @@ internal class MessagingManager(
             ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
 
         val opEnum = when (op.uppercase()) {
-            "UPDATE" -> obscura.v2.Client.ModelSync.Op.UPDATE
-            "DELETE" -> obscura.v2.Client.ModelSync.Op.DELETE
-            else -> obscura.v2.Client.ModelSync.Op.CREATE
+            "UPDATE" -> obscura.v2.Client.ModelSync.Op.OP_UPDATE
+            "DELETE" -> obscura.v2.Client.ModelSync.Op.OP_DELETE
+            else -> obscura.v2.Client.ModelSync.Op.OP_CREATE
         }
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.MODEL_SYNC)
+            .setType(ClientMessage.Type.TYPE_MODEL_SYNC)
             .setTimestamp(System.currentTimeMillis())
             .setModelSync(obscura.v2.modelSync {
                 this.model = model; this.id = entryId; this.op = opEnum

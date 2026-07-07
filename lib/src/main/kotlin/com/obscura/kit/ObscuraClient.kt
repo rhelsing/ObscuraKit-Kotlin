@@ -328,12 +328,18 @@ class ObscuraClient(
         }
         syncManager.queueModelSync = { targetDeviceId, modelSync ->
             val msg = obscura.v2.Client.ClientMessage.newBuilder()
-                .setType(obscura.v2.Client.ClientMessage.Type.MODEL_SYNC)
+                .setType(obscura.v2.Client.ClientMessage.Type.TYPE_MODEL_SYNC)
                 .setTimestamp(System.currentTimeMillis())
                 .setModelSync(obscura.v2.modelSync {
                     model = modelSync.model; id = modelSync.id
-                    op = obscura.v2.Client.ModelSync.Op.forNumber(modelSync.op)
-                        ?: obscura.v2.Client.ModelSync.Op.CREATE
+                    // ModelSyncData.op is the internal convention (0=CREATE, 1=UPDATE, 2=DELETE);
+                    // map it explicitly to the proto Op (whose numbers differ now that
+                    // OP_UNSPECIFIED occupies 0).
+                    op = when (modelSync.op) {
+                        1 -> obscura.v2.Client.ModelSync.Op.OP_UPDATE
+                        2 -> obscura.v2.Client.ModelSync.Op.OP_DELETE
+                        else -> obscura.v2.Client.ModelSync.Op.OP_CREATE
+                    }
                     timestamp = modelSync.timestamp
                     data = com.google.protobuf.ByteString.copyFrom(modelSync.data)
                     authorDeviceId = modelSync.authorDeviceId
@@ -374,19 +380,24 @@ class ObscuraClient(
             messenger.flushMessages()
         }
 
-        // Wire ECS signal sending — JSON in text field (matches iOS wire format exactly)
+        // Wire ephemeral signal sending — typed MODEL_SIGNAL payload (no JSON).
+        // Sender identity + timestamp ride on the ClientMessage envelope, not the payload.
         signalManager.sendSignal = { modelName, signalName, signalData ->
-            val payload = org.json.JSONObject().apply {
-                put("model", modelName)
-                put("signal", signalName)
-                put("data", org.json.JSONObject(signalData))
-                put("authorDeviceId", session.deviceId ?: "")
-                put("timestamp", System.currentTimeMillis())
+            val kind = when (signalName) {
+                "typing" -> obscura.v2.Client.SignalKind.SIGNAL_KIND_TYPING
+                "stoppedTyping" -> obscura.v2.Client.SignalKind.SIGNAL_KIND_STOPPED_TYPING
+                "read" -> obscura.v2.Client.SignalKind.SIGNAL_KIND_READ
+                else -> obscura.v2.Client.SignalKind.SIGNAL_KIND_UNSPECIFIED
             }
+            val ctxId = signalData["conversationId"] as? String ?: ""
             val signalMsg = obscura.v2.Client.ClientMessage.newBuilder()
-                .setType(obscura.v2.Client.ClientMessage.Type.MODEL_SIGNAL)
+                .setType(obscura.v2.Client.ClientMessage.Type.TYPE_MODEL_SIGNAL)
                 .setTimestamp(System.currentTimeMillis())
-                .setText(payload.toString())
+                .setModelSignal(obscura.v2.modelSignal {
+                    model = modelName
+                    this.kind = kind
+                    contextId = ctxId
+                })
                 .build()
             authManager.ensureFreshToken()
             val accepted = friends.getAccepted()
@@ -858,7 +869,7 @@ class ObscuraClient(
                     decryptFailures.remove(decrypted.sourceUserId)
 
                     val received = ReceivedMessage(
-                        type = msg.type.name,
+                        type = msg.type.name.removePrefix("TYPE_"),
                         text = msg.text,
                         username = msg.username,
                         accepted = msg.accepted,
@@ -904,17 +915,17 @@ class ObscuraClient(
 
     private suspend fun routeMessage(msg: ClientMessage, sourceUserId: String, senderDeviceId: String?) {
         when (msg.type) {
-            ClientMessage.Type.FRIEND_REQUEST -> handleFriendRequest(msg, sourceUserId)
-            ClientMessage.Type.FRIEND_RESPONSE -> handleFriendResponse(msg, sourceUserId)
-            ClientMessage.Type.TEXT, ClientMessage.Type.IMAGE -> handleTextMessage(msg, sourceUserId, senderDeviceId)
-            ClientMessage.Type.DEVICE_ANNOUNCE -> handleDeviceAnnounce(msg, sourceUserId)
-            ClientMessage.Type.MODEL_SYNC -> handleModelSync(msg, sourceUserId)
-            ClientMessage.Type.SYNC_BLOB -> handleSyncBlob(msg, sourceUserId)
-            ClientMessage.Type.SENT_SYNC -> handleSentSync(msg)
-            ClientMessage.Type.SESSION_RESET -> signalStore.deleteAllSessions(sourceUserId)
-            ClientMessage.Type.FRIEND_SYNC -> handleFriendSync(msg, sourceUserId)
-            ClientMessage.Type.DEVICE_LINK_APPROVAL -> handleLinkApproval(msg, sourceUserId)
-            ClientMessage.Type.MODEL_SIGNAL -> handleModelSignal(msg, sourceUserId)
+            ClientMessage.Type.TYPE_FRIEND_REQUEST -> handleFriendRequest(msg, sourceUserId)
+            ClientMessage.Type.TYPE_FRIEND_RESPONSE -> handleFriendResponse(msg, sourceUserId)
+            ClientMessage.Type.TYPE_TEXT, ClientMessage.Type.TYPE_IMAGE -> handleTextMessage(msg, sourceUserId, senderDeviceId)
+            ClientMessage.Type.TYPE_DEVICE_ANNOUNCE -> handleDeviceAnnounce(msg, sourceUserId)
+            ClientMessage.Type.TYPE_MODEL_SYNC -> handleModelSync(msg, sourceUserId)
+            ClientMessage.Type.TYPE_SYNC_BLOB -> handleSyncBlob(msg, sourceUserId)
+            ClientMessage.Type.TYPE_SENT_SYNC -> handleSentSync(msg)
+            ClientMessage.Type.TYPE_SESSION_RESET -> signalStore.deleteAllSessions(sourceUserId)
+            ClientMessage.Type.TYPE_FRIEND_SYNC -> handleFriendSync(msg, sourceUserId)
+            ClientMessage.Type.TYPE_DEVICE_LINK_APPROVAL -> handleLinkApproval(msg, sourceUserId)
+            ClientMessage.Type.TYPE_MODEL_SIGNAL -> handleModelSignal(msg, sourceUserId, senderDeviceId)
             else -> { }
         }
     }
@@ -933,7 +944,7 @@ class ObscuraClient(
             id = msgId, conversationId = sourceUserId,
             authorDeviceId = senderDeviceId ?: "unknown",
             content = msg.text, timestamp = msg.timestamp,
-            type = msg.type.name.lowercase()
+            type = msg.type.name.removePrefix("TYPE_").lowercase()
         )
         messagesDomain.add(sourceUserId, msgData)
         refreshConversation(sourceUserId)
@@ -961,55 +972,49 @@ class ObscuraClient(
         })
     }
 
-    private fun handleModelSignal(msg: ClientMessage, sourceUserId: String) {
+    private suspend fun handleModelSignal(msg: ClientMessage, sourceUserId: String, senderDeviceId: String?) {
         try {
-            val modelName: String
-            val signalName: String
-            val authorDeviceId: String
-            val data: Map<String, Any?>
+            val sig = msg.modelSignal
+            if (sig.model.isBlank()) return
 
-            // Try JSON in text field first (cross-platform wire format)
-            val json = if (msg.text.isNotBlank() && msg.text.startsWith("{")) {
-                org.json.JSONObject(msg.text)
-            } else null
-
-            if (json != null && json.has("model") && json.has("signal")) {
-                modelName = json.getString("model")
-                signalName = json.getString("signal")
-                authorDeviceId = json.optString("authorDeviceId", sourceUserId)
-                val dataJson = json.optJSONObject("data") ?: org.json.JSONObject()
-                val map = mutableMapOf<String, Any?>()
-                for (key in dataJson.keys()) { map[key] = if (dataJson.isNull(key)) null else dataJson.get(key) }
-                data = map
-            } else {
-                // Fallback: proto field
-                val sig = msg.modelSignal ?: return
-                if (sig.model.isBlank()) return
-                modelName = sig.model
-                signalName = sig.signal
-                authorDeviceId = sig.authorDeviceId.ifBlank { sourceUserId }
-                data = try {
-                    val j = org.json.JSONObject(String(sig.data.toByteArray()))
-                    val m = mutableMapOf<String, Any?>()
-                    for (k in j.keys()) { m[k] = if (j.isNull(k)) null else j.get(k) }
-                    m
-                } catch (_: Exception) { emptyMap() }
+            val signalName = when (sig.kind) {
+                obscura.v2.Client.SignalKind.SIGNAL_KIND_TYPING -> "typing"
+                obscura.v2.Client.SignalKind.SIGNAL_KIND_STOPPED_TYPING -> "stoppedTyping"
+                obscura.v2.Client.SignalKind.SIGNAL_KIND_READ -> "read"
+                else -> return // unknown/unspecified — ignore
             }
+
+            // Identity comes from the authenticated envelope, never the payload:
+            // the device from the decrypted session, the display name from the friend graph.
+            val authorDeviceId = senderDeviceId ?: sourceUserId
+            val senderUsername = friends.getAccepted().find { it.userId == sourceUserId }?.username ?: sourceUserId
+            val data = mapOf<String, Any?>(
+                "conversationId" to sig.contextId,
+                "senderUsername" to senderUsername,
+            )
 
             if (signalName == "stoppedTyping") {
-                signalManager.clear(modelName, "typing", data, authorDeviceId)
+                signalManager.clear(sig.model, "typing", data, authorDeviceId)
             } else {
-                signalManager.receive(modelName, signalName, data, authorDeviceId)
+                signalManager.receive(sig.model, signalName, data, authorDeviceId)
             }
-        } catch (_: Exception) {
-            // Never let signal handling crash the envelope loop
+        } catch (e: Exception) {
+            // Never let signal handling crash the envelope loop.
+            log("model signal handling failed: ${e.message}")
         }
+    }
+
+    /** Map a wire [ModelSync.Op] to the internal op convention (0=CREATE, 1=UPDATE, 2=DELETE). */
+    private fun opToInternal(op: obscura.v2.Client.ModelSync.Op): Int = when (op) {
+        obscura.v2.Client.ModelSync.Op.OP_UPDATE -> 1
+        obscura.v2.Client.ModelSync.Op.OP_DELETE -> 2
+        else -> 0 // OP_CREATE / OP_UNSPECIFIED → CREATE
     }
 
     private suspend fun handleModelSync(msg: ClientMessage, sourceUserId: String) {
         val sync = msg.modelSync
         val syncData = ModelSyncData(
-            model = sync.model, id = sync.id, op = sync.op.number,
+            model = sync.model, id = sync.id, op = opToInternal(sync.op),
             timestamp = sync.timestamp, data = sync.data.toByteArray(),
             authorDeviceId = sync.authorDeviceId, signature = sync.signature.toByteArray()
         )
