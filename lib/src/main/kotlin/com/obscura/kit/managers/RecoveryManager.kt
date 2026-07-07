@@ -44,7 +44,7 @@ internal class RecoveryManager(
         val signature = com.obscura.kit.crypto.RecoveryKeys.signWithPhrase(recoveryPhrase, announceData)
 
         val msg = obscura.v2.Client.ClientMessage.newBuilder()
-            .setType(obscura.v2.Client.ClientMessage.Type.DEVICE_RECOVERY_ANNOUNCE)
+            .setType(obscura.v2.Client.ClientMessage.Type.TYPE_DEVICE_RECOVERY_ANNOUNCE)
             .setTimestamp(System.currentTimeMillis())
             .setDeviceRecoveryAnnounce(obscura.v2.deviceRecoveryAnnounce {
                 newDevices.add(obscura.v2.deviceInfo {

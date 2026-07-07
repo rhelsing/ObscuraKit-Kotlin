@@ -1,7 +1,9 @@
 package scenarios
 
 import com.obscura.kit.AuthState
+import com.obscura.kit.orm.Audience
 import com.obscura.kit.orm.ModelConfig
+import com.obscura.kit.orm.SyncStrategy
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
@@ -30,7 +32,7 @@ class ORMAutoSyncTests {
         alice.orm.define(mapOf(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string", "author" to "string"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         ))
 
@@ -38,7 +40,7 @@ class ORMAutoSyncTests {
         bob.orm.define(mapOf(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string", "author" to "string"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         ))
 
@@ -74,8 +76,8 @@ class ORMAutoSyncTests {
         alice.orm.define(mapOf(
             "settings" to ModelConfig(
                 fields = mapOf("theme" to "string"),
-                sync = "lww",
-                private = true  // Only own devices
+                sync = SyncStrategy.LWW,
+                audience = Audience.Self  // Only own devices
             )
         ))
 

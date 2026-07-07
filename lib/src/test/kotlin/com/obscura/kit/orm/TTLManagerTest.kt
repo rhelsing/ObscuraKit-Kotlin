@@ -22,7 +22,7 @@ class TTLManagerTest {
         val store = newInMemoryStore()
         val ttl = TTLManager(store)
         private val schema = Schema(store, SyncManager(store), ttl, deviceIdProvider = { "d" }).apply {
-            define(mapOf("story" to ModelConfig(fields = mapOf("body" to "string"), sync = "lww")))
+            define(mapOf("story" to ModelConfig(fields = mapOf("body" to "string"), sync = SyncStrategy.LWW)))
         }
         val story: Model = schema.model("story")
 

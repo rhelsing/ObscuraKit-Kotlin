@@ -16,7 +16,6 @@ class ModelStore(internal val db: ObscuraDatabase) {
             data_ = jsonData,
             timestamp = entry.timestamp,
             author_device_id = entry.authorDeviceId,
-            signature = entry.signature.takeIf { it.isNotEmpty() },
             deleted = if (entry.isDeleted) 1L else 0L,
             ttl_expires_at = null
         )
@@ -31,8 +30,7 @@ class ModelStore(internal val db: ObscuraDatabase) {
                     id = row.entry_id,
                     data = parseJsonMap(row.data_),
                     timestamp = row.timestamp,
-                    authorDeviceId = row.author_device_id,
-                    signature = row.signature ?: ByteArray(0)
+                    authorDeviceId = row.author_device_id
                 )
             }
     }
@@ -46,8 +44,7 @@ class ModelStore(internal val db: ObscuraDatabase) {
             id = row.entry_id,
             data = parseJsonMap(row.data_),
             timestamp = row.timestamp,
-            authorDeviceId = row.author_device_id,
-            signature = row.signature ?: ByteArray(0)
+            authorDeviceId = row.author_device_id
         )
     }
 
@@ -68,7 +65,6 @@ class ModelStore(internal val db: ObscuraDatabase) {
                 data_ = existing.data_,
                 timestamp = existing.timestamp,
                 author_device_id = existing.author_device_id,
-                signature = existing.signature,
                 deleted = existing.deleted,
                 ttl_expires_at = expiresAt
             )
@@ -101,8 +97,7 @@ class ModelStore(internal val db: ObscuraDatabase) {
                 id = row.entry_id,
                 data = parseJsonMap(row.data_),
                 timestamp = row.timestamp,
-                authorDeviceId = row.author_device_id,
-                signature = row.signature ?: ByteArray(0)
+                authorDeviceId = row.author_device_id
             )
         }
     }
@@ -115,8 +110,7 @@ class ModelStore(internal val db: ObscuraDatabase) {
                     id = row.entry_id,
                     data = parseJsonMap(row.data_),
                     timestamp = row.timestamp,
-                    authorDeviceId = row.author_device_id,
-                    signature = row.signature ?: ByteArray(0)
+                    authorDeviceId = row.author_device_id
                 )
             }
     }

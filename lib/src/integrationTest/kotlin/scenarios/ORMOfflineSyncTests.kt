@@ -1,6 +1,8 @@
 package scenarios
 
+import com.obscura.kit.orm.Audience
 import com.obscura.kit.orm.ModelConfig
+import com.obscura.kit.orm.SyncStrategy
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
@@ -28,7 +30,7 @@ class ORMOfflineSyncTests {
         val storyConfig = mapOf(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string", "author" to "string"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         )
         alice.orm.define(storyConfig)
@@ -73,7 +75,7 @@ class ORMOfflineSyncTests {
         val storyConfig = mapOf(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         )
         alice.orm.define(storyConfig)
@@ -123,7 +125,7 @@ class ORMOfflineSyncTests {
         val storyConfig = mapOf(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         )
         alice.orm.define(storyConfig)
@@ -166,7 +168,7 @@ class ORMOfflineSyncTests {
         val profileConfig = mapOf(
             "profile" to ModelConfig(
                 fields = mapOf("displayName" to "string"),
-                sync = "lww"
+                sync = SyncStrategy.LWW
             )
         )
         alice.orm.define(profileConfig)
@@ -215,7 +217,7 @@ class ORMOfflineSyncTests {
         val storyConfig = mapOf(
             "story" to ModelConfig(
                 fields = mapOf("content" to "string"),
-                sync = "gset"
+                sync = SyncStrategy.GSET
             )
         )
         alice.orm.define(storyConfig)
@@ -261,8 +263,8 @@ class ORMOfflineSyncTests {
         alice.orm.define(mapOf(
             "settings" to ModelConfig(
                 fields = mapOf("theme" to "string"),
-                sync = "lww",
-                private = true
+                sync = SyncStrategy.LWW,
+                audience = Audience.Self
             )
         ))
 

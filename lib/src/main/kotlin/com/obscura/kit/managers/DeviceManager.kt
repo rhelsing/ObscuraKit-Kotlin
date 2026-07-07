@@ -24,7 +24,7 @@ internal class DeviceManager(
     suspend fun announceDevices() {
         val ownDevices = devices.getOwnDevices()
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.DEVICE_ANNOUNCE)
+            .setType(ClientMessage.Type.TYPE_DEVICE_ANNOUNCE)
             .setTimestamp(System.currentTimeMillis())
             .setDeviceAnnounce(obscura.v2.deviceAnnounce {
                 for (d in ownDevices) {
@@ -43,10 +43,10 @@ internal class DeviceManager(
 
     suspend fun announceDeviceRevocation(friendUsername: String, remainingDeviceIds: List<String>) {
         val friendData = friends.getAccepted().find { it.username == friendUsername }
-            ?: throw IllegalStateException("Not friends with $friendUsername")
+            ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.DEVICE_ANNOUNCE)
+            .setType(ClientMessage.Type.TYPE_DEVICE_ANNOUNCE)
             .setTimestamp(System.currentTimeMillis())
             .setDeviceAnnounce(obscura.v2.deviceAnnounce {
                 for (devId in remainingDeviceIds) {
@@ -78,7 +78,7 @@ internal class DeviceManager(
         val recoveryPubKey = com.obscura.kit.crypto.RecoveryKeys.getPublicKey(recoveryPhrase)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.DEVICE_ANNOUNCE)
+            .setType(ClientMessage.Type.TYPE_DEVICE_ANNOUNCE)
             .setTimestamp(System.currentTimeMillis())
             .setDeviceAnnounce(obscura.v2.deviceAnnounce {
                 for (devId in remainingDeviceIds) {
@@ -103,7 +103,7 @@ internal class DeviceManager(
         val friendsExportStr = friends.exportAll()
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.DEVICE_LINK_APPROVAL)
+            .setType(ClientMessage.Type.TYPE_DEVICE_LINK_APPROVAL)
             .setTimestamp(System.currentTimeMillis())
             .setDeviceLinkApproval(obscura.v2.deviceLinkApproval {
                 if (identity?.p2pPublicKey != null) {

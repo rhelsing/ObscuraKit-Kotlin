@@ -45,10 +45,10 @@ kotlin {
 sourceSets {
     main {
         proto {
-            // Fixtures live one directory up so they can be shared with
-            // other repos (obscura-server, ObscuraKit-swift) without
-            // copy-paste drift.
-            srcDir("../fixtures")
+            // Canonical protos come from the obscura-proto submodule (../proto),
+            // the single source of truth shared with obscura-server and the other
+            // clients — replaces the old hand-copied ../fixtures which had drifted.
+            srcDir("../proto/obscura")
         }
     }
     create("integrationTest") {

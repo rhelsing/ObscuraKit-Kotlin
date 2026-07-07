@@ -18,7 +18,7 @@ class ModelValidationTest {
         val sync = SyncManager(store)
         val ttl = TTLManager(store)
         return Schema(store, sync, ttl, deviceIdProvider = { "d" }).apply {
-            define(mapOf("thing" to ModelConfig(fields = fields, sync = "lww")))
+            define(mapOf("thing" to ModelConfig(fields = fields, sync = SyncStrategy.LWW)))
         }.model("thing")
     }
 

@@ -47,10 +47,10 @@ class TypedModelTests {
         schema = Schema(store, syncManager, ttlManager, { "test-device" })
 
         schema.define(mapOf(
-            "story" to ModelConfig(fields = mapOf("content" to "string", "authorUsername" to "string", "mediaUrl" to "string?"), sync = "gset", ttl = "24h"),
-            "directMessage" to ModelConfig(fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"), sync = "gset"),
-            "profile" to ModelConfig(fields = mapOf("displayName" to "string", "bio" to "string?"), sync = "lww"),
-            "settings" to ModelConfig(fields = mapOf("theme" to "string", "notificationsEnabled" to "boolean"), sync = "lww", private = true)
+            "story" to ModelConfig(fields = mapOf("content" to "string", "authorUsername" to "string", "mediaUrl" to "string?"), sync = SyncStrategy.GSET, ttl = "24h"),
+            "directMessage" to ModelConfig(fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"), sync = SyncStrategy.GSET),
+            "profile" to ModelConfig(fields = mapOf("displayName" to "string", "bio" to "string?"), sync = SyncStrategy.LWW),
+            "settings" to ModelConfig(fields = mapOf("theme" to "string", "notificationsEnabled" to "boolean"), sync = SyncStrategy.LWW, audience = Audience.Self)
         ))
     }
 

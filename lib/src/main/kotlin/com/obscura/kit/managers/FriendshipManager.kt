@@ -20,7 +20,7 @@ internal class FriendshipManager(
         messenger.fetchPreKeyBundles(targetUserId)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.FRIEND_REQUEST)
+            .setType(ClientMessage.Type.TYPE_FRIEND_REQUEST)
             .setUsername(session.username ?: "").setTimestamp(System.currentTimeMillis()).build()
 
         messageSender.sendToAllDevices(targetUserId, msg)
@@ -33,7 +33,7 @@ internal class FriendshipManager(
         messenger.fetchPreKeyBundles(targetUserId)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.FRIEND_RESPONSE)
+            .setType(ClientMessage.Type.TYPE_FRIEND_RESPONSE)
             .setUsername(session.username ?: "").setAccepted(true)
             .setTimestamp(System.currentTimeMillis()).build()
 
@@ -48,7 +48,7 @@ internal class FriendshipManager(
         if (selfTargets.isEmpty()) return
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.FRIEND_SYNC)
+            .setType(ClientMessage.Type.TYPE_FRIEND_SYNC)
             .setTimestamp(System.currentTimeMillis())
             .setFriendSync(obscura.v2.friendSync {
                 username = friendUsername

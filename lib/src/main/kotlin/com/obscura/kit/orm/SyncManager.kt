@@ -3,13 +3,12 @@ package com.obscura.kit.orm
 /**
  * Handles broadcasting model operations to relevant recipients.
  *
- * Targeting rules (in order):
- * 1. Always self-sync to own devices
- * 2. If model.config.isPrivate → ONLY own devices (settings, drafts)
- * 3. If model has belongs_to a targeting model (group) → group members only
- * 4. If model.config.direct → those participants only, or THROW (never broadcast)
- * 5. If a non-direct entry happens to declare a recipient → those participants only
- * 6. Default → all friend devices
+ * The delivery audience is declared per model via [ModelConfig.audience]; the
+ * sender's own devices are always included. The kit never inspects
+ * application-specific field names — the 1:1 audiences name the field that
+ * carries the recipient, and an unresolved 1:1 audience FAILS LOUD rather than
+ * falling back to a broadcast (a misrouted 1:1 payload is a confidentiality
+ * breach, so refusing to send is the safe failure).
  *
  * The developer never calls this directly. model.create() triggers broadcast
  * automatically based on the model's config.
@@ -40,11 +39,10 @@ class SyncManager(
         val syncData = ModelSyncData(
             model = model.name,
             id = entry.id,
-            op = 0, // CREATE
+            op = if (entry.isDeleted) ModelOp.DELETE else ModelOp.CREATE,
             timestamp = entry.timestamp,
             data = org.json.JSONObject(entry.data).toString().toByteArray(),
-            authorDeviceId = entry.authorDeviceId,
-            signature = entry.signature
+            authorDeviceId = entry.authorDeviceId
         )
 
         for (targetDeviceId in targets) {
@@ -60,104 +58,33 @@ class SyncManager(
     }
 
     private suspend fun getTargets(model: Model, entry: OrmEntry): List<String> {
-        val targets = mutableSetOf<String>()
+        // Own devices are always included, regardless of audience.
+        val targets = getSelfSyncTargets().toMutableSet()
 
-        // 1. Always self-sync to own devices
-        targets.addAll(getSelfSyncTargets())
+        when (val audience = model.config.audience) {
+            is Audience.Self -> { /* own devices only */ }
 
-        // 2. Private models = only own devices
-        if (model.config.isPrivate) return targets.toList()
+            is Audience.Friends -> targets.addAll(getFriendTargets())
 
-        // 3. If belongs_to a group-like model, target group members only
-        val assoc = model.getTargetingAssociation()
-        if (assoc != null) {
-            val (parentModelName, foreignKey) = assoc
-            val parentId = entry.data[foreignKey.removePrefix("data.")] as? String
-                ?: entry.data[foreignKey] as? String
-            if (parentId != null) {
-                val memberTargets = resolveGroupMembers(parentModelName, parentId)
-                if (memberTargets.isNotEmpty()) {
-                    targets.addAll(memberTargets)
-                    return targets.toList()
-                }
+            is Audience.Recipient -> {
+                val username = (entry.data[audience.usernameField] as? String)?.takeIf { it.isNotBlank() }
+                    ?: throw com.obscura.kit.ObscuraError.DirectRoutingUnresolved(
+                        "Model '${model.name}' has a Recipient audience but its field " +
+                        "'${audience.usernameField}' is missing or blank. Refusing to broadcast a 1:1 payload.")
+                targets.addAll(getDevicesForUsername(username))
+            }
+
+            is Audience.Conversation -> {
+                val convId = entry.data[audience.conversationField] as? String
+                val participantIds = convId?.split("_")?.filter { it.isNotBlank() }.orEmpty()
+                if (participantIds.size != 2) throw com.obscura.kit.ObscuraError.DirectRoutingUnresolved(
+                    "Model '${model.name}' has a Conversation audience but its field " +
+                    "'${audience.conversationField}'=\"$convId\" is not a canonical two-party " +
+                    "\"userIdA_userIdB\" value. Refusing to broadcast a 1:1 payload.")
+                targets.addAll(participantIds.flatMap { getDevicesForUserId(it) })
             }
         }
-
-        // 4. Direct (1:1) models MUST resolve to an explicit recipient. They carry their
-        // audience in their own data (directMessage, pix); if that cannot be resolved we
-        // FAIL LOUD rather than fall through to the all-friends broadcast below. A misrouted
-        // 1:1 payload is a confidentiality breach — refusing to send is the safe failure.
-        if (model.config.direct) {
-            val scoped = resolveScopedRecipients(entry)
-                ?: throw IllegalStateException(
-                    "Model '${model.name}' is direct (1:1) but no recipient could be resolved " +
-                    "from its data — expected a 'recipientUsername' or a canonical 1:1 " +
-                    "'conversationId' (\"userIdA_userIdB\"). Refusing to broadcast a direct " +
-                    "payload to all friends.")
-            targets.addAll(scoped)
-            return targets.toList()
-        }
-
-        // 5. Non-direct models may still opportunistically scope if they carry recipient data;
-        // otherwise they fall through to the all-friends broadcast.
-        val scoped = resolveScopedRecipients(entry)
-        if (scoped != null) {
-            targets.addAll(scoped)
-            return targets.toList()
-        }
-
-        // 6. Default: broadcast to all friends
-        targets.addAll(getFriendTargets())
 
         return targets.toList()
-    }
-
-    /**
-     * Device IDs for an entry whose audience is a single recipient or a 1:1 conversation,
-     * or null if the entry declares no such scoping (→ caller broadcasts to all friends).
-     *
-     *  - data.recipientUsername present (e.g. pix) → that user's devices
-     *  - data.conversationId of the canonical 1:1 form "userIdA_userIdB" → both participants
-     *
-     * The sender's own devices are always added separately (step 1 of getTargets), so a
-     * conversationId that contains the sender's own id is fine (it dedupes).
-     */
-    private suspend fun resolveScopedRecipients(entry: OrmEntry): List<String>? {
-        (entry.data["recipientUsername"] as? String)?.takeIf { it.isNotBlank() }?.let { username ->
-            return getDevicesForUsername(username)
-        }
-        (entry.data["conversationId"] as? String)?.let { convId ->
-            val participantIds = convId.split("_").filter { it.isNotBlank() }
-            // Only canonical 1:1 conversations are scoped here. Anything else (a group id,
-            // an unexpected format) falls through to the all-friends default unchanged.
-            if (participantIds.size == 2) {
-                return participantIds.flatMap { getDevicesForUserId(it) }
-            }
-        }
-        return null
-    }
-
-    private suspend fun resolveGroupMembers(parentModelName: String, parentId: String): List<String> {
-        val parentModel = models[parentModelName] ?: return emptyList()
-        val parent = parentModel.find(parentId) ?: return emptyList()
-
-        // Convention: members stored as JSON array string in data.members or data.participants
-        val membersRaw = parent.data["members"] ?: parent.data["participants"] ?: return emptyList()
-
-        val usernames = try {
-            when (membersRaw) {
-                is String -> {
-                    val arr = org.json.JSONArray(membersRaw)
-                    (0 until arr.length()).map { arr.getString(it) }
-                }
-                is List<*> -> membersRaw.filterIsInstance<String>()
-                else -> emptyList()
-            }
-        } catch (e: Exception) { emptyList() }
-
-        if (usernames.isEmpty()) return emptyList()
-
-        // Resolve each username to device IDs
-        return usernames.flatMap { username -> getDevicesForUsername(username) }
     }
 }

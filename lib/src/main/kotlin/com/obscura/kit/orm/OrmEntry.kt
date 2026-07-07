@@ -8,8 +8,7 @@ data class OrmEntry(
     val id: String,
     val data: Map<String, Any?>,
     val timestamp: Long,
-    val authorDeviceId: String,
-    val signature: ByteArray = ByteArray(0)
+    val authorDeviceId: String
 ) {
     val isDeleted: Boolean
         get() = data["_deleted"] == true

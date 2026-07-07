@@ -1,6 +1,7 @@
 package com.obscura.kit.orm.crdt
 
 import com.obscura.kit.orm.ModelStore
+import com.obscura.kit.orm.MonotonicClock
 import com.obscura.kit.orm.OrmEntry
 
 /**
@@ -28,16 +29,14 @@ class LWWMap(
 
     suspend fun set(entry: OrmEntry): OrmEntry {
         ensureLoaded()
-        // Prevent a malicious peer from setting a far-future timestamp that permanently wins LWW conflicts
-        val maxAllowed = System.currentTimeMillis() + 60_000 // 60s clock skew tolerance
-        val clamped = if (entry.timestamp > maxAllowed) entry.copy(timestamp = maxAllowed) else entry
+        val clamped = clampFutureTimestamp(entry)
         val existing = entries[clamped.id]
-        if (existing == null || clamped.timestamp > existing.timestamp) {
+        if (supersedes(clamped, existing)) {
             store.put(modelName, clamped)
             entries[clamped.id] = clamped
             return clamped
         }
-        return existing
+        return existing!! // supersedes(x, null) is always true, so a false result implies existing != null
     }
 
     suspend fun add(entry: OrmEntry): OrmEntry = set(entry)
@@ -46,14 +45,43 @@ class LWWMap(
         ensureLoaded()
         val updated = mutableListOf<OrmEntry>()
         for (entry in entries) {
-            val existing = this.entries[entry.id]
-            if (existing == null || entry.timestamp > existing.timestamp) {
-                store.put(modelName, entry)
-                this.entries[entry.id] = entry
-                updated.add(entry)
+            val clamped = clampFutureTimestamp(entry)
+            val existing = this.entries[clamped.id]
+            if (supersedes(clamped, existing)) {
+                store.put(modelName, clamped)
+                this.entries[clamped.id] = clamped
+                updated.add(clamped)
             }
         }
         return updated
+    }
+
+    /**
+     * Reject a spoofed far-future timestamp that would otherwise win every future
+     * LWW conflict forever. Applied on BOTH the local-write (set) and the
+     * incoming-sync (merge) paths — a timestamp arriving over sync is no more
+     * trustworthy than a local one.
+     */
+    private fun clampFutureTimestamp(entry: OrmEntry): OrmEntry {
+        val maxAllowed = System.currentTimeMillis() + CLOCK_SKEW_TOLERANCE_MS
+        return if (entry.timestamp > maxAllowed) entry.copy(timestamp = maxAllowed) else entry
+    }
+
+    /**
+     * Does [incoming] win the LWW conflict against [existing]?
+     *
+     * Total order on (timestamp, authorDeviceId): a strictly-greater timestamp
+     * wins; on an equal timestamp the lexicographically-higher authorDeviceId
+     * wins. The device-id tie-break is what makes resolution deterministic and
+     * order-independent across replicas (a true CRDT) instead of "whichever
+     * write happened to arrive first" — which would let two devices converge to
+     * different states on an equal-timestamp conflict. Equal timestamp AND equal
+     * author is the same logical write (idempotent → existing is kept).
+     */
+    private fun supersedes(incoming: OrmEntry, existing: OrmEntry?): Boolean {
+        if (existing == null) return true
+        if (incoming.timestamp != existing.timestamp) return incoming.timestamp > existing.timestamp
+        return incoming.authorDeviceId > existing.authorDeviceId
     }
 
     suspend fun get(id: String): OrmEntry? {
@@ -78,12 +106,15 @@ class LWWMap(
 
     suspend fun delete(id: String, authorDeviceId: String): OrmEntry {
         ensureLoaded()
+        // Preserve the prior entry's fields in the tombstone (plus _deleted) so a
+        // delete on a 1:1 model still carries the routing field (e.g. conversationId)
+        // when it is broadcast; without it, SyncManager could not resolve the audience.
+        val priorData = entries[id]?.data ?: emptyMap()
         val tombstone = OrmEntry(
             id = id,
-            data = mapOf("_deleted" to true),
-            timestamp = System.currentTimeMillis(),
-            authorDeviceId = authorDeviceId,
-            signature = ByteArray(0)
+            data = priorData + ("_deleted" to true),
+            timestamp = MonotonicClock.now(),
+            authorDeviceId = authorDeviceId
         )
         store.put(modelName, tombstone)
         entries[id] = tombstone
@@ -110,5 +141,10 @@ class LWWMap(
         } else {
             live.sortedBy { it.timestamp }
         }
+    }
+
+    companion object {
+        /** Tolerance for benign clock skew when rejecting far-future timestamps. */
+        private const val CLOCK_SKEW_TOLERANCE_MS = 60_000L
     }
 }
