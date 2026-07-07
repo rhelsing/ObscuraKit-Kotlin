@@ -2,7 +2,7 @@ package com.obscura.kit.managers
 
 import com.obscura.kit.stores.FriendStatus
 import com.obscura.kit.stores.FriendSyncAction
-import obscura.v2.Client.ClientMessage
+import obscura.client.v1.Client.ClientMessage
 
 /**
  * Befriend, acceptFriend, and syncFriendToOwnDevices.
@@ -20,8 +20,8 @@ internal class FriendshipManager(
         messenger.fetchPreKeyBundles(targetUserId)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.TYPE_FRIEND_REQUEST)
-            .setUsername(session.username ?: "").setTimestamp(System.currentTimeMillis()).build()
+            .setFriendRequest(obscura.client.v1.friendRequest { username = session.username ?: "" })
+            .setTimestamp(System.currentTimeMillis()).build()
 
         messageSender.sendToAllDevices(targetUserId, msg)
         friends.add(targetUserId, targetUsername, FriendStatus.PENDING_SENT)
@@ -33,8 +33,10 @@ internal class FriendshipManager(
         messenger.fetchPreKeyBundles(targetUserId)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.TYPE_FRIEND_RESPONSE)
-            .setUsername(session.username ?: "").setAccepted(true)
+            .setFriendResponse(obscura.client.v1.friendResponse {
+                username = session.username ?: ""
+                accepted = true
+            })
             .setTimestamp(System.currentTimeMillis()).build()
 
         messageSender.sendToAllDevices(targetUserId, msg)
@@ -48,9 +50,8 @@ internal class FriendshipManager(
         if (selfTargets.isEmpty()) return
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.TYPE_FRIEND_SYNC)
             .setTimestamp(System.currentTimeMillis())
-            .setFriendSync(obscura.v2.friendSync {
+            .setFriendSync(obscura.client.v1.friendSync {
                 username = friendUsername
                 this.action = action
                 this.status = status

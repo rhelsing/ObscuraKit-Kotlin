@@ -1,6 +1,6 @@
 package com.obscura.kit.managers
 
-import obscura.v2.Client.ClientMessage
+import obscura.client.v1.Client.ClientMessage
 import org.json.JSONObject
 
 /**
@@ -20,7 +20,7 @@ internal class MessagingManager(
             ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.TYPE_TEXT).setText(text)
+            .setText(obscura.client.v1.textMessage { this.text = text })
             .setTimestamp(System.currentTimeMillis()).build()
 
         messageSender.sendToAllDevices(friendData.userId, msg)
@@ -30,10 +30,9 @@ internal class MessagingManager(
         if (selfTargets.isNotEmpty()) {
             val msgId = java.util.UUID.randomUUID().toString()
             val sentSync = ClientMessage.newBuilder()
-                .setType(ClientMessage.Type.TYPE_SENT_SYNC)
                 .setTimestamp(System.currentTimeMillis())
-                .setSentSync(obscura.v2.sentSync {
-                    conversationId = friendUsername
+                .setSentSync(obscura.client.v1.sentSync {
+                    recipientUsername = friendUsername
                     messageId = msgId
                     timestamp = System.currentTimeMillis()
                     content = com.google.protobuf.ByteString.copyFrom(text.toByteArray())
@@ -51,9 +50,8 @@ internal class MessagingManager(
             ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.TYPE_CONTENT_REFERENCE)
             .setTimestamp(System.currentTimeMillis())
-            .setContentReference(obscura.v2.contentReference {
+            .setContentReference(obscura.client.v1.contentReference {
                 this.attachmentId = attachmentId
                 this.contentKey = com.google.protobuf.ByteString.copyFrom(contentKey)
                 this.nonce = com.google.protobuf.ByteString.copyFrom(nonce)
@@ -77,9 +75,8 @@ internal class MessagingManager(
         val opEnum = com.obscura.kit.orm.WireCodec.encodeOp(com.obscura.kit.orm.ModelOp.fromApp(op))
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.TYPE_MODEL_SYNC)
             .setTimestamp(System.currentTimeMillis())
-            .setModelSync(obscura.v2.modelSync {
+            .setModelSync(obscura.client.v1.modelSync {
                 this.model = model; this.id = entryId; this.op = opEnum
                 timestamp = System.currentTimeMillis()
                 this.data = com.google.protobuf.ByteString.copyFrom(JSONObject(data).toString().toByteArray())

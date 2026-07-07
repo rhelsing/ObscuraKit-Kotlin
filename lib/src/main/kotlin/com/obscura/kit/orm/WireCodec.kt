@@ -1,6 +1,6 @@
 package com.obscura.kit.orm
 
-import obscura.v2.Client
+import obscura.client.v1.Client
 
 /**
  * Internal operation kind for a [ModelSyncData], decoupled from the wire enum
@@ -51,10 +51,15 @@ object WireCodec {
         else -> ModelOp.CREATE
     }
 
-    // ─── ClientMessage.Type → app string ─────────────────────────────────────
+    // ─── ClientMessage.payload oneof → app string ────────────────────────────
 
-    /** The app-facing message-type string: the proto enum name minus its `TYPE_` prefix. */
-    fun decodeType(type: Client.ClientMessage.Type): String = type.name.removePrefix("TYPE_")
+    /**
+     * The app-facing message-type string: the set `payload` oneof arm's field
+     * name, upper-snake (which the generated [Client.ClientMessage.PayloadCase]
+     * already is). An unset payload maps to "".
+     */
+    fun decodeType(case: Client.ClientMessage.PayloadCase): String =
+        if (case == Client.ClientMessage.PayloadCase.PAYLOAD_NOT_SET) "" else case.name
 
     // ─── SignalKind ↔ app signal name ─────────────────────────────────────────
 

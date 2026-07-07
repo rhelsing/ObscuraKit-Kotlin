@@ -3,7 +3,7 @@ package com.obscura.kit.managers
 import com.obscura.kit.crypto.toBase64
 import com.obscura.kit.managers.SignalKeyUtils.toApiJson
 import com.obscura.kit.network.UploadDeviceKeysRequest
-import obscura.v2.Client.ClientMessage
+import obscura.client.v1.Client.ClientMessage
 
 /**
  * Device announce, revocation, approve link, takeover.
@@ -24,11 +24,10 @@ internal class DeviceManager(
     suspend fun announceDevices() {
         val ownDevices = devices.getOwnDevices()
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.TYPE_DEVICE_ANNOUNCE)
             .setTimestamp(System.currentTimeMillis())
-            .setDeviceAnnounce(obscura.v2.deviceAnnounce {
+            .setDeviceAnnounce(obscura.client.v1.deviceAnnounce {
                 for (d in ownDevices) {
-                    this.devices.add(obscura.v2.deviceInfo {
+                    this.devices.add(obscura.client.v1.deviceInfo {
                         deviceUuid = d.deviceId; deviceId = d.deviceId; deviceName = d.deviceName
                     })
                 }
@@ -46,11 +45,10 @@ internal class DeviceManager(
             ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.TYPE_DEVICE_ANNOUNCE)
             .setTimestamp(System.currentTimeMillis())
-            .setDeviceAnnounce(obscura.v2.deviceAnnounce {
+            .setDeviceAnnounce(obscura.client.v1.deviceAnnounce {
                 for (devId in remainingDeviceIds) {
-                    devices.add(obscura.v2.deviceInfo {
+                    devices.add(obscura.client.v1.deviceInfo {
                         deviceUuid = devId; deviceId = devId; deviceName = "Device"
                     })
                 }
@@ -78,11 +76,10 @@ internal class DeviceManager(
         val recoveryPubKey = com.obscura.kit.crypto.RecoveryKeys.getPublicKey(recoveryPhrase)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.TYPE_DEVICE_ANNOUNCE)
             .setTimestamp(System.currentTimeMillis())
-            .setDeviceAnnounce(obscura.v2.deviceAnnounce {
+            .setDeviceAnnounce(obscura.client.v1.deviceAnnounce {
                 for (devId in remainingDeviceIds) {
-                    this.devices.add(obscura.v2.deviceInfo {
+                    this.devices.add(obscura.client.v1.deviceInfo {
                         deviceUuid = devId; deviceId = devId; deviceName = "Device"
                     })
                 }
@@ -103,9 +100,8 @@ internal class DeviceManager(
         val friendsExportStr = friends.exportAll()
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.TYPE_DEVICE_LINK_APPROVAL)
             .setTimestamp(System.currentTimeMillis())
-            .setDeviceLinkApproval(obscura.v2.deviceLinkApproval {
+            .setDeviceLinkApproval(obscura.client.v1.deviceLinkApproval {
                 if (identity?.p2pPublicKey != null) {
                     p2PPublicKey = com.google.protobuf.ByteString.copyFrom(identity.p2pPublicKey)
                 }
@@ -118,7 +114,7 @@ internal class DeviceManager(
                 this.challengeResponse = com.google.protobuf.ByteString.copyFrom(challengeResponse)
 
                 for (d in ownDeviceList) {
-                    this.ownDevices.add(obscura.v2.deviceInfo {
+                    this.ownDevices.add(obscura.client.v1.deviceInfo {
                         deviceUuid = d.deviceId; deviceId = d.deviceId; deviceName = d.deviceName
                     })
                 }

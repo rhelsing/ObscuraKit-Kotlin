@@ -32,7 +32,7 @@ import com.obscura.kit.orm.ModelConfig
 import com.obscura.kit.orm.SyncStrategy
 import com.obscura.kit.persistence.NoOpSessionStorage
 import com.obscura.kit.persistence.SessionStorage
-import obscura.v2.Client.ClientMessage
+import obscura.client.v1.Client.ClientMessage
 import org.json.JSONObject
 import org.signal.libsignal.protocol.ecc.Curve
 import java.util.*
@@ -327,10 +327,9 @@ class ObscuraClient(
             targets
         }
         syncManager.queueModelSync = { targetDeviceId, modelSync ->
-            val msg = obscura.v2.Client.ClientMessage.newBuilder()
-                .setType(obscura.v2.Client.ClientMessage.Type.TYPE_MODEL_SYNC)
+            val msg = ClientMessage.newBuilder()
                 .setTimestamp(System.currentTimeMillis())
-                .setModelSync(obscura.v2.modelSync {
+                .setModelSync(obscura.client.v1.modelSync {
                     model = modelSync.model; id = modelSync.id
                     op = com.obscura.kit.orm.WireCodec.encodeOp(modelSync.op)
                     timestamp = modelSync.timestamp
@@ -377,10 +376,9 @@ class ObscuraClient(
         signalManager.sendSignal = { modelName, signalName, signalData ->
             val kind = com.obscura.kit.orm.WireCodec.encodeSignalKind(signalName)
             val ctxId = signalData["conversationId"] as? String ?: ""
-            val signalMsg = obscura.v2.Client.ClientMessage.newBuilder()
-                .setType(obscura.v2.Client.ClientMessage.Type.TYPE_MODEL_SIGNAL)
+            val signalMsg = ClientMessage.newBuilder()
                 .setTimestamp(System.currentTimeMillis())
-                .setModelSignal(obscura.v2.modelSignal {
+                .setModelSignal(obscura.client.v1.modelSignal {
                     model = modelName
                     this.kind = kind
                     contextId = ctxId
@@ -837,16 +835,21 @@ class ObscuraClient(
                 try {
                     val decrypted = messenger.decrypt(envelope)
                     val msg = decrypted.clientMessage
-                    log("RECV ${msg.type.name} from=${decrypted.sourceUserId.take(8)} text=${msg.text.take(40)}")
+                    log("RECV ${msg.payloadCase.name} from=${decrypted.sourceUserId.take(8)} text=${msg.text.text.take(40)}")
                     routeMessage(msg, decrypted.sourceUserId, decrypted.senderDeviceId)
 
                     decryptFailures.remove(decrypted.sourceUserId)
 
+                    val username = when (msg.payloadCase) {
+                        ClientMessage.PayloadCase.FRIEND_REQUEST -> msg.friendRequest.username
+                        ClientMessage.PayloadCase.FRIEND_RESPONSE -> msg.friendResponse.username
+                        else -> ""
+                    }
                     val received = ReceivedMessage(
-                        type = com.obscura.kit.orm.WireCodec.decodeType(msg.type),
-                        text = msg.text,
-                        username = msg.username,
-                        accepted = msg.accepted,
+                        type = com.obscura.kit.orm.WireCodec.decodeType(msg.payloadCase),
+                        text = msg.text.text,
+                        username = username,
+                        accepted = msg.payloadCase == ClientMessage.PayloadCase.FRIEND_RESPONSE && msg.friendResponse.accepted,
                         sourceUserId = decrypted.sourceUserId,
                         senderDeviceId = decrypted.senderDeviceId,
                         raw = msg
@@ -888,28 +891,28 @@ class ObscuraClient(
     }
 
     private suspend fun routeMessage(msg: ClientMessage, sourceUserId: String, senderDeviceId: String?) {
-        when (msg.type) {
-            ClientMessage.Type.TYPE_FRIEND_REQUEST -> handleFriendRequest(msg, sourceUserId)
-            ClientMessage.Type.TYPE_FRIEND_RESPONSE -> handleFriendResponse(msg, sourceUserId)
-            ClientMessage.Type.TYPE_TEXT, ClientMessage.Type.TYPE_IMAGE -> handleTextMessage(msg, sourceUserId, senderDeviceId)
-            ClientMessage.Type.TYPE_DEVICE_ANNOUNCE -> handleDeviceAnnounce(msg, sourceUserId)
-            ClientMessage.Type.TYPE_MODEL_SYNC -> handleModelSync(msg, sourceUserId)
-            ClientMessage.Type.TYPE_SYNC_BLOB -> handleSyncBlob(msg, sourceUserId)
-            ClientMessage.Type.TYPE_SENT_SYNC -> handleSentSync(msg)
-            ClientMessage.Type.TYPE_SESSION_RESET -> signalStore.deleteAllSessions(sourceUserId)
-            ClientMessage.Type.TYPE_FRIEND_SYNC -> handleFriendSync(msg, sourceUserId)
-            ClientMessage.Type.TYPE_DEVICE_LINK_APPROVAL -> handleLinkApproval(msg, sourceUserId)
-            ClientMessage.Type.TYPE_MODEL_SIGNAL -> handleModelSignal(msg, sourceUserId, senderDeviceId)
+        when (msg.payloadCase) {
+            ClientMessage.PayloadCase.FRIEND_REQUEST -> handleFriendRequest(msg, sourceUserId)
+            ClientMessage.PayloadCase.FRIEND_RESPONSE -> handleFriendResponse(msg, sourceUserId)
+            ClientMessage.PayloadCase.TEXT -> handleTextMessage(msg, sourceUserId, senderDeviceId)
+            ClientMessage.PayloadCase.DEVICE_ANNOUNCE -> handleDeviceAnnounce(msg, sourceUserId)
+            ClientMessage.PayloadCase.MODEL_SYNC -> handleModelSync(msg, sourceUserId)
+            ClientMessage.PayloadCase.SYNC_BLOB -> handleSyncBlob(msg, sourceUserId)
+            ClientMessage.PayloadCase.SENT_SYNC -> handleSentSync(msg)
+            ClientMessage.PayloadCase.SESSION_RESET -> signalStore.deleteAllSessions(sourceUserId)
+            ClientMessage.PayloadCase.FRIEND_SYNC -> handleFriendSync(msg, sourceUserId)
+            ClientMessage.PayloadCase.DEVICE_LINK_APPROVAL -> handleLinkApproval(msg, sourceUserId)
+            ClientMessage.PayloadCase.MODEL_SIGNAL -> handleModelSignal(msg, sourceUserId, senderDeviceId)
             else -> { }
         }
     }
 
     private suspend fun handleFriendRequest(msg: ClientMessage, sourceUserId: String) {
-        friends.add(sourceUserId, msg.username, FriendStatus.PENDING_RECEIVED)
+        friends.add(sourceUserId, msg.friendRequest.username, FriendStatus.PENDING_RECEIVED)
     }
 
     private suspend fun handleFriendResponse(msg: ClientMessage, sourceUserId: String) {
-        if (msg.accepted) friends.add(sourceUserId, msg.username, FriendStatus.ACCEPTED)
+        if (msg.friendResponse.accepted) friends.add(sourceUserId, msg.friendResponse.username, FriendStatus.ACCEPTED)
     }
 
     private suspend fun handleTextMessage(msg: ClientMessage, sourceUserId: String, senderDeviceId: String?) {
@@ -917,8 +920,8 @@ class ObscuraClient(
         val msgData = MessageData(
             id = msgId, conversationId = sourceUserId,
             authorDeviceId = senderDeviceId ?: "unknown",
-            content = msg.text, timestamp = msg.timestamp,
-            type = com.obscura.kit.orm.WireCodec.decodeType(msg.type).lowercase()
+            content = msg.text.text, timestamp = msg.timestamp,
+            type = com.obscura.kit.orm.WireCodec.decodeType(msg.payloadCase).lowercase()
         )
         messagesDomain.add(sourceUserId, msgData)
         refreshConversation(sourceUserId)
@@ -1021,12 +1024,12 @@ class ObscuraClient(
 
     private suspend fun handleSentSync(msg: ClientMessage) {
         val ss = msg.sentSync
-        messagesDomain.add(ss.conversationId, MessageData(
-            id = ss.messageId, conversationId = ss.conversationId,
+        messagesDomain.add(ss.recipientUsername, MessageData(
+            id = ss.messageId, conversationId = ss.recipientUsername,
             authorDeviceId = deviceId ?: "self", content = String(ss.content.toByteArray()),
             timestamp = ss.timestamp, type = "text"
         ))
-        refreshConversation(ss.conversationId)
+        refreshConversation(ss.recipientUsername)
     }
 
     private suspend fun handleFriendSync(msg: ClientMessage, sourceUserId: String) {

@@ -3,7 +3,7 @@ package scenarios
 import com.google.protobuf.ByteString
 import com.obscura.kit.orm.ModelOp
 import com.obscura.kit.orm.WireCodec
-import obscura.v2.Client
+import obscura.client.v1.Client
 import org.json.JSONObject
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.DynamicTest
@@ -30,7 +30,8 @@ class WireConformanceTest {
         forEach(v.getJSONArray("messageTypes")) { c ->
             val wire = c.getString("wire"); val app = c.getString("app")
             tests.add(dyn("messageType $wire -> \"$app\"") {
-                assertEquals(app, WireCodec.decodeType(Client.ClientMessage.Type.valueOf(wire)))
+                val case = Client.ClientMessage.PayloadCase.valueOf(wire.uppercase())
+                assertEquals(app, WireCodec.decodeType(case))
             })
         }
 
