@@ -332,18 +332,10 @@ class ObscuraClient(
                 .setTimestamp(System.currentTimeMillis())
                 .setModelSync(obscura.v2.modelSync {
                     model = modelSync.model; id = modelSync.id
-                    // ModelSyncData.op is the internal convention (0=CREATE, 1=UPDATE, 2=DELETE);
-                    // map it explicitly to the proto Op (whose numbers differ now that
-                    // OP_UNSPECIFIED occupies 0).
-                    op = when (modelSync.op) {
-                        1 -> obscura.v2.Client.ModelSync.Op.OP_UPDATE
-                        2 -> obscura.v2.Client.ModelSync.Op.OP_DELETE
-                        else -> obscura.v2.Client.ModelSync.Op.OP_CREATE
-                    }
+                    op = com.obscura.kit.orm.WireCodec.encodeOp(modelSync.op)
                     timestamp = modelSync.timestamp
                     data = com.google.protobuf.ByteString.copyFrom(modelSync.data)
                     authorDeviceId = modelSync.authorDeviceId
-                    signature = com.google.protobuf.ByteString.copyFrom(modelSync.signature)
                 }).build()
             val mapped = messenger.deviceMap(targetDeviceId)
             messenger.queueMessage(targetDeviceId, msg, mapped?.first)
@@ -383,12 +375,7 @@ class ObscuraClient(
         // Wire ephemeral signal sending — typed MODEL_SIGNAL payload (no JSON).
         // Sender identity + timestamp ride on the ClientMessage envelope, not the payload.
         signalManager.sendSignal = { modelName, signalName, signalData ->
-            val kind = when (signalName) {
-                "typing" -> obscura.v2.Client.SignalKind.SIGNAL_KIND_TYPING
-                "stoppedTyping" -> obscura.v2.Client.SignalKind.SIGNAL_KIND_STOPPED_TYPING
-                "read" -> obscura.v2.Client.SignalKind.SIGNAL_KIND_READ
-                else -> obscura.v2.Client.SignalKind.SIGNAL_KIND_UNSPECIFIED
-            }
+            val kind = com.obscura.kit.orm.WireCodec.encodeSignalKind(signalName)
             val ctxId = signalData["conversationId"] as? String ?: ""
             val signalMsg = obscura.v2.Client.ClientMessage.newBuilder()
                 .setType(obscura.v2.Client.ClientMessage.Type.TYPE_MODEL_SIGNAL)
@@ -869,7 +856,7 @@ class ObscuraClient(
                     decryptFailures.remove(decrypted.sourceUserId)
 
                     val received = ReceivedMessage(
-                        type = msg.type.name.removePrefix("TYPE_"),
+                        type = com.obscura.kit.orm.WireCodec.decodeType(msg.type),
                         text = msg.text,
                         username = msg.username,
                         accepted = msg.accepted,
@@ -944,7 +931,7 @@ class ObscuraClient(
             id = msgId, conversationId = sourceUserId,
             authorDeviceId = senderDeviceId ?: "unknown",
             content = msg.text, timestamp = msg.timestamp,
-            type = msg.type.name.removePrefix("TYPE_").lowercase()
+            type = com.obscura.kit.orm.WireCodec.decodeType(msg.type).lowercase()
         )
         messagesDomain.add(sourceUserId, msgData)
         refreshConversation(sourceUserId)
@@ -977,12 +964,8 @@ class ObscuraClient(
             val sig = msg.modelSignal
             if (sig.model.isBlank()) return
 
-            val signalName = when (sig.kind) {
-                obscura.v2.Client.SignalKind.SIGNAL_KIND_TYPING -> "typing"
-                obscura.v2.Client.SignalKind.SIGNAL_KIND_STOPPED_TYPING -> "stoppedTyping"
-                obscura.v2.Client.SignalKind.SIGNAL_KIND_READ -> "read"
-                else -> return // unknown/unspecified — ignore
-            }
+            val signalName = com.obscura.kit.orm.WireCodec.decodeSignalKind(sig.kind)
+                ?: return // unknown/unspecified — ignore
 
             // Identity comes from the authenticated envelope, never the payload:
             // the device from the decrypted session, the display name from the friend graph.
@@ -1004,19 +987,12 @@ class ObscuraClient(
         }
     }
 
-    /** Map a wire [ModelSync.Op] to the internal op convention (0=CREATE, 1=UPDATE, 2=DELETE). */
-    private fun opToInternal(op: obscura.v2.Client.ModelSync.Op): Int = when (op) {
-        obscura.v2.Client.ModelSync.Op.OP_UPDATE -> 1
-        obscura.v2.Client.ModelSync.Op.OP_DELETE -> 2
-        else -> 0 // OP_CREATE / OP_UNSPECIFIED → CREATE
-    }
-
     private suspend fun handleModelSync(msg: ClientMessage, sourceUserId: String) {
         val sync = msg.modelSync
         val syncData = ModelSyncData(
-            model = sync.model, id = sync.id, op = opToInternal(sync.op),
+            model = sync.model, id = sync.id, op = com.obscura.kit.orm.WireCodec.decodeOp(sync.op),
             timestamp = sync.timestamp, data = sync.data.toByteArray(),
-            authorDeviceId = sync.authorDeviceId, signature = sync.signature.toByteArray()
+            authorDeviceId = sync.authorDeviceId
         )
         orm.handleSync(syncData, sourceUserId)
 

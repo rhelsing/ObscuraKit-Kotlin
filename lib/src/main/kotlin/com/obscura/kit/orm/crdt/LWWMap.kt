@@ -1,6 +1,7 @@
 package com.obscura.kit.orm.crdt
 
 import com.obscura.kit.orm.ModelStore
+import com.obscura.kit.orm.MonotonicClock
 import com.obscura.kit.orm.OrmEntry
 
 /**
@@ -105,12 +106,15 @@ class LWWMap(
 
     suspend fun delete(id: String, authorDeviceId: String): OrmEntry {
         ensureLoaded()
+        // Preserve the prior entry's fields in the tombstone (plus _deleted) so a
+        // delete on a 1:1 model still carries the routing field (e.g. conversationId)
+        // when it is broadcast; without it, SyncManager could not resolve the audience.
+        val priorData = entries[id]?.data ?: emptyMap()
         val tombstone = OrmEntry(
             id = id,
-            data = mapOf("_deleted" to true),
-            timestamp = System.currentTimeMillis(),
-            authorDeviceId = authorDeviceId,
-            signature = ByteArray(0)
+            data = priorData + ("_deleted" to true),
+            timestamp = MonotonicClock.now(),
+            authorDeviceId = authorDeviceId
         )
         store.put(modelName, tombstone)
         entries[id] = tombstone

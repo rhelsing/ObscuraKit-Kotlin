@@ -39,11 +39,10 @@ class SyncManager(
         val syncData = ModelSyncData(
             model = model.name,
             id = entry.id,
-            op = 0, // CREATE
+            op = if (entry.isDeleted) ModelOp.DELETE else ModelOp.CREATE,
             timestamp = entry.timestamp,
             data = org.json.JSONObject(entry.data).toString().toByteArray(),
-            authorDeviceId = entry.authorDeviceId,
-            signature = entry.signature
+            authorDeviceId = entry.authorDeviceId
         )
 
         for (targetDeviceId in targets) {

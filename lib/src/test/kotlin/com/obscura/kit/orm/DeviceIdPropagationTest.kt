@@ -91,9 +91,8 @@ class DeviceIdPropagationTest {
 
         val created = note.create(mapOf("text" to "x"))
         currentDeviceId = "device-z"
-        note.delete(created.id)
-
-        val tomb = note.find(created.id)!!
+        // delete() returns the tombstone; find() (correctly) hides deleted entries.
+        val tomb = note.delete(created.id)!!
         assertEquals(true, tomb.data["_deleted"],
             "Sanity: deleted entry is a tombstone")
         assertEquals("device-z", tomb.authorDeviceId,

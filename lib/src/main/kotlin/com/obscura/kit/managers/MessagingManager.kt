@@ -74,11 +74,7 @@ internal class MessagingManager(
         val friendData = friends.getAccepted().find { it.username == friendUsername }
             ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
 
-        val opEnum = when (op.uppercase()) {
-            "UPDATE" -> obscura.v2.Client.ModelSync.Op.OP_UPDATE
-            "DELETE" -> obscura.v2.Client.ModelSync.Op.OP_DELETE
-            else -> obscura.v2.Client.ModelSync.Op.OP_CREATE
-        }
+        val opEnum = com.obscura.kit.orm.WireCodec.encodeOp(com.obscura.kit.orm.ModelOp.fromApp(op))
 
         val msg = ClientMessage.newBuilder()
             .setType(ClientMessage.Type.TYPE_MODEL_SYNC)
