@@ -577,20 +577,7 @@ class ObscuraClient(
         val schema = JSONObject(jsonString)
         val models = mutableMapOf<String, ModelConfig>()
         for (name in schema.keys()) {
-            val model = schema.getJSONObject(name)
-            val fieldsObj = model.getJSONObject("fields")
-            val fields = mutableMapOf<String, String>()
-            for (key in fieldsObj.keys()) fields[key] = fieldsObj.getString(key)
-            val audienceObj = model.optJSONObject("audience")
-            models[name] = ModelConfig(
-                fields = fields,
-                sync = SyncStrategy.fromWire(model.optString("sync", "gset")),
-                ttl = if (model.has("ttl") && !model.isNull("ttl")) model.getString("ttl") else null,
-                audience = com.obscura.kit.orm.Audience.fromWire(
-                    kind = audienceObj?.optString("kind"),
-                    field = audienceObj?.optString("field"),
-                ),
-            )
+            models[name] = com.obscura.kit.orm.ModelConfig.fromWire(schema.getJSONObject(name))
         }
         orm.define(models)
         // Cache schema for cold-start restore

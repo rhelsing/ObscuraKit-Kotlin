@@ -78,6 +78,43 @@ data class ModelConfig(
         // silently accepting it and skipping validation on every write.
         for ((field, type) in fields) FieldTypes.parse(field, type)
     }
+
+    companion object {
+        /**
+         * Parse one model's config from its JSON object (the value in the shared
+         * `schema.ts` map). This is the single source of truth for how a raw config
+         * becomes a [ModelConfig]; [com.obscura.kit.ObscuraClient.defineModelsFromJson]
+         * and the schema conformance tests both go through here, so parsing cannot
+         * drift between production and tests. Conforms to obscura-proto SPEC §4 +
+         * conformance/schema.json.
+         *
+         * Fails loud with [com.obscura.kit.ObscuraError.InvalidSchema] on any invalid
+         * definition (unknown sync, unknown field type, malformed audience, missing
+         * `fields`) rather than leaking a raw parse exception.
+         */
+        fun fromWire(model: org.json.JSONObject): ModelConfig {
+            try {
+                val fieldsObj = model.getJSONObject("fields")
+                val fields = buildMap {
+                    for (key in fieldsObj.keys()) put(key, fieldsObj.getString(key))
+                }
+                val audienceObj = model.optJSONObject("audience")
+                return ModelConfig(
+                    fields = fields,
+                    sync = SyncStrategy.fromWire(model.optString("sync", "gset")),
+                    ttl = if (model.has("ttl") && !model.isNull("ttl")) model.getString("ttl") else null,
+                    audience = Audience.fromWire(
+                        kind = audienceObj?.optString("kind"),
+                        field = audienceObj?.optString("field"),
+                    ),
+                )
+            } catch (e: IllegalArgumentException) {
+                throw com.obscura.kit.ObscuraError.InvalidSchema(e.message ?: "invalid model config")
+            } catch (e: org.json.JSONException) {
+                throw com.obscura.kit.ObscuraError.InvalidSchema("malformed model config: ${e.message}")
+            }
+        }
+    }
 }
 
 /** Parsing + validation for the string field-type declarations. */

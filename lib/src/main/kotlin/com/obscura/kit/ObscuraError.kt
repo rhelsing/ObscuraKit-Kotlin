@@ -37,4 +37,13 @@ sealed class ObscuraError(val code: String, message: String, cause: Throwable? =
      */
     class DirectRoutingUnresolved(message: String) :
         ObscuraError("DIRECT_ROUTING_UNRESOLVED", message)
+
+    /**
+     * A model definition in the schema is invalid — unknown `sync` strategy,
+     * unknown field type, or malformed/underspecified `audience`. Fail loud at
+     * define time rather than silently mis-parsing (which is how a 1:1 model could
+     * lose its private audience and leak). Mirrors Swift `ObscuraError.invalidSchema`.
+     */
+    class InvalidSchema(message: String) :
+        ObscuraError("INVALID_SCHEMA", message)
 }
