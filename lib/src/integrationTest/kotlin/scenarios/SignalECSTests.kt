@@ -6,6 +6,7 @@ import com.obscura.kit.orm.SignalManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.*
 import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
@@ -125,12 +126,17 @@ class SignalECSTests {
         // Alice starts typing
         alice.orm.model("directMessage").typing(convId)
 
-        // Bob should receive the MODEL_SIGNAL with JSON payload in text field
-        val msg = bob.waitForMessage(15_000)
-        assertEquals("MODEL_SIGNAL", msg.type)
-        val payload = org.json.JSONObject(msg.text)
-        assertEquals("directMessage", payload.getString("model"))
-        assertEquals("typing", payload.getString("signal"))
+        // Bob receives the typed MODEL_SIGNAL over the wire and surfaces it as a
+        // typing indicator. Signals no longer carry a JSON payload in the text
+        // field — the payload is the typed ModelSignal message (obscura-proto
+        // client.proto) — so assert the app-facing contract directly: Bob
+        // observes Alice typing in this conversation.
+        val aliceName = alice.username!!
+        val typers = withTimeout(15_000) {
+            bob.orm.model("directMessage").observeTyping(convId)
+                .first { it.contains(aliceName) }
+        }
+        assertTrue(typers.contains(aliceName), "Bob should observe Alice typing")
 
         alice.disconnect()
         bob.disconnect()
