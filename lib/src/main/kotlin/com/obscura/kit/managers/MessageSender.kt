@@ -1,7 +1,7 @@
 package com.obscura.kit.managers
 
 import com.obscura.kit.stores.MessengerDomain
-import obscura.v2.Client.ClientMessage
+import obscura.client.v1.Client.ClientMessage
 
 /**
  * Shared utility for sending a ClientMessage to all of a user's devices.

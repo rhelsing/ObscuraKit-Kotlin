@@ -8,7 +8,7 @@ import com.obscura.kit.network.APIClient
 import kotlinx.coroutines.CoroutineDispatcher
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
-import obscura.v2.Client.*
+import obscura.client.v1.Client.*
 import org.json.JSONArray
 import org.signal.libsignal.protocol.*
 import org.signal.libsignal.protocol.ecc.Curve

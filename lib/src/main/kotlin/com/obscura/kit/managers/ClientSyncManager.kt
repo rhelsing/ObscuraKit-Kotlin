@@ -1,7 +1,7 @@
 package com.obscura.kit.managers
 
 import com.obscura.kit.stores.MessageData
-import obscura.v2.Client.ClientMessage
+import obscura.client.v1.Client.ClientMessage
 import org.json.JSONArray
 import org.json.JSONObject
 import java.util.*
@@ -22,7 +22,7 @@ internal class ClientSyncManager(
     suspend fun requestSync() {
         val selfTargets = devices.getSelfSyncTargets().filter { it != session.deviceId }
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.TYPE_SYNC_REQUEST)
+            .setSyncRequest(obscura.client.v1.syncRequest {})
             .setTimestamp(System.currentTimeMillis()).build()
 
         for (devId in selfTargets) {
@@ -36,9 +36,8 @@ internal class ClientSyncManager(
         val compressed = com.obscura.kit.crypto.SyncBlob.export(friendList)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.TYPE_SYNC_BLOB)
             .setTimestamp(System.currentTimeMillis())
-            .setSyncBlob(obscura.v2.syncBlob {
+            .setSyncBlob(obscura.client.v1.syncBlob {
                 compressedData = com.google.protobuf.ByteString.copyFrom(compressed)
             }).build()
 
@@ -72,8 +71,7 @@ internal class ClientSyncManager(
         signalStore.deleteAllSessions(targetUserId)
 
         val msg = ClientMessage.newBuilder()
-            .setType(ClientMessage.Type.TYPE_SESSION_RESET)
-            .setResetReason(reason)
+            .setSessionReset(obscura.client.v1.sessionReset { this.reason = reason })
             .setTimestamp(System.currentTimeMillis()).build()
 
         messageSender.sendToAllDevices(targetUserId, msg)
