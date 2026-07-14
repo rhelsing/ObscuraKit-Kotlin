@@ -1,12 +1,41 @@
 # ObscuraKit-Kotlin
 
-@README.md for full architecture, API reference, file structure, multi-app and multi-platform strategy.
+## ⚠️ Read this before changing anything
+
+**This repo is mid-reset. Large parts of it are scheduled for deletion.**
+
+Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md) and
+[`obscura-proto/RESET.md`](../obscura-proto/RESET.md) **first**. They are the brief.
+
+An audit found that this kit grew a schema-driven ORM, CRDT engine, query DSL, and
+audience-routing system — implemented *twice*, here and in Swift — to serve five flat models
+in one app. None of it is reachable from that app. It is being deleted, not improved.
+
+The rule that governs this repo:
+
+> **If the kit reads it, it is a field in `client.proto`.
+> If it is not in `client.proto`, the kit MUST NOT read it.**
+
+**Do not "improve" the ORM, the CRDT layer, the query builder, the audience/routing engine, or
+the schema parser. They are on the deletion list.** If a task seems to require extending them,
+that is the signal to stop and re-read §0 — not to extend them. An agent working only inside
+this repo cannot see why they are unnecessary, because the evidence lives in `obscura-pix`.
 
 ## Quick Context
 
-- **What:** E2E encrypted data layer library (not an app) — any Android/JVM app links against this
+- **What:** the **native platform layer** for the Obscura app. Not a general-purpose framework;
+  it has exactly one consumer (`obscura-pix`) and no API-stability obligation to anyone else.
+- **Why it exists natively at all:** libsignal ships only as `libsignal-java` / `libsignal-swift`
+  (no shared core), and the push path must decrypt with the app closed (iOS NSE — no RN runtime).
+  Everything *else* belongs in the app.
 - **Server:** `obscura.barrelmaker.dev` (OpenAPI spec at `/openapi.yaml`)
-- **Reference:** JS client at `obscura-client-web` (sibling repo); iOS at `ObscuraKit-swift`
+- **Contract:** `obscura-proto` (submodule at `proto/`) — `SPEC.md` is normative.
+- **Sibling kit:** `ObscuraKit-swift`. It must agree with this one on the **wire**
+  (`conformance/wire.json`) and nothing more.
+
+> **Not a reference:** `obscura-client-web` is a throwaway proof-of-concept, **not** a porting
+> target and **not** a normative implementation. Earlier versions of this file pointed agents at
+> it. That was a significant source of the mess.
 - **Build:** `JAVA_HOME=/path/to/jdk-21 ./gradlew :lib:test`
 - **Tests:** two source sets — `src/test` (297 unit tests, no network) and `src/integrationTest` (109 tests against a containerized/live `obscura-server`, all driving the `ObscuraClient` public API)
 
