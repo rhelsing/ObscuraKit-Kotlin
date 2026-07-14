@@ -144,7 +144,12 @@ class LWWMap(
     }
 
     companion object {
-        /** Tolerance for benign clock skew when rejecting far-future timestamps. */
-        private const val CLOCK_SKEW_TOLERANCE_MS = 60_000L
+        /**
+         * Tolerance for benign clock skew when rejecting far-future timestamps (SPEC §2.4).
+         * Aliased from [com.obscura.kit.orm.MonotonicClock] so the CRDT path and the
+         * device-announce replay guard share one definition.
+         */
+        private const val CLOCK_SKEW_TOLERANCE_MS =
+            com.obscura.kit.orm.MonotonicClock.CLOCK_SKEW_TOLERANCE_MS
     }
 }

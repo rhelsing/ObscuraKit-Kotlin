@@ -183,8 +183,12 @@ class Model(
 
     /**
      * Observe who is actively typing for [contextKey].
-     * Returns `Flow<List<String>>` — list of [authorDeviceId] strings currently
-     * typing. Callers resolve display names from their own friend graph.
+     *
+     * Emits **authorDeviceId** strings, not usernames: the device comes from the
+     * authenticated Signal envelope, whereas a sender-supplied display name in the payload
+     * would be spoofable (SPEC §5). To render a name, resolve each id against your own friend
+     * graph with [com.obscura.kit.stores.FriendDomain.friendForDeviceId].
+     *
      * Auto-expires after 3 seconds of no signal.
      */
     fun observeTyping(contextKey: String): Flow<List<String>> {
@@ -192,7 +196,10 @@ class Model(
             ?: kotlinx.coroutines.flow.flowOf(emptyList())
     }
 
-    /** Observe read receipts for [contextKey]. Returns [authorDeviceId] strings. */
+    /**
+     * Observe read receipts for [contextKey]. Emits **authorDeviceId** strings — resolve names
+     * via [com.obscura.kit.stores.FriendDomain.friendForDeviceId], as with [observeTyping].
+     */
     fun observeRead(contextKey: String): Flow<List<String>> {
         return signalManager?.observe(name, "read", contextKey)
             ?: kotlinx.coroutines.flow.flowOf(emptyList())

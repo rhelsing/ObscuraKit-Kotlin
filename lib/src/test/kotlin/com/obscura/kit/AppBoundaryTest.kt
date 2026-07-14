@@ -101,4 +101,35 @@ class AppBoundaryTest {
         val audience = config.audience as com.obscura.kit.orm.Audience.Conversation
         assertEquals("conversationId", audience.conversationField)
     }
+
+    // ─── Canonical conversation id (SPEC §1.3) ─────────────────────────────────
+
+    /**
+     * The id must be identical no matter which participant composes the write — that is the
+     * entire reason it is sorted. Without this, Alice and Bob would address the *same* 1:1
+     * conversation by two different ids, and a reply or read receipt would fail to resolve
+     * back to it.
+     */
+    @Test
+    fun `canonical conversation id is order-independent`() {
+        val fromAlice = com.obscura.kit.orm.Audience.canonicalConversationId("uAlice", "uBob")
+        val fromBob = com.obscura.kit.orm.Audience.canonicalConversationId("uBob", "uAlice")
+
+        assertEquals(fromAlice, fromBob, "both participants must derive the same conversation id")
+        assertEquals("uAlice_uBob", fromAlice, "sorted lexicographically, joined with one underscore")
+    }
+
+    /**
+     * SyncManager resolves a Conversation audience by splitting on `_` and requiring exactly
+     * two non-blank parts — so what send() builds has to survive that parse. These are inverses;
+     * a change to either without the other silently produces DIRECT_ROUTING_UNRESOLVED.
+     */
+    @Test
+    fun `canonical conversation id parses back to exactly two participants`() {
+        val convId = com.obscura.kit.orm.Audience.canonicalConversationId("uMe", "uB")
+
+        val participants = convId.split("_").filter { it.isNotBlank() }
+        assertEquals(2, participants.size, "must resolve to exactly two participants")
+        assertTrue(participants.containsAll(listOf("uMe", "uB")))
+    }
 }

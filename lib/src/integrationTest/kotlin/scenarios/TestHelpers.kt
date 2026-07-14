@@ -28,6 +28,23 @@ fun uniqueName(prefix: String): String =
     "kt_${prefix}_${System.currentTimeMillis()}_${(1000..9999).random()}"
 
 /**
+ * The ORM model `ObscuraClient.send()` routes conversations through.
+ *
+ * `send()` has no legacy-TEXT fallback: it is an ORM API, and requires
+ * [ObscuraConfig.conversationModel] to name a defined model. Test clients therefore declare it
+ * (see [registerAndConnect]) and [sendAndVerify] defines the schema on both sides before sending.
+ */
+const val CONV_MODEL = "directMessage"
+
+/** Default audience (friends) — [sendAndVerify] only ever sends between two friends. */
+val conversationSchema = mapOf(
+    CONV_MODEL to com.obscura.kit.orm.ModelConfig(
+        fields = mapOf("content" to "string"),
+        sync = com.obscura.kit.orm.SyncStrategy.GSET,
+    )
+)
+
+/**
  * Provision a second device and approve it from the first device.
  * Returns the second device in AUTHENTICATED state.
  */
@@ -54,7 +71,10 @@ suspend fun provisionAndApprove(existingDevice: ObscuraClient, username: String,
     return device2
 }
 
-suspend fun registerAndConnect(prefix: String, config: ObscuraConfig = ObscuraConfig(API)): ObscuraClient {
+suspend fun registerAndConnect(
+    prefix: String,
+    config: ObscuraConfig = ObscuraConfig(API, conversationModel = CONV_MODEL),
+): ObscuraClient {
     val client = ObscuraClient(config)
     client.register(uniqueName(prefix), TEST_PASSWORD)
     assertEquals(AuthState.AUTHENTICATED, client.authState.value)
@@ -88,8 +108,19 @@ suspend fun becomeFriends(a: ObscuraClient, b: ObscuraClient) {
     assertEquals(bFriendsBefore + 1, b.friendList.value.size)
 }
 
+/**
+ * Deliver a message and assert it arrives, for tests about the *transport* — offline queueing,
+ * reconnect, multi-device fan-out, persistence.
+ *
+ * Uses [ObscuraClient.sendText] (legacy TEXT) deliberately. These tests care that *a* message
+ * survives the round trip, and a TEXT envelope is the cleanest probe: it produces no MODEL_SYNC
+ * of its own, so a test can still assert that no ORM entry leaked. Tests about the ORM send path
+ * itself use [ObscuraClient.send] directly — see `ORMMessageTests`.
+ *
+ * (`send()` no longer falls back to TEXT silently; [ObscuraClient.sendText] is how you ask for it.)
+ */
 suspend fun sendAndVerify(sender: ObscuraClient, receiver: ObscuraClient, text: String, timeoutMs: Long = 15_000) {
-    sender.send(receiver.username!!, text)
+    sender.sendText(receiver.username!!, text)
     val msg = receiver.waitForMessage(timeoutMs)
     assertEquals("TEXT", msg.type)
     assertEquals(text, msg.text)

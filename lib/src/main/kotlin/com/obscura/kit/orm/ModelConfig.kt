@@ -45,6 +45,19 @@ sealed class Audience {
     data class Conversation(val conversationField: String) : Audience()
 
     companion object {
+        /**
+         * Build the canonical two-party conversation id carried by a [Conversation]
+         * audience's field: the participants' userIds sorted lexicographically and
+         * joined with a single underscore, `"userIdA_userIdB"`.
+         *
+         * Sorting is what makes a 1:1 conversation address the same regardless of
+         * which participant composed the write, so a reply or a read receipt resolves
+         * in either direction. This is the exact inverse of the parse in [SyncManager]
+         * (split on `_`, require exactly two non-blank parts) — keep the two in step.
+         */
+        fun canonicalConversationId(userIdA: String, userIdB: String): String =
+            listOf(userIdA, userIdB).sorted().joinToString("_")
+
         /** Parse the JSON `audience` object from the schema. Null → [Friends]. */
         fun fromWire(kind: String?, field: String?): Audience = when (kind) {
             null, "friends" -> Friends

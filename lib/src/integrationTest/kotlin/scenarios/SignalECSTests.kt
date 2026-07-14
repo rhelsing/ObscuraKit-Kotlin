@@ -171,7 +171,7 @@ class SignalECSTests {
         bob.connect()
 
         // Send a real message to prove the channel works
-        alice.send(bob.username!!, "Done typing")
+        alice.sendText(bob.username!!, "Done typing")
 
         // Drain messages — signal may arrive before the real message
         var realMessageReceived = false

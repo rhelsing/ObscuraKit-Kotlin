@@ -76,7 +76,7 @@ class MultiDeviceFanOutTests {
     fun `Alice sends to Bob, both devices receive`() = runBlocking {
         need()
 
-        alice!!.send(bobUsername!!, "Hello both Bobs!")
+        alice!!.sendText(bobUsername!!, "Hello both Bobs!")
 
         val msg1 = bob1!!.waitForMessage()
         assertEquals("TEXT", msg1.type)
@@ -99,7 +99,7 @@ class MultiDeviceFanOutTests {
     fun `Bob1 sends to Alice, Alice receives`() = runBlocking {
         need()
 
-        bob1!!.send(alice!!.username!!, "From Bob1 to Alice")
+        bob1!!.sendText(alice!!.username!!, "From Bob1 to Alice")
 
         val aliceMsg = alice!!.waitForMessage()
         assertEquals("TEXT", aliceMsg.type)

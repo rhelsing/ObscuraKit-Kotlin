@@ -115,7 +115,7 @@ class CoreFlowTests {
         delay(1000)
 
         // Alice sends while Bob offline
-        alice.send(bob.username!!, "You were offline!")
+        alice.sendText(bob.username!!, "You were offline!")
         delay(1000)
 
         // Bob reconnects

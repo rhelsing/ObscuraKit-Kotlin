@@ -86,7 +86,7 @@ class ORMAutoSyncTests {
         settings.create(mapOf("theme" to "dark"))
 
         // Send a regular text to prove the channel works
-        alice.send(bob.username!!, "ping")
+        alice.sendText(bob.username!!, "ping")
         val ping = bob.waitForMessage(15_000)
         assertEquals("TEXT", ping.type, "Bob should receive the text message")
 

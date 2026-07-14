@@ -80,6 +80,24 @@ class FriendDomain internal constructor(private val db: ObscuraDatabase) {
         }
     }
 
+    /**
+     * The friend who owns [deviceId], or null if no known friend does.
+     *
+     * Signals identify their author by `authorDeviceId` — the device from the authenticated
+     * envelope — precisely because a sender-supplied display name is spoofable (SPEC §5). But a
+     * chat UI wants to render "Alice is typing", not a raw device UUID, so it needs to resolve
+     * that id against its own friend graph. This is that lookup; without it, callers are told to
+     * resolve a name with no supported way to do so.
+     *
+     * Trusting this resolution is sound: the device id comes from the decrypted Signal session,
+     * and the mapping from device to friend comes from local state, not from the message.
+     */
+    suspend fun friendForDeviceId(deviceId: String): FriendData? = withContext(dispatcher) {
+        db.friendQueries.selectAll().executeAsList()
+            .firstOrNull { friend -> parseDevices(friend.devices).any { it.deviceId == deviceId } }
+            ?.toFriendData()
+    }
+
     suspend fun updateDevices(userId: String, devices: List<FriendDeviceInfo>) = withContext(dispatcher) {
         val devicesJson = buildDevicesJson(devices)
         db.friendQueries.updateDevices(devicesJson, System.currentTimeMillis(), userId)

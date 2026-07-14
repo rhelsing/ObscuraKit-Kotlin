@@ -58,11 +58,11 @@ class MultiDeviceLinkingTests {
 
         becomeFriends(alice, bob)
 
-        alice.send(bob.username!!, "Test message 1")
+        alice.sendText(bob.username!!, "Test message 1")
         bob.waitForMessage()
         delay(300)
 
-        alice.send(bob.username!!, "Test message 2")
+        alice.sendText(bob.username!!, "Test message 2")
         bob.waitForMessage()
         delay(300)
 

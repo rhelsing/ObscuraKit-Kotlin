@@ -29,9 +29,9 @@ class OfflineSyncTests {
         delay(1000)
 
         // Alice sends 2 messages while Bob offline
-        alice.send(bob.username!!, "Offline message 1")
+        alice.sendText(bob.username!!, "Offline message 1")
         delay(500)
-        alice.send(bob.username!!, "Offline message 2")
+        alice.sendText(bob.username!!, "Offline message 2")
         delay(1000)
 
         // Bob reconnects — should receive both queued messages

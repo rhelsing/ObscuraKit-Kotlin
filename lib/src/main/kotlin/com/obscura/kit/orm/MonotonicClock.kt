@@ -20,6 +20,18 @@ import java.util.concurrent.atomic.AtomicLong
 object MonotonicClock {
     private val last = AtomicLong(0L)
 
+    /**
+     * How far beyond local wall-clock an *incoming* timestamp may sit before it is treated as
+     * spoofed or clock-skewed (obscura-proto SPEC §2.4). One constant, shared by every path that
+     * accepts a peer-supplied timestamp — the CRDT merge path ([com.obscura.kit.orm.crdt.LWWMap])
+     * and the device-announce replay guard — so the two cannot silently drift apart.
+     *
+     * The rule exists because an unbounded future timestamp is a *permanent* weapon: it does not
+     * just win once, it wins every comparison from now on. In LWW that means owning an entry
+     * forever; in the announce guard it means wedging a peer's device list forever.
+     */
+    const val CLOCK_SKEW_TOLERANCE_MS: Long = 60_000L
+
     /** @return a timestamp ≥ System.currentTimeMillis() and strictly greater than any previously returned. */
     fun now(): Long {
         while (true) {

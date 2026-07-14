@@ -98,8 +98,20 @@ class ObscuraClient(
 ) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    /** True after [close] has been called. All public methods no-op or throw after this. */
+    /**
+     * True once [close] has been called. A closed client is inert and MUST NOT be reused —
+     * its coroutine scope is cancelled and, if it owned the driver, the database is shut.
+     *
+     * [connect] enforces this explicitly (see [checkNotClosed]) because a cancelled scope
+     * otherwise surfaces as a confusing downstream failure rather than a clear one. Other
+     * methods are not individually guarded: use a fresh client after [close].
+     */
     @Volatile private var isClosed = false
+
+    /** @throws IllegalStateException if this client has already been [close]d. */
+    private fun checkNotClosed() {
+        check(!isClosed) { "ObscuraClient has been closed and cannot be reused; construct a new one." }
+    }
 
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ConnectionState> = _connectionState
@@ -240,11 +252,11 @@ class ObscuraClient(
             ObscuraDatabase.Schema.create(driver)
             try { driver.execute(null, "PRAGMA secure_delete = ON", 0) } catch (e: Exception) { log("PRAGMA secure_delete failed: ${e.message}") }
         }
-        // Run pending schema migrations after the schema tables exist (Schema.create
-        // runs first for new DBs) but before ObscuraDatabase wraps the driver. This
-        // ordering lets migrations use raw SQL (e.g. ALTER TABLE) without any
-        // generated-query overhead, and ensures ObscuraDatabase never sees a schema
-        // version mismatch.
+        // Run schema migrations once the tables exist (Schema.create above, for a driver we
+        // own) but before ObscuraDatabase wraps the driver, so no generated query ever runs
+        // against a stale shape. Migrations are idempotent and introspection-guarded, so this
+        // is also correct for an external driver whose schema the caller created — notably
+        // AndroidSqliteDriver, which already owns PRAGMA user_version. See DatabaseMigrations.
         DatabaseMigrations.migrate(driver)
         db = ObscuraDatabase(driver)
 
@@ -658,20 +670,27 @@ class ObscuraClient(
         _friendList.value = emptyList()
         _pendingRequests.value = emptyList()
         _conversations.value = emptyMap()
-        // Wipe all local data so a fresh login starts clean
-        db.friendQueries.deleteAll()
-        db.messageQueries.deleteAll()
-        db.deviceQueries.deleteAllDevices()
-        db.deviceQueries.deleteIdentity()
-        db.signalKeyQueries.deleteLocalIdentity()
-        db.signalKeyQueries.deleteAllSignalData()
-        db.signalKeyQueries.deleteAllPreKeys()
-        db.signalKeyQueries.deleteAllSignedPreKeys()
-        db.signalKeyQueries.deleteAllSessions()
-        db.signalKeyQueries.deleteAllSenderKeys()
-        db.modelEntryQueries.deleteAllEntries()
-        db.modelEntryQueries.deleteAllAssociations()
-        db.attachmentCacheQueries.deleteAll()
+        // Wipe all local data so a fresh login starts clean.
+        //
+        // One transaction, deliberately: a crash partway through a sequence of bare deletes
+        // leaves a *coherent-looking* but half-wiped database — e.g. friends gone while this
+        // device's Signal sessions and identity keys survive. That state is worse than either
+        // extreme, because nothing downstream can detect it. All-or-nothing instead.
+        db.transaction {
+            db.friendQueries.deleteAll()
+            db.messageQueries.deleteAll()
+            db.deviceQueries.deleteAllDevices()
+            db.deviceQueries.deleteIdentity()
+            db.signalKeyQueries.deleteLocalIdentity()
+            db.signalKeyQueries.deleteAllSignalData()
+            db.signalKeyQueries.deleteAllPreKeys()
+            db.signalKeyQueries.deleteAllSignedPreKeys()
+            db.signalKeyQueries.deleteAllSessions()
+            db.signalKeyQueries.deleteAllSenderKeys()
+            db.modelEntryQueries.deleteAllEntries()
+            db.modelEntryQueries.deleteAllAssociations()
+            db.attachmentCacheQueries.deleteAll()
+        }
         sessionStorage.clear()
         log("FULL_LOGOUT complete")
     }
@@ -709,6 +728,7 @@ class ObscuraClient(
     private val connectMutex = Mutex()
 
     suspend fun connect() = connectMutex.withLock {
+        checkNotClosed()
         if (_connectionState.value == ConnectionState.CONNECTED) return@withLock
         log("CONNECT start")
         try {
@@ -1038,10 +1058,25 @@ class ObscuraClient(
             }
         }
 
-        // M4: Replay protection — reject announces whose timestamp is not strictly
-        // newer than the last accepted announce from this peer. Using strict inequality
-        // (≤) means retransmits of the exact same announce are also dropped, which is
-        // the desired behaviour since the device list is idempotent.
+        // M4: Replay protection — reject announces whose timestamp is not strictly newer than the
+        // last accepted announce from this peer. Strict inequality (≤) also drops retransmits of
+        // the exact same announce, which is fine: the device list is idempotent.
+        //
+        // The high-water mark alone is NOT sufficient. It is monotonic and peer-supplied, so a
+        // single announce bearing a far-future timestamp would raise the bar above every
+        // legitimate announce that follows — permanently wedging this peer's device list with no
+        // recovery path (they could never rotate or revoke a device again). An unbounded future
+        // timestamp is a permanent weapon, not a one-off. So clamp first, exactly as the CRDT
+        // merge path does for the same reason (SPEC §2.4), then compare.
+        val maxAcceptable = System.currentTimeMillis() + com.obscura.kit.orm.MonotonicClock.CLOCK_SKEW_TOLERANCE_MS
+        if (announce.timestamp > maxAcceptable) {
+            logger.decryptFailed(sourceUserId,
+                "device announce rejected: timestamp ${announce.timestamp} is more than " +
+                "${com.obscura.kit.orm.MonotonicClock.CLOCK_SKEW_TOLERANCE_MS}ms in the future " +
+                "(now=${System.currentTimeMillis()})")
+            return
+        }
+
         val lastAnnounceAt = friends.getLastAnnounceAt(sourceUserId)
         // lastAnnounceAt == 0 means no announce has been accepted for this peer yet
         // (fresh friend or database migration); skip the replay check in that case.
@@ -1214,40 +1249,89 @@ class ObscuraClient(
     }
 
     /**
-     * Send a text message to a friend. Uses the ORM when [ObscuraConfig.conversationModel]
-     * is configured (full sync + offline delivery); otherwise falls back to legacy TEXT
-     * (type 0) for simple direct sends.
+     * Send a text message to a friend over the ORM (MODEL_SYNC), using the model named by
+     * [ObscuraConfig.conversationModel]. That model must already be defined via
+     * [defineModelsFromJson] or [com.obscura.kit.stores.SchemaDomain.define].
      *
-     * The ORM path requires that the named model is defined via [defineModelsFromJson] or
-     * [com.obscura.kit.stores.SchemaDomain.define] before calling this.
+     * Besides `content`, the kit populates exactly one more field: the routing field the
+     * model's own [Audience] *names*. For an [Audience.Conversation] that is the canonical
+     * `"userIdA_userIdB"` id; for an [Audience.Recipient] it is the friend's username. The
+     * field *name* always comes from the schema config, never from a literal in the kit, so
+     * this does not reintroduce the application-field-name hardcoding that SPEC §1 forbids.
      *
-     * Only the `content` field is added by the kit. If the application's model schema
-     * includes additional fields (e.g. `conversationId`, `senderUsername`), create the
-     * entry directly via `orm.model("name").create(fields)` for full control over field values.
+     * That is not optional: without the routing field, [com.obscura.kit.orm.SyncManager]
+     * would (correctly) refuse the write with `DIRECT_ROUTING_UNRESOLVED` rather than risk
+     * broadcasting a 1:1 payload. A `friends`/`self` audience needs no routing field.
+     *
+     * Any *other* field the app's schema declares is the app's own business — call
+     * `orm.model(name).create(fields)` directly when you need full control.
+     *
+     * There is deliberately **no legacy-TEXT fallback**. Silently downgrading to a TEXT
+     * envelope when the config is missing would produce a message the recipient never gets
+     * notified about: per SPEC §6, only MODEL_SYNC contributes to push counts, so a TEXT
+     * envelope lands in `otherCount`, which bridges ignore. A loud failure here beats a
+     * message that appears sent and arrives silently.
+     *
+     * @throws IllegalStateException if [ObscuraConfig.conversationModel] is unset, or names a
+     *   model that has not been defined.
      */
     suspend fun send(friendUsername: String, text: String) {
         log("SEND to=$friendUsername text=${text.take(40)}")
         val convModelName = config.conversationModel
-        val convModel = if (convModelName != null) orm.modelOrNull(convModelName) else null
-        if (convModel != null) {
-            val friendData = friends.getAccepted().find { it.username == friendUsername }
-                ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
-            // Create via ORM — auto-syncs to friend via MODEL_SYNC.
-            // Only the application-agnostic `content` field is set here; the app
-            // should use orm.model(name).create(fields) if it needs additional fields.
-            val entry = convModel.create(mapOf("content" to text))
-            // Mirror locally into conversations StateFlow (keyed by friend userId)
-            messagesDomain.add(friendData.userId, MessageData(
-                id = entry.id, conversationId = friendData.userId,
-                authorDeviceId = deviceId ?: "self",
-                content = text, timestamp = entry.timestamp, type = "text"
-            ))
-            refreshConversation(friendData.userId)
-        } else {
-            // Legacy path — sends TEXT (type 0) instead of MODEL_SYNC
-            messagingManager.send(friendUsername, text)
+            ?: throw IllegalStateException(
+                "send() requires ObscuraConfig.conversationModel to name the ORM model that " +
+                "carries conversations. Set it, or drive the ORM directly with " +
+                "orm.model(name).create(fields).")
+        val convModel = orm.modelOrNull(convModelName)
+            ?: throw IllegalStateException(
+                "ObscuraConfig.conversationModel is '$convModelName' but no such model is " +
+                "defined. Define it via defineModelsFromJson() before calling send().")
+
+        val friendData = friends.getAccepted().find { it.username == friendUsername }
+            ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
+        val selfUserId = userId
+            ?: throw IllegalStateException("send() requires an authenticated session (userId is null)")
+
+        // Populate the routing field the model's audience declares — by config-supplied
+        // name, never a hardcoded one. See the KDoc above.
+        val fields = mutableMapOf<String, Any?>("content" to text)
+        when (val audience = convModel.config.audience) {
+            is com.obscura.kit.orm.Audience.Conversation ->
+                fields[audience.conversationField] =
+                    com.obscura.kit.orm.Audience.canonicalConversationId(selfUserId, friendData.userId)
+            is com.obscura.kit.orm.Audience.Recipient ->
+                fields[audience.usernameField] = friendUsername
+            is com.obscura.kit.orm.Audience.Friends,
+            is com.obscura.kit.orm.Audience.Self -> { /* no routing field required */ }
         }
+
+        // Create via ORM — auto-syncs to friend via MODEL_SYNC.
+        val entry = convModel.create(fields)
+        // Mirror locally into conversations StateFlow (keyed by friend userId)
+        messagesDomain.add(friendData.userId, MessageData(
+            id = entry.id, conversationId = friendData.userId,
+            authorDeviceId = deviceId ?: "self",
+            content = text, timestamp = entry.timestamp, type = "text"
+        ))
+        refreshConversation(friendData.userId)
     }
+
+    /**
+     * Send a legacy TEXT (type 0) envelope, bypassing the ORM entirely.
+     *
+     * Prefer [send]. This exists for two reasons: interop with peers that only speak the legacy
+     * TEXT message type, and as a deliberate *non-ORM* control — a TEXT arriving proves the
+     * channel works without itself producing a MODEL_SYNC, which is what lets a test assert that
+     * no ORM entry leaked.
+     *
+     * It is exposed explicitly rather than reached by [send] silently falling back, because a
+     * caller who *meant* to send a conversation message should not get a TEXT envelope by
+     * accident: per SPEC §6, TEXT contributes nothing to push counts, so a backgrounded recipient
+     * is never notified. Choosing TEXT must be deliberate.
+     */
+    suspend fun sendText(friendUsername: String, text: String) =
+        messagingManager.send(friendUsername, text)
+
     suspend fun sendAttachment(friendUsername: String, attachmentId: String, contentKey: ByteArray, nonce: ByteArray, mimeType: String, sizeBytes: Long) =
         messagingManager.sendAttachment(friendUsername, attachmentId, contentKey, nonce, mimeType, sizeBytes)
     suspend fun sendEncryptedAttachment(friendUsername: String, plaintext: ByteArray, mimeType: String = "application/octet-stream") =

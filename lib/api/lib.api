@@ -355,6 +355,7 @@ public final class com/obscura/kit/ObscuraClient : java/lang/AutoCloseable {
 	public final fun sendModelSync (Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun sendModelSync$default (Lcom/obscura/kit/ObscuraClient;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/util/Map;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public final fun sendRaw (Ljava/lang/String;Lobscura/client/v1/Client$ClientMessage;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun sendText (Ljava/lang/String;Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun setLogger (Lcom/obscura/kit/ObscuraLogger;)V
 	public final fun takeoverDevice (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun uploadAttachment ([BLkotlin/coroutines/Continuation;)Ljava/lang/Object;
@@ -1201,6 +1202,7 @@ public abstract class com/obscura/kit/orm/Audience {
 }
 
 public final class com/obscura/kit/orm/Audience$Companion {
+	public final fun canonicalConversationId (Ljava/lang/String;Ljava/lang/String;)Ljava/lang/String;
 	public final fun fromWire (Ljava/lang/String;Ljava/lang/String;)Lcom/obscura/kit/orm/Audience;
 }
 
@@ -1346,6 +1348,7 @@ public final class com/obscura/kit/orm/ModelSyncData {
 }
 
 public final class com/obscura/kit/orm/MonotonicClock {
+	public static final field CLOCK_SKEW_TOLERANCE_MS J
 	public static final field INSTANCE Lcom/obscura/kit/orm/MonotonicClock;
 	public final fun now ()J
 }
@@ -1592,56 +1595,13 @@ public final class com/obscura/kit/persistence/NoOpSessionStorage : com/obscura/
 	public static final field INSTANCE Lcom/obscura/kit/persistence/NoOpSessionStorage;
 	public fun clear ()V
 	public fun load ()Ljava/util/Map;
-	public fun loadSnapshot ()Lcom/obscura/kit/persistence/SessionSnapshot;
 	public fun save (Ljava/util/Map;)V
-	public fun saveSnapshot (Lcom/obscura/kit/persistence/SessionSnapshot;)V
-}
-
-public final class com/obscura/kit/persistence/SessionSnapshot {
-	public static final field CURRENT_VERSION I
-	public static final field Companion Lcom/obscura/kit/persistence/SessionSnapshot$Companion;
-	public fun <init> ()V
-	public fun <init> (ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;)V
-	public synthetic fun <init> (ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;ILkotlin/jvm/internal/DefaultConstructorMarker;)V
-	public final fun component1 ()I
-	public final fun component2 ()Ljava/lang/String;
-	public final fun component3 ()Ljava/lang/String;
-	public final fun component4 ()Ljava/lang/String;
-	public final fun component5 ()Ljava/lang/String;
-	public final fun component6 ()Ljava/lang/String;
-	public final fun component7 ()Ljava/lang/String;
-	public final fun component8 ()Ljava/lang/Integer;
-	public final fun copy (ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;)Lcom/obscura/kit/persistence/SessionSnapshot;
-	public static synthetic fun copy$default (Lcom/obscura/kit/persistence/SessionSnapshot;ILjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/Integer;ILjava/lang/Object;)Lcom/obscura/kit/persistence/SessionSnapshot;
-	public fun equals (Ljava/lang/Object;)Z
-	public final fun getAuthToken ()Ljava/lang/String;
-	public final fun getDeviceId ()Ljava/lang/String;
-	public final fun getIdentityKeyPair ()Ljava/lang/String;
-	public final fun getRefreshToken ()Ljava/lang/String;
-	public final fun getRegistrationId ()Ljava/lang/Integer;
-	public final fun getUserId ()Ljava/lang/String;
-	public final fun getUsername ()Ljava/lang/String;
-	public final fun getVersion ()I
-	public fun hashCode ()I
-	public final fun toMap ()Ljava/util/Map;
-	public fun toString ()Ljava/lang/String;
-}
-
-public final class com/obscura/kit/persistence/SessionSnapshot$Companion {
-	public final fun fromMap (Ljava/util/Map;)Lcom/obscura/kit/persistence/SessionSnapshot;
 }
 
 public abstract interface class com/obscura/kit/persistence/SessionStorage {
 	public abstract fun clear ()V
 	public abstract fun load ()Ljava/util/Map;
-	public abstract fun loadSnapshot ()Lcom/obscura/kit/persistence/SessionSnapshot;
 	public abstract fun save (Ljava/util/Map;)V
-	public abstract fun saveSnapshot (Lcom/obscura/kit/persistence/SessionSnapshot;)V
-}
-
-public final class com/obscura/kit/persistence/SessionStorage$DefaultImpls {
-	public static fun loadSnapshot (Lcom/obscura/kit/persistence/SessionStorage;)Lcom/obscura/kit/persistence/SessionSnapshot;
-	public static fun saveSnapshot (Lcom/obscura/kit/persistence/SessionStorage;Lcom/obscura/kit/persistence/SessionSnapshot;)V
 }
 
 public final class com/obscura/kit/stores/DecryptedMessage {
@@ -1754,6 +1714,7 @@ public final class com/obscura/kit/stores/FriendDomain {
 	public final fun add (Ljava/lang/String;Ljava/lang/String;Lcom/obscura/kit/stores/FriendStatus;Ljava/util/List;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public static synthetic fun add$default (Lcom/obscura/kit/stores/FriendDomain;Ljava/lang/String;Ljava/lang/String;Lcom/obscura/kit/stores/FriendStatus;Ljava/util/List;Lkotlin/coroutines/Continuation;ILjava/lang/Object;)Ljava/lang/Object;
 	public final fun exportAll (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
+	public final fun friendForDeviceId (Ljava/lang/String;Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun getAccepted (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun getAll (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;
 	public final fun getAllFriendDeviceTargets (Lkotlin/coroutines/Continuation;)Ljava/lang/Object;

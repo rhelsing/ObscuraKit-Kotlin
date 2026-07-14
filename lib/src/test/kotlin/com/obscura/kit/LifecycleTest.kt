@@ -2,7 +2,6 @@ package com.obscura.kit
 
 import com.obscura.kit.orm.SignalManager
 import com.obscura.kit.persistence.NoOpSessionStorage
-import com.obscura.kit.persistence.SessionSnapshot
 import com.obscura.kit.persistence.SessionStorage
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -15,8 +14,8 @@ import java.io.PrintStream
  * Lifecycle, close-semantics, and configuration guard tests.
  *
  * These validate: AutoCloseable idempotence, unencrypted-database warning,
- * deprecated-gatewayUrl, SignalManager contextKey API contract, and
- * typed SessionSnapshot round-trip.
+ * deprecated-gatewayUrl, SignalManager contextKey API contract, and the
+ * session-persistence save/load key contract.
  *
  * No network is used.
  */
@@ -127,62 +126,60 @@ class LifecycleTest {
         )
     }
 
-    // ─── SessionSnapshot ───────────────────────────────────────────────────────
+    // ─── Session persistence ───────────────────────────────────────────────────
 
-    @Test
-    fun `SessionSnapshot round-trips through map conversion`() {
-        val snapshot = SessionSnapshot(
-            version = 1,
-            authToken = "tok123",
-            refreshToken = "ref456",
-            userId = "u1",
-            username = "alice",
-            deviceId = "d1",
-            identityKeyPair = "base64key",
-            registrationId = 42
-        )
-        val map = snapshot.toMap()
-        val restored = SessionSnapshot.fromMap(map)
-        assertEquals(snapshot, restored)
+    /** Captures what the kit actually persists, so the real save/load contract can be asserted. */
+    private class RecordingSessionStorage : SessionStorage {
+        var stored: Map<String, Any?>? = null
+        override fun save(data: Map<String, Any?>) { stored = data }
+        override fun load(): Map<String, Any?>? = stored
+        override fun clear() { stored = null }
     }
 
+    /**
+     * The writer and the reader must agree on the key names.
+     *
+     * This is deliberately asserted against the *production* path rather than a helper's own
+     * round-trip: the removed `SessionSnapshot` helper round-tripped perfectly against itself
+     * while writing `authToken`, where [ObscuraClient.restorePersistedSession] reads `token` —
+     * so adopting it (as its own KDoc urged) would have logged every user out on cold start,
+     * with a fully green test suite. A self-consistent helper proves nothing; agreement with
+     * the reader is the property that matters.
+     */
     @Test
-    fun `SessionSnapshot fromMap handles missing fields gracefully`() {
-        val partial = mapOf("authToken" to "tok", "userId" to "u42")
-        val snapshot = SessionSnapshot.fromMap(partial)
-        assertEquals("tok", snapshot.authToken)
-        assertEquals("u42", snapshot.userId)
-        assertNull(snapshot.username, "Missing fields must be null, not throw")
-        assertNull(snapshot.deviceId)
-        assertEquals(SessionSnapshot.CURRENT_VERSION, snapshot.version,
-            "Missing version field should default to CURRENT_VERSION")
-    }
-
-    @Test
-    fun `SessionSnapshot current version is 1`() {
-        assertEquals(1, SessionSnapshot.CURRENT_VERSION)
-        assertEquals(1, SessionSnapshot().version)
-    }
-
-    @Test
-    fun `SessionStorage default saveSnapshot and loadSnapshot delegate to map API`() {
-        // Use a simple in-memory implementation to verify the default impls.
-        val storage = object : SessionStorage {
-            var stored: Map<String, Any?>? = null
-            override fun save(data: Map<String, Any?>) { stored = data }
-            override fun load(): Map<String, Any?>? = stored
-            override fun clear() { stored = null }
+    fun `persistSession writes the keys restorePersistedSession reads`() {
+        val storage = RecordingSessionStorage()
+        ObscuraClient(ObscuraConfig(apiUrl = "http://127.0.0.1:1"), sessionStorage = storage).use { client ->
+            client.persistSession()
         }
-        val snapshot = SessionSnapshot(authToken = "abc", userId = "u1")
-        storage.saveSnapshot(snapshot)
-        val loaded = storage.loadSnapshot()
-        assertNotNull(loaded)
-        assertEquals("abc", loaded!!.authToken)
-        assertEquals("u1", loaded.userId)
+
+        val saved = storage.stored
+        assertNotNull(saved, "persistSession must write something")
+        // The exact keys restorePersistedSession() gates on.
+        assertTrue(saved!!.containsKey("token"), "restore reads 'token' — persist must write it")
+        assertTrue(saved.containsKey("userId"), "restore reads 'userId' — persist must write it")
+        // Read by the Android bridge (ObscuraSession.tryRestore).
+        assertTrue(saved.containsKey("username"), "the bridge reads 'username'")
     }
 
+    /**
+     * `persistSession` load-merges rather than replacing, so non-session metadata written by
+     * other call sites survives. `cachedSchema` (written by defineModelsFromJson) is the one
+     * that matters: lose it and model definitions vanish across a restart.
+     */
     @Test
-    fun `NoOpSessionStorage loadSnapshot returns null`() {
-        assertNull(NoOpSessionStorage.loadSnapshot())
+    fun `persistSession preserves unrelated metadata already in the blob`() {
+        val storage = RecordingSessionStorage()
+        storage.save(mapOf("cachedSchema" to """{"directMessage":{}}"""))
+
+        ObscuraClient(ObscuraConfig(apiUrl = "http://127.0.0.1:1"), sessionStorage = storage).use { client ->
+            client.persistSession()
+        }
+
+        assertEquals(
+            """{"directMessage":{}}""",
+            storage.stored?.get("cachedSchema"),
+            "a session-only save must not clobber cachedSchema",
+        )
     }
 }

@@ -278,7 +278,7 @@ class ORMOfflineSyncTests {
         alice.orm.model("settings").create(mapOf("theme" to "dark"))
 
         // Send a text to prove the pipe works
-        alice.send(bob.username!!, "still here")
+        alice.sendText(bob.username!!, "still here")
         val msg = bob.waitForMessage(15_000)
         assertEquals("TEXT", msg.type, "Bob should get text, not MODEL_SYNC — settings are private")
 

@@ -63,7 +63,7 @@ class PersistenceTests {
         assertEquals(ConnectionState.DISCONNECTED, bob1.connectionState.value)
 
         // Alice sends while Bob is offline — server queues it
-        alice.send(bobUsername!!, "while you were gone")
+        alice.sendText(bobUsername!!, "while you were gone")
         delay(1000)
 
         // Simulate restart: new ObscuraClient, same file-backed DB
@@ -95,7 +95,7 @@ class PersistenceTests {
             "Bob2 conversations should contain the offline message after restart")
 
         // Prove bidirectional works after restart
-        bob2.send(alice.username!!, "I'm back")
+        bob2.sendText(alice.username!!, "I'm back")
         val reply = alice.waitForMessage()
         assertEquals("TEXT", reply.type)
         assertEquals("I'm back", reply.text)

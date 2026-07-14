@@ -53,9 +53,9 @@ class ReconnectResilienceTests {
         delay(500)
 
         // Alice sends while Bob is down
-        alice.send(bob.username!!, "while you were gone 1")
+        alice.sendText(bob.username!!, "while you were gone 1")
         delay(200)
-        alice.send(bob.username!!, "while you were gone 2")
+        alice.sendText(bob.username!!, "while you were gone 2")
         delay(500)
 
         // Bob comes back

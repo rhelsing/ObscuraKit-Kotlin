@@ -36,7 +36,7 @@ class ORMMessageTests {
         alice.orm.define(messageSchema)
         bob.orm.define(messageSchema)
 
-        // Alice sends via client.send() which now uses the ORM path
+        // send() routes through ObscuraConfig.conversationModel (set by registerAndConnect).
         alice.send(bob.username!!, "Hello via ORM!")
 
         val msg = bob.waitForMessage(15_000)
@@ -45,12 +45,12 @@ class ORMMessageTests {
         val sync = msg.raw!!.modelSync
         assertEquals("directMessage", sync.model)
 
-        val data = JSONObject(String(sync.data.toByteArray()))
+        val data = JSONObject(sync.data.toStringUtf8())
         assertEquals("Hello via ORM!", data.getString("content"),
             "content field must match the sent text")
-        // Note: senderUsername and conversationId are application-level fields.
-        // client.send() only sets 'content'; apps should call orm.model().create() directly
-        // for full field control.
+        // This model declares the default (friends) audience, so no routing field is required.
+        // A model declaring a conversation/recipient audience would additionally get the field
+        // *its own schema names* populated by send() — see ObscuraClient.send.
 
         alice.disconnect()
         bob.disconnect()
@@ -181,20 +181,26 @@ class ORMMessageTests {
     }
 
     @Test
-    fun `Legacy TEXT still works without directMessage model defined`() = runBlocking {
+    fun `send fails loud when the conversation model is not defined`() = runBlocking {
         assumeTrue(checkServer())
 
         val alice = registerAndConnect("omsg_la")
         val bob = registerAndConnect("omsg_lb")
         becomeFriends(alice, bob)
 
-        // Deliberately do NOT define directMessage model
-        // send() should fall back to TEXT (type 0)
-        alice.send(bob.username!!, "Legacy hello")
-
-        val msg = bob.waitForMessage(15_000)
-        assertEquals("TEXT", msg.type, "Without directMessage model, should fall back to TEXT")
-        assertEquals("Legacy hello", msg.text)
+        // Deliberately do NOT define the conversation model.
+        //
+        // This used to silently fall back to a legacy TEXT envelope. That looked harmless but
+        // was not: per SPEC §6 only MODEL_SYNC contributes to push counts, so a TEXT message
+        // lands in the ignored `otherCount` and the recipient is never notified — the message
+        // appears sent and arrives silently. Failing loudly is the correct behaviour.
+        val error = assertThrows(IllegalStateException::class.java) {
+            runBlocking { alice.send(bob.username!!, "Legacy hello") }
+        }
+        assertTrue(
+            error.message!!.contains("conversationModel"),
+            "the error must name the missing config. Got: ${error.message}",
+        )
 
         alice.disconnect()
         bob.disconnect()
