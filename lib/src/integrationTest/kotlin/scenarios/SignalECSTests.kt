@@ -24,7 +24,7 @@ class SignalECSTests {
     @Test
     fun `Receive signal appears in observer`() = runBlocking {
         val mgr = SignalManager()
-        mgr.receive("directMessage", "typing", mapOf("conversationId" to "conv1"), "device-alice")
+        mgr.receive("directMessage", "typing", contextKey = "conv1", authorDeviceId = "device-alice")
 
         val typers = mgr.observe("directMessage", "typing", "conv1").first()
         assertEquals(1, typers.size)
@@ -33,7 +33,7 @@ class SignalECSTests {
     @Test
     fun `Signal auto-expires after 3 seconds`() = runBlocking {
         val mgr = SignalManager()
-        mgr.receive("directMessage", "typing", mapOf("conversationId" to "conv1"), "device-alice")
+        mgr.receive("directMessage", "typing", contextKey = "conv1", authorDeviceId = "device-alice")
 
         delay(3500) // Wait past expiry
 
@@ -44,13 +44,13 @@ class SignalECSTests {
     @Test
     fun `Explicit clear removes signal immediately`() = runBlocking {
         val mgr = SignalManager()
-        mgr.receive("directMessage", "typing", mapOf("conversationId" to "conv1"), "device-alice")
+        mgr.receive("directMessage", "typing", contextKey = "conv1", authorDeviceId = "device-alice")
 
         // Verify it's there
         assertEquals(1, mgr.observe("directMessage", "typing", "conv1").first().size)
 
         // Clear it
-        mgr.clear("directMessage", "typing", mapOf("conversationId" to "conv1"), "device-alice")
+        mgr.clear("directMessage", "typing", contextKey = "conv1", authorDeviceId = "device-alice")
 
         assertEquals(0, mgr.observe("directMessage", "typing", "conv1").first().size)
     }
@@ -58,20 +58,20 @@ class SignalECSTests {
     @Test
     fun `Multiple typers tracked independently`() = runBlocking {
         val mgr = SignalManager()
-        mgr.receive("directMessage", "typing", mapOf("conversationId" to "conv1", "senderUsername" to "alice"), "device-alice")
-        mgr.receive("directMessage", "typing", mapOf("conversationId" to "conv1", "senderUsername" to "bob"), "device-bob")
+        mgr.receive("directMessage", "typing", contextKey = "conv1", authorDeviceId = "device-alice")
+        mgr.receive("directMessage", "typing", contextKey = "conv1", authorDeviceId = "device-bob")
 
         val typers = mgr.observe("directMessage", "typing", "conv1").first()
         assertEquals(2, typers.size)
-        assertTrue(typers.contains("alice"))
-        assertTrue(typers.contains("bob"))
+        assertTrue(typers.contains("device-alice"))
+        assertTrue(typers.contains("device-bob"))
     }
 
     @Test
     fun `Signals scoped to conversation`() = runBlocking {
         val mgr = SignalManager()
-        mgr.receive("directMessage", "typing", mapOf("conversationId" to "conv1", "senderUsername" to "alice"), "d1")
-        mgr.receive("directMessage", "typing", mapOf("conversationId" to "conv2", "senderUsername" to "bob"), "d2")
+        mgr.receive("directMessage", "typing", contextKey = "conv1", authorDeviceId = "d1")
+        mgr.receive("directMessage", "typing", contextKey = "conv2", authorDeviceId = "d2")
 
         assertEquals(1, mgr.observe("directMessage", "typing", "conv1").first().size)
         assertEquals(1, mgr.observe("directMessage", "typing", "conv2").first().size)
@@ -83,9 +83,9 @@ class SignalECSTests {
         var sendCount = 0
         mgr.sendSignal = { _, _, _ -> sendCount++ }
 
-        mgr.emit("directMessage", "typing", mapOf("conversationId" to "conv1"), "my-device")
-        mgr.emit("directMessage", "typing", mapOf("conversationId" to "conv1"), "my-device")
-        mgr.emit("directMessage", "typing", mapOf("conversationId" to "conv1"), "my-device")
+        mgr.emit("directMessage", "typing", contextKey = "conv1", authorDeviceId = "my-device")
+        mgr.emit("directMessage", "typing", contextKey = "conv1", authorDeviceId = "my-device")
+        mgr.emit("directMessage", "typing", contextKey = "conv1", authorDeviceId = "my-device")
 
         assertEquals(1, sendCount, "Should throttle to 1 send within 2 seconds")
     }
@@ -96,7 +96,7 @@ class SignalECSTests {
         // No queuing, no persistence. This is by design.
         val mgr = SignalManager()
         // Receive a signal, then expire it — nothing persists
-        mgr.receive("directMessage", "typing", mapOf("conversationId" to "conv1"), "d1")
+        mgr.receive("directMessage", "typing", contextKey = "conv1", authorDeviceId = "d1")
         delay(3500)
         val typers = mgr.observe("directMessage", "typing", "conv1").first()
         assertTrue(typers.isEmpty(), "Expired signals should not persist — offline gets nothing, by design")
@@ -114,7 +114,7 @@ class SignalECSTests {
 
         val msgSchema = mapOf(
             "directMessage" to ModelConfig(
-                fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"),
+                fields = mapOf("content" to "string"),
                 sync = SyncStrategy.GSET
             )
         )
@@ -127,16 +127,14 @@ class SignalECSTests {
         alice.orm.model("directMessage").typing(convId)
 
         // Bob receives the typed MODEL_SIGNAL over the wire and surfaces it as a
-        // typing indicator. Signals no longer carry a JSON payload in the text
-        // field — the payload is the typed ModelSignal message (obscura-proto
-        // client.proto) — so assert the app-facing contract directly: Bob
-        // observes Alice typing in this conversation.
-        val aliceName = alice.username!!
+        // typing indicator. The observer returns the sender's authorDeviceId, not
+        // their username — callers resolve display names from their own friend graph.
+        val aliceDeviceId = alice.deviceId!!
         val typers = withTimeout(15_000) {
             bob.orm.model("directMessage").observeTyping(convId)
-                .first { it.contains(aliceName) }
+                .first { it.contains(aliceDeviceId) }
         }
-        assertTrue(typers.contains(aliceName), "Bob should observe Alice typing")
+        assertTrue(typers.contains(aliceDeviceId), "Bob should observe Alice's device typing")
 
         alice.disconnect()
         bob.disconnect()
@@ -152,7 +150,7 @@ class SignalECSTests {
 
         val msgSchema = mapOf(
             "directMessage" to ModelConfig(
-                fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"),
+                fields = mapOf("content" to "string"),
                 sync = SyncStrategy.GSET
             )
         )
