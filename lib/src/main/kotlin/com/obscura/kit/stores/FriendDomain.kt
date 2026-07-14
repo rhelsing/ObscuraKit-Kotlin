@@ -47,15 +47,7 @@ class FriendDomain internal constructor(private val db: ObscuraDatabase) {
 
     suspend fun add(userId: String, username: String, status: FriendStatus, devices: List<FriendDeviceInfo> = emptyList()) =
         withContext(dispatcher) {
-            val devicesJson = JSONArray(devices.map { d ->
-                JSONObject().apply {
-                    put("deviceUuid", d.deviceUuid)
-                    put("deviceId", d.deviceId)
-                    put("deviceName", d.deviceName)
-                    put("registrationId", d.registrationId)
-                }
-            }).toString()
-
+            val devicesJson = buildDevicesJson(devices)
             val now = System.currentTimeMillis()
             db.friendQueries.insert(userId, username, status.value, devicesJson, now, now)
         }
@@ -89,16 +81,25 @@ class FriendDomain internal constructor(private val db: ObscuraDatabase) {
     }
 
     suspend fun updateDevices(userId: String, devices: List<FriendDeviceInfo>) = withContext(dispatcher) {
-        val friend = db.friendQueries.selectById(userId).executeAsOneOrNull() ?: return@withContext
-        val devicesJson = JSONArray(devices.map { d ->
-            JSONObject().apply {
-                put("deviceUuid", d.deviceUuid)
-                put("deviceId", d.deviceId)
-                put("deviceName", d.deviceName)
-                put("registrationId", d.registrationId)
-            }
-        }).toString()
-        db.friendQueries.insert(userId, friend.username, friend.status, devicesJson, friend.created_at, System.currentTimeMillis())
+        val devicesJson = buildDevicesJson(devices)
+        db.friendQueries.updateDevices(devicesJson, System.currentTimeMillis(), userId)
+    }
+
+    /**
+     * Update both the device list and the last-announce timestamp in a single confined
+     * dispatch — no other FriendDomain operation can interleave between the two writes,
+     * so the replay-protection invariant stays consistent.
+     */
+    suspend fun updateDevicesAndAnnounceTime(userId: String, devices: List<FriendDeviceInfo>, announceTimestamp: Long) =
+        withContext(dispatcher) {
+            val devicesJson = buildDevicesJson(devices)
+            db.friendQueries.updateDevices(devicesJson, System.currentTimeMillis(), userId)
+            db.friendQueries.updateLastAnnounceAt(announceTimestamp, userId)
+        }
+
+    /** Returns the timestamp of the last accepted device announce, or 0 for a new friend. */
+    suspend fun getLastAnnounceAt(userId: String): Long = withContext(dispatcher) {
+        db.friendQueries.selectById(userId).executeAsOneOrNull()?.last_announce_at ?: 0L
     }
 
     suspend fun remove(userId: String) = withContext(dispatcher) {
@@ -141,6 +142,16 @@ class FriendDomain internal constructor(private val db: ObscuraDatabase) {
             devices = parseDevices(devices)
         )
     }
+
+    private fun buildDevicesJson(devices: List<FriendDeviceInfo>): String =
+        JSONArray(devices.map { d ->
+            JSONObject().apply {
+                put("deviceUuid", d.deviceUuid)
+                put("deviceId", d.deviceId)
+                put("deviceName", d.deviceName)
+                put("registrationId", d.registrationId)
+            }
+        }).toString()
 
     private fun parseDevices(json: String): List<FriendDeviceInfo> {
         return try {

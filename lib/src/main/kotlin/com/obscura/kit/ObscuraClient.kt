@@ -59,15 +59,19 @@ enum class ConnectionState { DISCONNECTED, CONNECTING, RECONNECTING, CONNECTED }
 enum class AuthState { LOGGED_OUT, PENDING_APPROVAL, AUTHENTICATED }
 
 /**
- * Result of [ObscuraClient.processPendingMessages] — counts of envelopes drained, by ORM model.
+ * Result of [ObscuraClient.processPendingMessages] — counts of envelopes drained.
  *
- * The bridge uses these to pick generic notification text ("New pix" / "New message").
- * [otherCount] is debug-only; the bridge ignores it. Shape matches Swift's ProcessedCounts
- * so both platforms implement identical notification logic.
+ * [modelCounts] maps each ORM model name that appeared in the drained batch to its
+ * envelope count (e.g. `{"pix" → 3, "directMessage" → 1}`). Bridges use these to
+ * post model-specific local notifications without the kit embedding any model names.
+ * [otherCount] covers non-MODEL_SYNC envelopes (TEXT, IMAGE, etc.) and is exposed
+ * for debugging only.
+ *
+ * Note: Unlike the earlier integer-field shape, this API is intentionally generic —
+ * the kit never sniffs application model names in production code.
  */
 data class ProcessedCounts(
-    val pixCount: Int = 0,
-    val messageCount: Int = 0,
+    val modelCounts: Map<String, Int> = emptyMap(),
     val otherCount: Int = 0
 )
 
@@ -218,6 +222,12 @@ class ObscuraClient(
             ObscuraDatabase.Schema.create(driver)
             try { driver.execute(null, "PRAGMA secure_delete = ON", 0) } catch (e: Exception) { log("PRAGMA secure_delete failed: ${e.message}") }
         }
+        // Run pending schema migrations after the schema tables exist (Schema.create
+        // runs first for new DBs) but before ObscuraDatabase wraps the driver. This
+        // ordering lets migrations use raw SQL (e.g. ALTER TABLE) without any
+        // generated-query overhead, and ensures ObscuraDatabase never sees a schema
+        // version mismatch.
+        DatabaseMigrations.migrate(driver)
         db = ObscuraDatabase(driver)
 
         signalStore = SignalStore(db)
@@ -612,8 +622,11 @@ class ObscuraClient(
     }
 
     /**
-     * Full logout — handles ALL teardown in correct order.
-     * Bridges call this single method instead of orchestrating cleanup.
+     * Full logout — tears down the connection, clears the session, AND wipes all
+     * local data (friends, messages, ORM, Signal state). Bridges call this single
+     * method instead of orchestrating cleanup.
+     *
+     * Use [logout] instead to keep local data and only clear the session token.
      */
     suspend fun fullLogout() {
         log("FULL_LOGOUT start")
@@ -626,6 +639,19 @@ class ObscuraClient(
         _friendList.value = emptyList()
         _pendingRequests.value = emptyList()
         _conversations.value = emptyMap()
+        // Wipe all local data so a fresh login starts clean
+        db.friendQueries.deleteAll()
+        db.messageQueries.deleteAll()
+        db.deviceQueries.deleteAllDevices()
+        db.deviceQueries.deleteIdentity()
+        db.signalKeyQueries.deleteLocalIdentity()
+        db.signalKeyQueries.deleteAllSignalData()
+        db.signalKeyQueries.deleteAllPreKeys()
+        db.signalKeyQueries.deleteAllSignedPreKeys()
+        db.signalKeyQueries.deleteAllSessions()
+        db.signalKeyQueries.deleteAllSenderKeys()
+        db.modelEntryQueries.deleteAllEntries()
+        db.modelEntryQueries.deleteAllAssociations()
         db.attachmentCacheQueries.deleteAll()
         sessionStorage.clear()
         log("FULL_LOGOUT complete")
@@ -718,26 +744,21 @@ class ObscuraClient(
 
     /**
      * Drain queued envelopes after a silent push wake. Connects if needed, waits up to
-     * [timeoutMs] ms (returning early when the queue stays empty for 500ms), categorizes
-     * by ORM model, and returns counts. Does NOT disconnect afterwards — the OS will
-     * freeze the app when done.
+     * [timeoutMs] ms (returning early when the queue stays empty for 500ms), categorises
+     * all MODEL_SYNC envelopes by their model name, and returns the counts. Does NOT
+     * disconnect afterwards — the OS will freeze the app when done.
      *
-     * The bridge layer uses the returned counts to post a generic local notification
-     * ("New pix" / "New message"). Kit must NEVER post OS notifications itself.
-     *
-     * Categorization (per the locked cross-platform contract):
-     *   MODEL_SYNC with sync.model == "pix"           → pixCount
-     *   MODEL_SYNC with sync.model == "directMessage" → messageCount
-     *   Legacy TEXT / IMAGE ClientMessage              → messageCount
-     *   Everything else                                → otherCount (debug only)
+     * The bridge layer uses the returned [ProcessedCounts.modelCounts] to post generic
+     * local notifications (e.g. `modelCounts["pix"]` → "N new items"). Kit must NEVER
+     * post OS notifications itself, and it must NEVER sniff model names internally —
+     * the application declares which models it cares about via [ObscuraConfig.conversationModel].
      */
     suspend fun processPendingMessages(timeoutMs: Long): ProcessedCounts {
         if (_connectionState.value != ConnectionState.CONNECTED) {
             try { connect() } catch (_: Exception) { return ProcessedCounts() }
         }
 
-        var pix = 0
-        var message = 0
+        val modelTotals = mutableMapOf<String, Int>()
         var other = 0
         val deadline = System.currentTimeMillis() + timeoutMs
         val idleThresholdMs = 500L
@@ -746,8 +767,11 @@ class ObscuraClient(
         while (System.currentTimeMillis() < deadline) {
             val received = incomingMessages.tryReceive().getOrNull()
             if (received != null) {
-                classifyForPushCounts(received).let { (p, m, o) ->
-                    pix += p; message += m; other += o
+                val (modelName, isModelSync) = classifyForPushCounts(received)
+                if (isModelSync && modelName != null) {
+                    modelTotals[modelName] = (modelTotals[modelName] ?: 0) + 1
+                } else {
+                    other++
                 }
                 lastEnvelopeAt = System.currentTimeMillis()
             } else if (System.currentTimeMillis() - lastEnvelopeAt > idleThresholdMs) {
@@ -757,24 +781,20 @@ class ObscuraClient(
             }
         }
 
-        return ProcessedCounts(pixCount = pix, messageCount = message, otherCount = other)
+        return ProcessedCounts(modelCounts = modelTotals, otherCount = other)
     }
 
-    /** Classify a single envelope into (pix, message, other) buckets. */
-    private fun classifyForPushCounts(msg: ReceivedMessage): Triple<Int, Int, Int> {
-        // MODEL_SYNC carries the ORM model name — the authoritative categorization.
+    /**
+     * Classify a single envelope: returns (modelName, isModelSync).
+     * Only MODEL_SYNC envelopes contribute to named counts; all other types
+     * go to [ProcessedCounts.otherCount]. No app-model names are embedded here.
+     */
+    private fun classifyForPushCounts(msg: ReceivedMessage): Pair<String?, Boolean> {
         if (msg.type == "MODEL_SYNC" && msg.raw != null) {
             val modelName = msg.raw.modelSync.model
-            when (modelName) {
-                "pix" -> return Triple(1, 0, 0)
-                "directMessage" -> return Triple(0, 1, 0)
-            }
+            return Pair(modelName.ifBlank { null }, true)
         }
-        // Legacy TEXT / IMAGE counts as message (unused by current app, but contract mandates)
-        if (msg.type == "TEXT" || msg.type == "IMAGE") {
-            return Triple(0, 1, 0)
-        }
-        return Triple(0, 0, 1)
+        return Pair(null, false)
     }
 
     private var preKeyStatusJob: Job? = null
@@ -944,9 +964,27 @@ class ObscuraClient(
                 return
             }
         }
-        friends.updateDevices(sourceUserId, announce.devicesList.map { d ->
+
+        // M4: Replay protection — reject announces whose timestamp is not strictly
+        // newer than the last accepted announce from this peer. Using strict inequality
+        // (≤) means retransmits of the exact same announce are also dropped, which is
+        // the desired behaviour since the device list is idempotent.
+        val lastAnnounceAt = friends.getLastAnnounceAt(sourceUserId)
+        // lastAnnounceAt == 0 means no announce has been accepted for this peer yet
+        // (fresh friend or database migration); skip the replay check in that case.
+        val hasSeenPreviousAnnounce = lastAnnounceAt > 0
+        if (hasSeenPreviousAnnounce && announce.timestamp <= lastAnnounceAt) {
+            logger.decryptFailed(sourceUserId,
+                "device announce replay rejected: ts=${announce.timestamp} lastSeen=$lastAnnounceAt")
+            return
+        }
+
+        val deviceList = announce.devicesList.map { d ->
             FriendDeviceInfo(d.deviceUuid, d.deviceId, d.deviceName)
-        })
+        }
+        // Update devices and stamp the new announce time atomically within the
+        // FriendDomain's confined dispatcher so no other operation can interleave.
+        friends.updateDevicesAndAnnounceTime(sourceUserId, deviceList, announce.timestamp)
     }
 
     private suspend fun handleModelSignal(msg: ClientMessage, sourceUserId: String, senderDeviceId: String?) {
@@ -998,22 +1036,24 @@ class ObscuraClient(
             _typedEvents.tryEmit(ObscuraEvent.MessageReceived(sync.model, entry))
         } catch (e: Exception) { log("typed-event emit for '${sync.model}' failed: ${e.message}") }
 
-        // DirectMessage MODEL_SYNC → also route to conversations for chat UI
-        if (sync.model == "directMessage") {
+        // If a conversation model is declared in config, mirror incoming entries into
+        // the conversations StateFlow so chat UIs get live updates without field-name
+        // sniffing inside the kit. The application opts into this by setting
+        // ObscuraConfig.conversationModel; the kit never inspects model names itself.
+        val convModelName = config.conversationModel
+        if (convModelName != null && sync.model == convModelName) {
             try {
-                val json = org.json.JSONObject(String(sync.data.toByteArray()))
+                val json = org.json.JSONObject(sync.data.toStringUtf8())
                 val content = json.optString("content", "")
-                // File under the sender's userId — that's who we're chatting with
-                val conversationWith = sourceUserId
                 val msgData = MessageData(
-                    id = sync.id, conversationId = conversationWith,
+                    id = sync.id, conversationId = sourceUserId,
                     authorDeviceId = sync.authorDeviceId,
                     content = content, timestamp = sync.timestamp,
                     type = "text"
                 )
-                messagesDomain.add(conversationWith, msgData)
-                refreshConversation(conversationWith)
-            } catch (e: Exception) { log("directMessage conversation routing failed: ${e.message}") }
+                messagesDomain.add(sourceUserId, msgData)
+                refreshConversation(sourceUserId)
+            } catch (e: Exception) { log("conversation routing for '${sync.model}' failed: ${e.message}") }
         }
     }
 
@@ -1106,23 +1146,28 @@ class ObscuraClient(
     }
 
     /**
-     * Send a text message via ORM (MODEL_SYNC). Interoperable with iOS DirectMessage.
-     * Falls back to legacy TEXT if directMessage model is not defined.
+     * Send a text message to a friend. Uses the ORM when [ObscuraConfig.conversationModel]
+     * is configured (full sync + offline delivery); otherwise falls back to legacy TEXT
+     * (type 0) for simple direct sends.
+     *
+     * The ORM path requires that the named model is defined via [defineModelsFromJson] or
+     * [com.obscura.kit.stores.SchemaDomain.define] before calling this.
      */
     suspend fun send(friendUsername: String, text: String) {
         log("SEND to=$friendUsername text=${text.take(40)}")
-        val directMessage = orm.modelOrNull("directMessage")
-        if (directMessage != null) {
+        val convModelName = config.conversationModel
+        val convModel = if (convModelName != null) orm.modelOrNull(convModelName) else null
+        if (convModel != null) {
             val friendData = friends.getAccepted().find { it.username == friendUsername }
                 ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
             val convId = listOf(userId ?: "", friendData.userId).sorted().joinToString("_")
             // Create via ORM — auto-syncs to friend via MODEL_SYNC
-            val entry = directMessage.create(mapOf(
+            val entry = convModel.create(mapOf(
                 "conversationId" to convId,
                 "content" to text,
                 "senderUsername" to (username ?: "")
             ))
-            // Also persist locally to conversations (keyed by friend userId for StateFlow compat)
+            // Mirror locally into conversations StateFlow (keyed by friend userId)
             messagesDomain.add(friendData.userId, MessageData(
                 id = entry.id, conversationId = friendData.userId,
                 authorDeviceId = deviceId ?: "self",

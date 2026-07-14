@@ -8,7 +8,18 @@ data class ObscuraConfig(
     // Client-side pacing for prod auth rate limits; env-overridable so CI can
     // zero it against a rate-limit-disabled local container (parity with iOS)
     val authRateLimitDelayMs: Long = System.getenv("AUTH_REQUEST_DELAY_MS")?.toLongOrNull() ?: 500L,
-    val enableRecoveryPhrase: Boolean = false // opt-in: enables BIP39 recovery, remote device revocation, encrypted backups
+    val enableRecoveryPhrase: Boolean = false, // opt-in: enables BIP39 recovery, remote device revocation, encrypted backups
+    /**
+     * Optional: when set, [com.obscura.kit.ObscuraClient.send] uses this ORM model name
+     * for outbound messages instead of the legacy TEXT wire format, and incoming
+     * MODEL_SYNC entries for this model are additionally mirrored into the
+     * [com.obscura.kit.ObscuraClient.conversations] StateFlow for chat-UI compatibility.
+     *
+     * The kit never sniffs model names in production code; the application declares
+     * the model name here so both routing directions use the same value without
+     * embedding it in the kit source.
+     */
+    val conversationModel: String? = null,
 ) {
     init {
         // Plain HTTP is allowed only for loopback (local containerized server

@@ -96,8 +96,8 @@ class PushTests {
         // Bob's push wake: drain queued envelopes and classify
         val counts = bob.processPendingMessages(timeoutMs = 10_000)
 
-        assertEquals(2, counts.pixCount, "Should have drained exactly 2 pix envelopes")
-        assertEquals(1, counts.messageCount, "Should have drained exactly 1 directMessage envelope")
+        assertEquals(2, counts.modelCounts["pix"] ?: 0, "Should have drained exactly 2 pix envelopes")
+        assertEquals(1, counts.modelCounts["directMessage"] ?: 0, "Should have drained exactly 1 directMessage envelope")
         assertEquals(0, counts.otherCount, "No non-ORM envelopes expected in this scenario")
 
         // Kit must NOT have disconnected — OS will freeze the app when done
@@ -118,8 +118,7 @@ class PushTests {
         val counts = alice.processPendingMessages(timeoutMs = 10_000)
         val elapsed = System.currentTimeMillis() - start
 
-        assertEquals(0, counts.pixCount)
-        assertEquals(0, counts.messageCount)
+        assertEquals(0, counts.modelCounts.values.sum())
         assertEquals(0, counts.otherCount)
         assertTrue(elapsed < 2_000,
             "Should return within 2s via idle detection, not full 10s timeout (took ${elapsed}ms)")
@@ -137,7 +136,7 @@ class PushTests {
 
         // Should reconnect as part of drain
         val counts = alice.processPendingMessages(timeoutMs = 10_000)
-        assertEquals(0, counts.pixCount)
+        assertEquals(0, counts.modelCounts.values.sum())
         assertEquals(ConnectionState.CONNECTED, alice.connectionState.value,
             "Should have connected during drain")
 
