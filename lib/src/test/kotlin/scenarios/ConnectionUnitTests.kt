@@ -25,9 +25,9 @@ class ConnectionUnitTests {
         mgr.sendSignal = { _, _, _ -> sendCount++ }
 
         // Three rapid emits — only first should send
-        mgr.emit("dm", "typing", mapOf("conversationId" to "c1"), "d1")
-        mgr.emit("dm", "typing", mapOf("conversationId" to "c1"), "d1")
-        mgr.emit("dm", "typing", mapOf("conversationId" to "c1"), "d1")
+        mgr.emit("dm", "typing", contextKey = "c1", authorDeviceId = "d1")
+        mgr.emit("dm", "typing", contextKey = "c1", authorDeviceId = "d1")
+        mgr.emit("dm", "typing", contextKey = "c1", authorDeviceId = "d1")
 
         assertEquals(1, sendCount, "Throttle should block rapid sends within 2s")
     }
@@ -38,12 +38,12 @@ class ConnectionUnitTests {
         var sendCount = 0
         mgr.sendSignal = { _, _, _ -> sendCount++ }
 
-        mgr.emit("dm", "typing", mapOf("conversationId" to "c1"), "d1")
+        mgr.emit("dm", "typing", contextKey = "c1", authorDeviceId = "d1")
         assertEquals(1, sendCount)
 
         delay(2100) // Wait past throttle
 
-        mgr.emit("dm", "typing", mapOf("conversationId" to "c1"), "d1")
+        mgr.emit("dm", "typing", contextKey = "c1", authorDeviceId = "d1")
         assertEquals(2, sendCount, "Should allow send after throttle window")
     }
 
@@ -53,8 +53,8 @@ class ConnectionUnitTests {
         var sendCount = 0
         mgr.sendSignal = { _, _, _ -> sendCount++ }
 
-        mgr.emit("dm", "typing", mapOf("conversationId" to "c1"), "d1")
-        mgr.emit("dm", "typing", mapOf("conversationId" to "c2"), "d1")
+        mgr.emit("dm", "typing", contextKey = "c1", authorDeviceId = "d1")
+        mgr.emit("dm", "typing", contextKey = "c2", authorDeviceId = "d1")
 
         assertEquals(2, sendCount, "Different conversations should not throttle each other")
     }
@@ -64,7 +64,7 @@ class ConnectionUnitTests {
     @Test
     fun `Signal expires after 3 seconds`() = runBlocking {
         val mgr = SignalManager()
-        mgr.receive("dm", "typing", mapOf("conversationId" to "c1", "senderUsername" to "alice"), "d1")
+        mgr.receive("dm", "typing", contextKey = "c1", authorDeviceId = "d1")
 
         assertEquals(1, mgr.observe("dm", "typing", "c1").first().size)
 
@@ -79,9 +79,9 @@ class ConnectionUnitTests {
         val mgr = SignalManager()
 
         // Send signal, wait 2s, renew, wait 2s more — should still be visible
-        mgr.receive("dm", "typing", mapOf("conversationId" to "c1", "senderUsername" to "alice"), "d1")
+        mgr.receive("dm", "typing", contextKey = "c1", authorDeviceId = "d1")
         delay(2000)
-        mgr.receive("dm", "typing", mapOf("conversationId" to "c1", "senderUsername" to "alice"), "d1")
+        mgr.receive("dm", "typing", contextKey = "c1", authorDeviceId = "d1")
         delay(2000)
 
         val typers = mgr.observe("dm", "typing", "c1").first()
@@ -91,10 +91,10 @@ class ConnectionUnitTests {
     @Test
     fun `Explicit clear removes signal immediately`() = runBlocking {
         val mgr = SignalManager()
-        mgr.receive("dm", "typing", mapOf("conversationId" to "c1", "senderUsername" to "alice"), "d1")
+        mgr.receive("dm", "typing", contextKey = "c1", authorDeviceId = "d1")
         assertEquals(1, mgr.observe("dm", "typing", "c1").first().size)
 
-        mgr.clear("dm", "typing", mapOf("conversationId" to "c1"), "d1")
+        mgr.clear("dm", "typing", contextKey = "c1", authorDeviceId = "d1")
         assertEquals(0, mgr.observe("dm", "typing", "c1").first().size)
     }
 

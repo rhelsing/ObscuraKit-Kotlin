@@ -1,5 +1,8 @@
 package com.obscura.kit.network
 
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.withContext
 import okhttp3.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.RequestBody.Companion.toRequestBody
@@ -188,7 +191,7 @@ class APIClient(private val baseUrl: String) {
             builder.addHeader("If-None-Match", "*")
         }
 
-        val response = httpClient.newCall(builder.build()).execute()
+        val response = withContext(Dispatchers.IO) { httpClient.newCall(builder.build()).execute() }
         if (!response.isSuccessful) throw HttpException(response.code, response.body?.string() ?: "")
         return response.header("ETag")
     }
@@ -201,7 +204,7 @@ class APIClient(private val baseUrl: String) {
 
         if (etag != null) builder.addHeader("If-None-Match", etag)
 
-        val response = httpClient.newCall(builder.build()).execute()
+        val response = withContext(Dispatchers.IO) { httpClient.newCall(builder.build()).execute() }
         if (response.code == 304 || response.code == 404) return null
         if (!response.isSuccessful) throw HttpException(response.code, response.body?.string() ?: "")
         return Pair(response.body?.bytes() ?: ByteArray(0), response.header("ETag"))
@@ -214,7 +217,7 @@ class APIClient(private val baseUrl: String) {
             .addHeader("Authorization", "Bearer ${token ?: throw IllegalStateException("No token")}")
             .build()
 
-        val response = httpClient.newCall(request).execute()
+        val response = withContext(Dispatchers.IO) { httpClient.newCall(request).execute() }
         if (response.code == 404) return BackupCheckResponse(exists = false, etag = null, lastModified = null)
         if (!response.isSuccessful) throw HttpException(response.code, "")
         return BackupCheckResponse(
@@ -263,7 +266,7 @@ class APIClient(private val baseUrl: String) {
         return if (has(key) && !isNull(key)) getString(key) else null
     }
 
-    private fun postJson(path: String, body: JSONObject, auth: Boolean = true): JSONObject {
+    private suspend fun postJson(path: String, body: JSONObject, auth: Boolean = true): JSONObject {
         val builder = Request.Builder()
             .url("$baseUrl$path")
             .post(body.toString().toRequestBody(JSON_MEDIA))
@@ -276,7 +279,7 @@ class APIClient(private val baseUrl: String) {
         return JSONObject(executeString(builder.build()))
     }
 
-    private fun getJson(path: String): JSONObject {
+    private suspend fun getJson(path: String): JSONObject {
         val request = Request.Builder()
             .url("$baseUrl$path")
             .get()
@@ -286,7 +289,7 @@ class APIClient(private val baseUrl: String) {
         return JSONObject(executeString(request))
     }
 
-    private fun getJsonArray(path: String): JSONArray {
+    private suspend fun getJsonArray(path: String): JSONArray {
         val request = Request.Builder()
             .url("$baseUrl$path")
             .get()
@@ -296,7 +299,7 @@ class APIClient(private val baseUrl: String) {
         return JSONArray(executeString(request))
     }
 
-    private fun deleteWithBody(path: String, body: JSONObject): String {
+    private suspend fun deleteWithBody(path: String, body: JSONObject): String {
         val request = Request.Builder()
             .url("$baseUrl$path")
             .delete(body.toString().toRequestBody(JSON_MEDIA))
@@ -307,7 +310,7 @@ class APIClient(private val baseUrl: String) {
         return executeString(request)
     }
 
-    private fun delete(path: String): String {
+    private suspend fun delete(path: String): String {
         val request = Request.Builder()
             .url("$baseUrl$path")
             .delete()
@@ -317,13 +320,18 @@ class APIClient(private val baseUrl: String) {
         return executeString(request)
     }
 
-    private fun executeString(request: Request, retries: Int = 2): String {
-        val response = httpClient.newCall(request).execute()
+    /**
+     * Execute an HTTP request, retrying on 429/503 with coroutine-friendly [delay].
+     * Runs the blocking OkHttp call on [Dispatchers.IO] so it never pins a
+     * Default-dispatcher thread during network I/O.
+     */
+    private suspend fun executeString(request: Request, retries: Int = 2): String {
+        val response = withContext(Dispatchers.IO) { httpClient.newCall(request).execute() }
         if (!response.isSuccessful) {
             val body = response.body?.string() ?: ""
             if (response.code in listOf(429, 503) && retries > 0) {
-                val retryAfterMs = (response.header("Retry-After")?.toLongOrNull() ?: 2) * 1000
-                Thread.sleep(retryAfterMs.coerceAtMost(10_000))
+                val retryAfterMs = (response.header("Retry-After")?.toLongOrNull() ?: 2) * 1000L
+                delay(retryAfterMs.coerceAtMost(10_000))
                 return executeString(request, retries - 1)
             }
             throw HttpException(response.code, body)
@@ -331,13 +339,13 @@ class APIClient(private val baseUrl: String) {
         return response.body?.string() ?: ""
     }
 
-    private fun executeBytes(request: Request, retries: Int = 2): ByteArray {
-        val response = httpClient.newCall(request).execute()
+    private suspend fun executeBytes(request: Request, retries: Int = 2): ByteArray {
+        val response = withContext(Dispatchers.IO) { httpClient.newCall(request).execute() }
         if (!response.isSuccessful) {
             val body = response.body?.string() ?: ""
             if (response.code in listOf(429, 503) && retries > 0) {
-                val retryAfterMs = (response.header("Retry-After")?.toLongOrNull() ?: 2) * 1000
-                Thread.sleep(retryAfterMs.coerceAtMost(10_000))
+                val retryAfterMs = (response.header("Retry-After")?.toLongOrNull() ?: 2) * 1000L
+                delay(retryAfterMs.coerceAtMost(10_000))
                 return executeBytes(request, retries - 1)
             }
             throw HttpException(response.code, body)

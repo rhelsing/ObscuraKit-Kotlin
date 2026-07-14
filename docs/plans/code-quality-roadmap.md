@@ -1,3 +1,7 @@
+> ⚠️ **ARCHIVED** — This roadmap has been superseded by the completed cleanup work in
+> the main branch. Items tracked here were implemented in the 14-item cleanup series.
+> This document is retained for historical reference only.
+
 # Code Quality Roadmap: LLM Duct Tape → Production Grade
 
 **Reference:** Signal-Android open source codebase patterns

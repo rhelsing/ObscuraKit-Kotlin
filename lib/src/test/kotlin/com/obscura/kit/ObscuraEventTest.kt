@@ -33,9 +33,9 @@ class ObscuraEventTest {
     }
 
     @Test
-    fun `TypingChanged carries conversation and typers`() {
+    fun `TypingChanged carries context key and typers`() {
         val e = ObscuraEvent.TypingChanged("c1", listOf("alice", "bob"))
-        assertEquals("c1", e.conversationId)
+        assertEquals("c1", e.contextId)
         assertEquals(listOf("alice", "bob"), e.typers)
     }
 

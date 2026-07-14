@@ -6,28 +6,59 @@ plugins {
     alias(libs.plugins.protobuf)
     alias(libs.plugins.sqldelight)
     alias(libs.plugins.kover)
+    alias(libs.plugins.bcv)
     `java-library`
     `maven-publish`
+}
+
+// ──────────────────────────────────────────────────────────────────────
+// Publication
+//
+// Maven coordinates are declared in gradle.properties (group/version) so
+// a release only requires bumping one property, not hunting build files.
+// Sources and Javadoc JARs are included for IDE navigation in consumer
+// projects.
+// ──────────────────────────────────────────────────────────────────────
+java {
+    withSourcesJar()
+    withJavadocJar()
+    sourceCompatibility = JavaVersion.VERSION_21
+    targetCompatibility = JavaVersion.VERSION_21
 }
 
 publishing {
     publications {
         create<MavenPublication>("maven") {
-            groupId = "com.obscura"
+            groupId = project.group.toString()
             artifactId = "obscura-kit"
-            version = "0.1.0"
+            version = project.version.toString()
             from(components["java"])
+            pom {
+                name.set("ObscuraKit")
+                description.set("E2E encrypted data layer library for Android/JVM.")
+                url.set("https://github.com/barrelmaker97/ObscuraKit-Kotlin")
+                licenses {
+                    license {
+                        name.set("MIT License")
+                        url.set("https://opensource.org/licenses/MIT")
+                    }
+                }
+                scm {
+                    connection.set("scm:git:git://github.com/barrelmaker97/ObscuraKit-Kotlin.git")
+                    developerConnection.set("scm:git:ssh://github.com/barrelmaker97/ObscuraKit-Kotlin.git")
+                    url.set("https://github.com/barrelmaker97/ObscuraKit-Kotlin")
+                }
+            }
         }
     }
 }
 
-java {
-    sourceCompatibility = JavaVersion.VERSION_21
-    targetCompatibility = JavaVersion.VERSION_21
-}
-
 kotlin {
     jvmToolchain(21)
+    // Require explicit public visibility and return types for all public API.
+    // Using warning mode so existing code warns but doesn't block compilation.
+    // Switch to explicitApi() (error mode) once all warnings are resolved.
+    explicitApiWarning()
 }
 
 // ──────────────────────────────────────────────────────────────────────
@@ -87,8 +118,8 @@ kotlin {
 }
 
 dependencies {
-    // Protobuf
-    implementation(libs.protobuf.kotlin)
+    // Protobuf — exposed in public API (e.g. ParsedSyncBlob.proto fields returned from public fns)
+    api(libs.protobuf.kotlin)
     implementation(libs.protobuf.java)
 
     // SQLDelight
@@ -108,8 +139,8 @@ dependencies {
     // Serialization (typed ORM models)
     implementation(libs.serialization.json)
 
-    // Coroutines
-    implementation(libs.coroutines.core)
+    // Coroutines — exposed in public API (StateFlow/SharedFlow/Channel on ObscuraClient)
+    api(libs.coroutines.core)
 
     // Testing — shared by both suites via the extendsFrom above.
     // The junit-bom aligns jupiter (5.x) with junit-platform (1.x) so a

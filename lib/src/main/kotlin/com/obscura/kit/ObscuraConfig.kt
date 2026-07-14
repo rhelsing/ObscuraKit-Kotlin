@@ -2,9 +2,25 @@ package com.obscura.kit
 
 data class ObscuraConfig(
     val apiUrl: String,
+    /**
+     * Not used — the gateway WebSocket URL is derived automatically from [apiUrl]
+     * by replacing the scheme (https→wss, http→ws). This field is kept for binary
+     * compatibility with existing callers but has no effect.
+     */
+    @Deprecated("gatewayUrl is not used; the gateway URL is derived from apiUrl automatically")
     val gatewayUrl: String? = null,
     val deviceName: String = "Kotlin Client",
-    val databasePath: String? = null, // null = in-memory (tests), path = file-backed (production)
+    /**
+     * Path for the SQLite database file. `null` (default) uses an in-memory database,
+     * which is always safe for tests. A file path creates an on-disk database.
+     *
+     * **Security note:** The JVM `JdbcSqliteDriver` backed by a file path is
+     * **unencrypted**. For production Android use, pass an encrypted
+     * `AndroidSqliteDriver` (e.g. SQLCipher) instead and keep `databasePath = null`.
+     * Set [allowUnencryptedDatabase] to `true` to suppress the startup warning when
+     * an intentionally unencrypted file database is acceptable (e.g. a debug build).
+     */
+    val databasePath: String? = null,
     // Client-side pacing for prod auth rate limits; env-overridable so CI can
     // zero it against a rate-limit-disabled local container (parity with iOS)
     val authRateLimitDelayMs: Long = System.getenv("AUTH_REQUEST_DELAY_MS")?.toLongOrNull() ?: 500L,
@@ -20,6 +36,12 @@ data class ObscuraConfig(
      * embedding it in the kit source.
      */
     val conversationModel: String? = null,
+    /**
+     * Set to `true` to suppress the startup warning emitted when [databasePath] is
+     * set (file-backed, unencrypted JdbcSqliteDriver). Has no effect when
+     * [databasePath] is null (in-memory).
+     */
+    val allowUnencryptedDatabase: Boolean = false,
 ) {
     init {
         // Plain HTTP is allowed only for loopback (local containerized server

@@ -1,3 +1,7 @@
+> ⚠️ **ARCHIVED** — This plan was the original design doc for the ObscuraKit Android/Kotlin
+> port. The architecture it describes has been built and shipped. See `README.md` for the
+> current authoritative architecture overview.
+
 # ObscuraKit: Android/Kotlin Data Layer Plan (Confined Coroutines Architecture)
 
 ## Context

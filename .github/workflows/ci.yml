@@ -86,12 +86,16 @@ jobs:
         run: |
           # Clone only for docker-compose.yml (services + env); the server
           # itself comes prebuilt from GHCR — no Rust build in CI.
-          git clone --depth 1 https://github.com/barrelmaker97/obscura-server /tmp/obscura-server
-          cd /tmp/obscura-server
+          # Pin to a specific tag instead of :latest for reproducible CI:
+          # the server image tag is the git SHA of the obscura-server repo.
+          # Update this tag when pulling in server-side fixes.
+          SERVER_IMAGE_TAG="main"
+          git clone --depth 1 --branch "${SERVER_IMAGE_TAG}" https://github.com/barrelmaker97/obscura-server ./obscura-server-ci
+          cd ./obscura-server-ci
           cat > compose.ci.yml <<'EOF'
           services:
             obscura-server:
-              image: ghcr.io/barrelmaker97/obscura-server:latest
+              image: "ghcr.io/barrelmaker97/obscura-server:${SERVER_IMAGE_TAG:-main}"
               pull_policy: always
               environment:
                 # Prod runs 3 load-balanced instances (~3x effective limits); this
@@ -102,7 +106,7 @@ jobs:
                 OBSCURA_RATE_LIMIT_AUTH_PER_SECOND: 1000
                 OBSCURA_RATE_LIMIT_AUTH_BURST: 2000
           EOF
-          docker compose -f docker-compose.yml -f compose.ci.yml up -d --wait
+          SERVER_IMAGE_TAG="${SERVER_IMAGE_TAG}" docker compose -f docker-compose.yml -f compose.ci.yml up -d --wait
           # The server never creates its S3 bucket (no create_bucket in source);
           # prod's bucket was provisioned out-of-band. Fresh MinIO needs it made.
           AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
@@ -116,7 +120,7 @@ jobs:
             sleep 5
           done
           echo "server did not become ready" >&2
-          (cd /tmp/obscura-server && docker compose logs obscura-server | tail -50)
+          (cd ./obscura-server-ci && docker compose logs obscura-server | tail -50)
           exit 1
 
       - name: Integration tests

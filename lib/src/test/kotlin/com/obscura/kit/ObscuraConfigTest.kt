@@ -63,6 +63,16 @@ class ObscuraConfigTest {
         assertNull(c.databasePath, "databasePath null => in-memory sqlite, the safe default")
         assertEquals(500L, c.authRateLimitDelayMs)
         assertEquals(false, c.enableRecoveryPhrase, "Recovery phrase must be explicit opt-in")
-        assertNull(c.gatewayUrl)
+        @Suppress("DEPRECATION")
+        assertNull(c.gatewayUrl, "gatewayUrl is deprecated and should default to null")
+        assertEquals(false, c.allowUnencryptedDatabase,
+            "allowUnencryptedDatabase must default to false so the warning is on by default")
+    }
+
+    @Test
+    fun `allowUnencryptedDatabase opt-in accepted`() {
+        assertDoesNotThrow {
+            ObscuraConfig(apiUrl = "https://x.test", databasePath = "/tmp/test.db", allowUnencryptedDatabase = true)
+        }
     }
 }

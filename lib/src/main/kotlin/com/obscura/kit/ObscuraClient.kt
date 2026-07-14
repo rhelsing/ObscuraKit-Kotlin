@@ -86,13 +86,20 @@ data class ProcessedCounts(
  *       factory = SupportSQLiteOpenHelper.Factory(SQLCipherOpenHelperFactory(passphrase))
  *   )
  *   val client = ObscuraClient(config, driver)
+ *
+ * Implements [AutoCloseable] — call [close] to cancel all coroutines, close the
+ * gateway connection, and release driver resources. [close] is idempotent and
+ * safe to call multiple times.
  */
 class ObscuraClient(
     val config: ObscuraConfig,
     externalDriver: app.cash.sqldelight.db.SqlDriver? = null,
     val sessionStorage: SessionStorage = NoOpSessionStorage
-) {
+) : AutoCloseable {
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+
+    /** True after [close] has been called. All public methods no-op or throw after this. */
+    @Volatile private var isClosed = false
 
     private val _connectionState = MutableStateFlow(ConnectionState.DISCONNECTED)
     val connectionState: StateFlow<ConnectionState> = _connectionState
@@ -117,11 +124,22 @@ class ObscuraClient(
     private val _typedEvents = MutableSharedFlow<ObscuraEvent>(extraBufferCapacity = 64)
     val typedEvents: SharedFlow<ObscuraEvent> = _typedEvents
 
-    private val driver = externalDriver ?: if (config.databasePath != null) {
-        JdbcSqliteDriver("jdbc:sqlite:${config.databasePath}")
-    } else {
-        JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+    private val driver = externalDriver ?: run {
+        if (config.databasePath != null) {
+            if (!config.allowUnencryptedDatabase) {
+                System.err.println(
+                    "ObscuraKit WARNING: using an UNENCRYPTED SQLite database at '${config.databasePath}'. " +
+                    "For production use, provide an encrypted AndroidSqliteDriver (e.g. SQLCipher) " +
+                    "and leave databasePath = null. " +
+                    "To suppress this warning, set ObscuraConfig(allowUnencryptedDatabase = true)."
+                )
+            }
+            JdbcSqliteDriver("jdbc:sqlite:${config.databasePath}")
+        } else {
+            JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        }
     }
+    private val driverIsOwned = externalDriver == null
     internal val db: ObscuraDatabase
 
     internal val signalStore: SignalStore
@@ -383,15 +401,16 @@ class ObscuraClient(
 
         // Wire ephemeral signal sending — typed MODEL_SIGNAL payload (no JSON).
         // Sender identity + timestamp ride on the ClientMessage envelope, not the payload.
-        signalManager.sendSignal = { modelName, signalName, signalData ->
+        // The contextKey is an opaque application-chosen string (e.g. a conversation ID);
+        // the kit treats it as an opaque string and never interprets its format.
+        signalManager.sendSignal = { modelName, signalName, contextKey ->
             val kind = com.obscura.kit.orm.WireCodec.encodeSignalKind(signalName)
-            val ctxId = signalData["conversationId"] as? String ?: ""
             val signalMsg = ClientMessage.newBuilder()
                 .setTimestamp(System.currentTimeMillis())
                 .setModelSignal(obscura.client.v1.modelSignal {
                     model = modelName
                     this.kind = kind
-                    contextId = ctxId
+                    contextId = contextKey
                 })
                 .build()
             authManager.ensureFreshToken()
@@ -708,6 +727,7 @@ class ObscuraClient(
         startEventForwarding()
         authManager.startTokenRefresh()
         startPreKeyStatusListener()
+        startTTLCleanup()
         persistSession() // auto-save refreshed tokens
     }
 
@@ -729,7 +749,35 @@ class ObscuraClient(
         authManager.tokenRefreshJob?.cancel()
         envelopeJob?.cancel()
         eventForwardingJob?.cancel()
+        ttlCleanupJob?.cancel()
         gateway.disconnect() // fires onStateChanged → _connectionState = DISCONNECTED
+    }
+
+    /**
+     * Fully tear down this instance. Idempotent — safe to call multiple times.
+     *
+     * Cancels all coroutines, closes the gateway WebSocket and its OkHttp client,
+     * closes the [incomingMessages] channel, and closes the database driver if
+     * this instance owns it (i.e. no external driver was passed to the constructor).
+     *
+     * After [close] returns, the client is inert and must not be reused.
+     */
+    override fun close() {
+        if (isClosed) return
+        isClosed = true
+        log("CLOSE")
+        envelopeJob?.cancel()
+        preKeyStatusJob?.cancel()
+        eventForwardingJob?.cancel()
+        authManager.tokenRefreshJob?.cancel()
+        ttlCleanupJob?.cancel()
+        gateway.close()           // closes OkHttp client + channels
+        signalManager.close()     // cancels signal timer scope
+        scope.cancel()
+        incomingMessages.close()
+        if (driverIsOwned) {
+            try { driver.close() } catch (_: Exception) {}
+        }
     }
 
     // ─── Push Notifications ─────────────────────────────────
@@ -798,12 +846,33 @@ class ObscuraClient(
     }
 
     private var preKeyStatusJob: Job? = null
+    private var ttlCleanupJob: Job? = null
+
     private fun startPreKeyStatusListener() {
         preKeyStatusJob?.cancel()
         preKeyStatusJob = scope.launch {
             for (status in gateway.preKeyStatus) {
                 if (status.oneTimePreKeyCount < status.minThreshold) {
                     replenishPreKeys()
+                }
+            }
+        }
+    }
+
+    /**
+     * Background job that purges expired ORM entries once per minute.
+     * TTL expiry is best-effort — entries are soft-deleted (marked deleted) so
+     * CRDT merge remains consistent. Restarted on each [connect] call.
+     */
+    private fun startTTLCleanup() {
+        ttlCleanupJob?.cancel()
+        ttlCleanupJob = scope.launch {
+            while (isActive) {
+                delay(60_000)
+                try {
+                    ttlManager.cleanup { orm.modelOrNull(it) }
+                } catch (e: Exception) {
+                    log("TTL cleanup error: ${e.message}")
                 }
             }
         }
@@ -875,7 +944,11 @@ class ObscuraClient(
                         raw = msg
                     )
 
-                    incomingMessages.trySend(received)
+                    incomingMessages.trySend(received).also { result ->
+                        if (result.isFailure) {
+                            log("RECV CHANNEL FULL — dropping ${received.type} from=${received.sourceUserId.take(8)}")
+                        }
+                    }
                     _events.tryEmit(received)
 
                     checkAndReplenishPreKeys()
@@ -995,19 +1068,14 @@ class ObscuraClient(
             val signalName = com.obscura.kit.orm.WireCodec.decodeSignalKind(sig.kind)
                 ?: return // unknown/unspecified — ignore
 
-            // Identity comes from the authenticated envelope, never the payload:
-            // the device from the decrypted session, the display name from the friend graph.
+            // Identity comes from the authenticated envelope, never the payload.
+            // The contextKey is the server-relayed contextId from the signal wire frame.
             val authorDeviceId = senderDeviceId ?: sourceUserId
-            val senderUsername = friends.getAccepted().find { it.userId == sourceUserId }?.username ?: sourceUserId
-            val data = mapOf<String, Any?>(
-                "conversationId" to sig.contextId,
-                "senderUsername" to senderUsername,
-            )
 
             if (signalName == "stoppedTyping") {
-                signalManager.clear(sig.model, "typing", data, authorDeviceId)
+                signalManager.clear(sig.model, "typing", sig.contextId, authorDeviceId)
             } else {
-                signalManager.receive(sig.model, signalName, data, authorDeviceId)
+                signalManager.receive(sig.model, signalName, sig.contextId, authorDeviceId)
             }
         } catch (e: Exception) {
             // Never let signal handling crash the envelope loop.
@@ -1152,6 +1220,10 @@ class ObscuraClient(
      *
      * The ORM path requires that the named model is defined via [defineModelsFromJson] or
      * [com.obscura.kit.stores.SchemaDomain.define] before calling this.
+     *
+     * Only the `content` field is added by the kit. If the application's model schema
+     * includes additional fields (e.g. `conversationId`, `senderUsername`), create the
+     * entry directly via `orm.model("name").create(fields)` for full control over field values.
      */
     suspend fun send(friendUsername: String, text: String) {
         log("SEND to=$friendUsername text=${text.take(40)}")
@@ -1160,13 +1232,10 @@ class ObscuraClient(
         if (convModel != null) {
             val friendData = friends.getAccepted().find { it.username == friendUsername }
                 ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
-            val convId = listOf(userId ?: "", friendData.userId).sorted().joinToString("_")
-            // Create via ORM — auto-syncs to friend via MODEL_SYNC
-            val entry = convModel.create(mapOf(
-                "conversationId" to convId,
-                "content" to text,
-                "senderUsername" to (username ?: "")
-            ))
+            // Create via ORM — auto-syncs to friend via MODEL_SYNC.
+            // Only the application-agnostic `content` field is set here; the app
+            // should use orm.model(name).create(fields) if it needs additional fields.
+            val entry = convModel.create(mapOf("content" to text))
             // Mirror locally into conversations StateFlow (keyed by friend userId)
             messagesDomain.add(friendData.userId, MessageData(
                 id = entry.id, conversationId = friendData.userId,

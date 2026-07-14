@@ -14,23 +14,29 @@ import kotlinx.coroutines.flow.map
  * Used for: typing indicators, read receipts, online status.
  *
  * Wire format: MODEL_SIGNAL (type 31) in ClientMessage.
+ *
+ * Implements [AutoCloseable] — call [close] to cancel the internal coroutine
+ * scope and release all signal timers.
  */
-class SignalManager {
+class SignalManager : AutoCloseable {
 
     private val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
     // Key: "${model}:${signal}:${contextKey}" → Set of active authors
-    // contextKey is extracted from data (e.g., conversationId)
     private val activeSignals = MutableStateFlow<Map<String, Set<ActiveSignal>>>(emptyMap())
 
     data class ActiveSignal(
         val authorDeviceId: String,
-        val senderUsername: String,
         val expiresAt: Long
     )
 
-    // Callbacks — wired by ObscuraClient
-    var sendSignal: suspend (model: String, signal: String, data: Map<String, Any?>) -> Unit = { _, _, _ -> }
+    /**
+     * Callback wired by ObscuraClient to fan-out signals over the wire.
+     * Receives the model name, signal name, and an opaque [contextKey] string
+     * (e.g. a conversation ID or channel name chosen by the application).
+     * No application-specific field names are embedded here.
+     */
+    var sendSignal: suspend (model: String, signal: String, contextKey: String) -> Unit = { _, _, _ -> }
 
     /**
      * Emit a signal. Auto-throttled: won't re-send if the same signal
@@ -39,28 +45,25 @@ class SignalManager {
     private val lastSent = mutableMapOf<String, Long>()
     private val THROTTLE_MS = 2000L
 
-    suspend fun emit(model: String, signal: String, data: Map<String, Any?>, authorDeviceId: String) {
-        val contextKey = data["conversationId"] as? String ?: "global"
+    suspend fun emit(model: String, signal: String, contextKey: String, authorDeviceId: String) {
         val throttleKey = "$model:$signal:$contextKey:$authorDeviceId"
         val now = System.currentTimeMillis()
         val last = lastSent[throttleKey] ?: 0L
         if (now - last < THROTTLE_MS) return
 
         lastSent[throttleKey] = now
-        sendSignal(model, signal, data)
+        sendSignal(model, signal, contextKey)
     }
 
     /**
      * Receive an incoming signal from the wire.
      * Holds it in memory for 3 seconds, then auto-expires.
      */
-    fun receive(model: String, signal: String, data: Map<String, Any?>, authorDeviceId: String) {
-        val contextKey = data["conversationId"] as? String ?: "global"
+    fun receive(model: String, signal: String, contextKey: String, authorDeviceId: String) {
         val key = "$model:$signal:$contextKey"
-        val senderUsername = data["senderUsername"] as? String ?: authorDeviceId
         val expiresAt = System.currentTimeMillis() + EXPIRE_MS
 
-        val active = ActiveSignal(authorDeviceId, senderUsername, expiresAt)
+        val active = ActiveSignal(authorDeviceId, expiresAt)
 
         val current = activeSignals.value.toMutableMap()
         val existing = current[key]?.toMutableSet() ?: mutableSetOf()
@@ -69,9 +72,8 @@ class SignalManager {
         current[key] = existing
         activeSignals.value = current
 
-        // Schedule expiry — only remove if the signal hasn't been renewed
         scope.launch {
-            delay(EXPIRE_MS + 100) // small buffer
+            delay(EXPIRE_MS + 100)
             val now = System.currentTimeMillis()
             val signals = activeSignals.value[key] ?: return@launch
             val entry = signals.find { it.authorDeviceId == authorDeviceId } ?: return@launch
@@ -84,15 +86,16 @@ class SignalManager {
     /**
      * Immediately clear a signal (e.g., stoppedTyping).
      */
-    fun clear(model: String, signal: String, data: Map<String, Any?>, authorDeviceId: String) {
-        val contextKey = data["conversationId"] as? String ?: "global"
+    fun clear(model: String, signal: String, contextKey: String, authorDeviceId: String) {
         val key = "$model:$signal:$contextKey"
         expire(key, authorDeviceId)
     }
 
     /**
      * Observe who is actively signaling for a given model + signal + context.
-     * Returns usernames of active signalers.
+     * Returns [authorDeviceId] strings of active signalers; callers resolve
+     * display names from their own friend graph rather than trusting a
+     * sender-provided username field.
      */
     fun observe(model: String, signal: String, contextKey: String): Flow<List<String>> {
         val key = "$model:$signal:$contextKey"
@@ -100,8 +103,13 @@ class SignalManager {
             val now = System.currentTimeMillis()
             (signals[key] ?: emptySet())
                 .filter { it.expiresAt > now }
-                .map { it.senderUsername }
+                .map { it.authorDeviceId }
         }
+    }
+
+    /** Cancel all pending signal timers. Idempotent. */
+    override fun close() {
+        scope.cancel()
     }
 
     private fun expire(key: String, authorDeviceId: String) {

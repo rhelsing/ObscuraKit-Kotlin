@@ -14,6 +14,7 @@ coroutines = "1.8.1"
 junit = "5.10.2"
 serialization = "1.6.3"
 kover = "0.9.8"
+bcv = "0.16.0"
 
 [libraries]
 protobuf-kotlin = { module = "com.google.protobuf:protobuf-kotlin", version.ref = "protobuf" }
@@ -38,3 +39,4 @@ protobuf = { id = "com.google.protobuf", version.ref = "protobuf-plugin" }
 sqldelight = { id = "app.cash.sqldelight", version.ref = "sqldelight" }
 kotlin-serialization = { id = "org.jetbrains.kotlin.plugin.serialization", version.ref = "kotlin" }
 kover = { id = "org.jetbrains.kotlinx.kover", version.ref = "kover" }
+bcv = { id = "org.jetbrains.kotlinx.binary-compatibility-validator", version.ref = "bcv" }

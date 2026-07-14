@@ -163,36 +163,38 @@ class Model(
     internal var localUsername: String = ""
 
     /**
-     * Send a typing indicator for a conversation.
+     * Send a typing indicator for the given [contextKey] (an opaque identifier
+     * chosen by the application — typically a conversation ID or channel name).
      * Auto-throttled: sends at most once per 2 seconds.
      */
-    suspend fun typing(conversationId: String) {
-        signalManager?.emit(name, "typing", mapOf("conversationId" to conversationId, "senderUsername" to localUsername), deviceIdProvider())
+    suspend fun typing(contextKey: String) {
+        signalManager?.emit(name, "typing", contextKey, deviceIdProvider())
     }
 
     /** Explicitly stop typing. */
-    suspend fun stopTyping(conversationId: String) {
-        signalManager?.emit(name, "stoppedTyping", mapOf("conversationId" to conversationId, "senderUsername" to localUsername), deviceIdProvider())
+    suspend fun stopTyping(contextKey: String) {
+        signalManager?.emit(name, "stoppedTyping", contextKey, deviceIdProvider())
     }
 
-    /** Send a read receipt. */
-    suspend fun read(conversationId: String) {
-        signalManager?.emit(name, "read", mapOf("conversationId" to conversationId, "senderUsername" to localUsername), deviceIdProvider())
+    /** Send a read receipt for the given [contextKey]. */
+    suspend fun read(contextKey: String) {
+        signalManager?.emit(name, "read", contextKey, deviceIdProvider())
     }
 
     /**
-     * Observe who is typing in a conversation.
-     * Returns Flow<List<String>> — list of usernames currently typing.
+     * Observe who is actively typing for [contextKey].
+     * Returns `Flow<List<String>>` — list of [authorDeviceId] strings currently
+     * typing. Callers resolve display names from their own friend graph.
      * Auto-expires after 3 seconds of no signal.
      */
-    fun observeTyping(conversationId: String): Flow<List<String>> {
-        return signalManager?.observe(name, "typing", conversationId)
+    fun observeTyping(contextKey: String): Flow<List<String>> {
+        return signalManager?.observe(name, "typing", contextKey)
             ?: kotlinx.coroutines.flow.flowOf(emptyList())
     }
 
-    /** Observe read receipts for a conversation. */
-    fun observeRead(conversationId: String): Flow<List<String>> {
-        return signalManager?.observe(name, "read", conversationId)
+    /** Observe read receipts for [contextKey]. Returns [authorDeviceId] strings. */
+    fun observeRead(contextKey: String): Flow<List<String>> {
+        return signalManager?.observe(name, "read", contextKey)
             ?: kotlinx.coroutines.flow.flowOf(emptyList())
     }
 
