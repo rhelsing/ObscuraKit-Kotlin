@@ -1,8 +1,32 @@
 # ObscuraKit-Kotlin
 
-A Rails-like framework for Signal-powered apps. E2E encrypted data layer for Android/JVM. Define models, call `create()` — encryption, sync, and conflict resolution happen underneath. Pure JVM, tested against `obscura.barrelmaker.dev`.
+The **native Android/JVM platform layer** for the Obscura app (`obscura-pix`). It is not a
+general-purpose framework, it has exactly one consumer, and it owes API stability to no one.
 
-There is a matching iOS implementation at `obscura-client-ios` and a JS web client at `obscura-client-web`. All three share the same server, protobuf wire format, and ORM model definitions. Messages sent from any platform arrive on any other.
+> ### ⚠️ Mid-reset — much of what is documented below is being deleted
+>
+> The normative brief is [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md),
+> with the deletion inventory in [`obscura-proto/RESET.md`](../obscura-proto/RESET.md).
+>
+> This kit grew an ORM, a CRDT engine, a query DSL, and an audience-routing system — duplicated
+> in Swift — to serve five flat models that use none of it. The app's entire ORM usage is four
+> calls (`defineModels`, `createEntry`, `upsertEntry`, `allEntries`). That layer is being removed
+> and its logic moved into the app, where it will exist once.
+>
+> **This README still describes the old design.** Trust `SPEC.md` over it.
+
+**Why a native kit exists at all:** libsignal ships only as `libsignal-java` / `libsignal-swift`
+— there is no supported shared core, so the Signal protocol must be implemented per platform.
+And the push path must decrypt a message with the app closed (on iOS, inside a Notification
+Service Extension, which cannot run a React Native runtime). Those two facts, and nothing else,
+are what justify native code. Everything else belongs in the app.
+
+**What survives the reset:** Signal sessions/identity/prekeys, device provisioning + linking +
+revocation, transport (REST + gateway WebSocket, offline queue), the friend graph, attachment
+crypto, the message store, and the push-wake path.
+
+*(`obscura-client-web` is a throwaway proof-of-concept. It is **not** a reference implementation
+and must not be treated as a porting target.)*
 
 ## Quick Start
 
@@ -74,8 +98,16 @@ Tested with 400+ tests — 297 unit (no network) + 109 integration (against a co
 - **Relationships** — `hasMany`/`belongsTo` with `include()` eager loading
 - **Device linking** — `loginAndProvision()` → `PENDING_APPROVAL` → QR/code approval required
 - **ECS signals** — `model.typing(convId)` / `model.observeTyping(convId)` for ephemeral indicators
-- **Cross-platform** — iOS ↔ Android proven with shared ORM wire format. DirectMessage, Story, Profile, Settings models interoperate.
-- **Chat via ORM** — `client.send()` uses DirectMessage model (MODEL_SYNC type 30). Falls back to TEXT (type 0) if model not defined.
+- ~~**Cross-platform** — iOS ↔ Android proven with shared ORM wire format.~~ **Not true as
+  written.** The two kits have diverged: Swift still hard-codes application field names, narrows
+  a `friends` broadcast when an entry happens to carry a `conversationId`, and has no schema
+  migration mechanism at all. The kits agree on the *wire*; they do not agree on *behavior*.
+- ~~**Chat via ORM** — `client.send()` falls back to TEXT if the model is not defined.~~ That
+  fallback is a **silent-delivery bug**, not a feature: only MODEL_SYNC contributes to push
+  counts, so a TEXT message arrives with no notification. Being removed.
+- **`authorDeviceId` is currently a lie.** `senderDeviceId` is null over the wire, so signals
+  report the sender's *userId* in a field documented as a device id. Verified against a live
+  server. Do not rely on device-level identity until this is fixed (see `RESET.md`).
 
 ## What Doesn't Work Yet
 
