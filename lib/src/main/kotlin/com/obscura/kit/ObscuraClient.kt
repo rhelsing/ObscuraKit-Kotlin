@@ -826,16 +826,30 @@ class ObscuraClient(
                     java.util.UUID(bb.getLong(), bb.getLong()).toString()
                 } catch (_: Exception) { "unknown" }
 
+                // PERSIST-THEN-ACK. An ACK is a DELETE on the server (gateway AckBatcher ->
+                // message_service.delete_batch -> DELETE FROM messages). So we ACK ONLY WHAT WE
+                // HAVE DURABLY PERSISTED. Every path below that has not persisted the message must
+                // skip the ack and leave it on the server, where a fresh MessagePump redelivers it
+                // on the next reconnect. There is exactly one ack in this loop, and it is the last
+                // thing that happens after a successful decrypt + persist.
+
+                // F3: a rate-limited sender is NOT processed and NOT persisted -> do NOT ack. The
+                // message stays on the server and is retried once the failure window expires.
                 if (isDecryptRateLimited(senderId)) {
-                    log("RECV BLOCKED rate-limited sender=$senderId")
-                    try { gateway.ack(listOf(envelope.id)) } catch (e: Exception) { log("envelope ack failed: ${e.message}") }
+                    log("RECV BLOCKED rate-limited sender=$senderId (left on server, not acked)")
                     continue
                 }
 
                 try {
+                    // 1. DECRYPT. Throws on a bad MAC / missing session -> falls to catch -> no ack.
                     val decrypted = messenger.decrypt(envelope)
                     val msg = decrypted.clientMessage
                     log("RECV ${msg.payloadCase.name} from=${decrypted.sourceUserId.take(8)} text=${msg.text.text.take(40)}")
+
+                    // 2. PERSIST (durable). routeMessage's handlers write to the SQLDelight store
+                    // (e.g. handleTextMessage -> messagesDomain.add -> messageQueries.insert;
+                    // friends.add; orm.handleSync). This is the source of truth. If it throws, we
+                    // fall to catch and do NOT ack, so the message survives on the server.
                     routeMessage(msg, decrypted.sourceUserId, decrypted.senderDeviceId)
 
                     decryptFailures.remove(decrypted.sourceUserId)
@@ -855,17 +869,34 @@ class ObscuraClient(
                         raw = msg
                     )
 
-                    incomingMessages.trySend(received)
-                    _events.tryEmit(received)
+                    // 3. NOTIFY (best-effort). These emits are wake-up notifications over data that
+                    // step 2 has ALREADY durably persisted -- the app model is "event -> refetch
+                    // everything from the store", and the store, not this channel/flow, is the
+                    // durable delivery path. So a dropped emit loses a NOTIFICATION, never a
+                    // message, precisely because persistence happened-before the ack below. We keep
+                    // them droppable rather than a suspending send() on purpose: incomingMessages is
+                    // a 1000-capacity channel the app does not always drain, and a blocking send
+                    // would stall the whole receive loop (and thus all acking) behind a full buffer.
+                    // We log a drop so it is observable and never silent.
+                    if (!incomingMessages.trySend(received).isSuccess) {
+                        log("RECV NOTE incomingMessages full; dropped a wake-up (data already persisted)")
+                    }
+                    if (!_events.tryEmit(received)) {
+                        log("RECV NOTE events buffer full; dropped a wake-up (data already persisted)")
+                    }
 
                     checkAndReplenishPreKeys()
+
+                    // 4. ACK. Reached only when decrypt AND persist both succeeded. This is the sole
+                    // ack in the loop; the rate-limit early-return and the catch below both skip it.
+                    try { gateway.ack(listOf(envelope.id)) } catch (e: Exception) { log("envelope ack failed: ${e.message}") }
                 } catch (e: Exception) {
-                    log("RECV FAIL decrypt sender=$senderId err=${e.message?.take(60)}")
+                    // Decrypt failed OR persistence (routeMessage) threw. The message is NOT durably
+                    // stored -> do NOT ack (F2). It stays on the server and redelivers on reconnect.
+                    log("RECV FAIL sender=$senderId err=${e.message?.take(60)} (left on server, not acked)")
                     trackDecryptFailure(senderId)
                     logger.decryptFailed(senderId, e.message ?: "unknown")
                 }
-
-                try { gateway.ack(listOf(envelope.id)) } catch (e: Exception) { log("envelope ack failed: ${e.message}") }
             }
         }
     }
