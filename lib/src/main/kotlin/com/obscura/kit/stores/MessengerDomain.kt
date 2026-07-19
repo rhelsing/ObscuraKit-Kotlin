@@ -21,13 +21,21 @@ import java.util.*
 data class DecryptedMessage(
     val clientMessage: ClientMessage,
     val sourceUserId: String,
-    val senderDeviceId: String?,
-    val senderRegId: Int
+    // The sending device's UUID. Phase 2: this is the address of the session that
+    // decrypted (== envelope.sender_device_id, PROVEN by the successful MAC), never a
+    // guess and never a user id. Always non-null on a successful decrypt.
+    val senderDeviceId: String
 )
 
 /**
  * MessengerDomain - Confined coroutines. Encrypt/decrypt/queue/flush.
  * Single-threaded dispatcher protects Signal ratchet state.
+ *
+ * Phase 2 addressing: every Signal session is keyed on the peer's DEVICE UUID, not on a
+ * registrationId. A [SignalProtocolAddress] is a purely LOCAL store key that is never
+ * transmitted, and its name slot is a String, so we put the device UUID there and pin the
+ * deviceId slot to the constant [ADDR_DEVICE_ID]. Send and receive MUST build the identical
+ * address for the same peer device — see [addressFor] — or the bidirectional session splits.
  */
 class MessengerDomain internal constructor(
     private val signalStore: SignalStore,
@@ -35,7 +43,9 @@ class MessengerDomain internal constructor(
 ) {
     private val dispatcher: CoroutineDispatcher = Dispatchers.Default.limitedParallelism(1)
 
-    // deviceId -> { userId, registrationId }
+    // deviceUuid -> { userId, registrationId }. Used ONLY to enumerate a user's devices for
+    // fan-out (getDeviceIdsForUser) and to resolve a device's owning user. The registrationId
+    // slot is retained for diagnostics/back-compat but is NO LONGER an addressing identifier.
     private val deviceMap = mutableMapOf<String, Pair<String, Int>>()
 
     // Pending submissions for batch sending
@@ -61,13 +71,15 @@ class MessengerDomain internal constructor(
 
     suspend fun queueMessage(targetDeviceId: String, message: ClientMessage, userId: String? = null) =
         withContext(dispatcher) {
-            val mapped = deviceMap[targetDeviceId]
-            val encryptUserId = userId ?: mapped?.first ?: targetDeviceId
-            val registrationId = mapped?.second ?: 1
+            // targetDeviceId IS the peer's device UUID — the address name slot (see addressFor).
+            // The owning userId is needed only to fetch that device's prekey bundle on first
+            // contact; it is NOT part of the session address.
+            val ownerUserId = userId ?: deviceMap[targetDeviceId]?.first
+                ?: throw IllegalStateException("No owning userId known for device $targetDeviceId")
 
             val clientMsgBytes = message.toByteArray()
-            ensureSession(encryptUserId, registrationId)
-            val encrypted = encrypt(encryptUserId, clientMsgBytes, registrationId)
+            ensureSession(ownerUserId, targetDeviceId)
+            val encrypted = encrypt(targetDeviceId, clientMsgBytes)
 
             val encMsg = EncryptedMessage.newBuilder()
                 .setType(
@@ -124,85 +136,77 @@ class MessengerDomain internal constructor(
             )
         }
 
+    // Fetches and processes a user's prekey bundles as a side effect: populates deviceMap so
+    // getDeviceIdsForUser can enumerate the user's devices for fan-out. Callers use it for that
+    // side effect, not the return value.
     suspend fun fetchPreKeyBundles(userId: String): List<PreKeyBundle> = withContext(dispatcher) {
         val bundlesJson = api.fetchPreKeyBundles(userId)
-        parsePreKeyBundles(bundlesJson, userId)
+        parsePreKeyBundles(bundlesJson, userId).map { it.second }
     }
 
     suspend fun decrypt(envelope: Envelope): DecryptedMessage = withContext(dispatcher) {
         val senderId = UuidCodec.bytesToUuid(envelope.senderId.toByteArray()).toString()
-        val encMsg = EncryptedMessage.parseFrom(envelope.message.toByteArray())
 
+        // Phase 2 receive-side addressing. The envelope carries the SENDER'S DEVICE UUID
+        // (sender_device_id, stamped by the server from the device-scoped JWT — unforgeable by
+        // the sender). Signal sessions are pairwise device-to-device and a SignalMessage carries
+        // no sender identity, so this is how we select the inbound session. Missing/empty is an
+        // ERROR path — never a guess. There is no candidate-registrationId loop anymore.
+        val senderDeviceBytes = envelope.senderDeviceId.toByteArray()
+        if (senderDeviceBytes.size != 16) {
+            throw IllegalStateException(
+                "Envelope from $senderId has no sender_device_id (${senderDeviceBytes.size} bytes); " +
+                    "cannot select an inbound session"
+            )
+        }
+        val senderDeviceUuid = UuidCodec.bytesToUuid(senderDeviceBytes).toString()
+
+        val encMsg = EncryptedMessage.parseFrom(envelope.message.toByteArray())
         val isPreKey = encMsg.type == EncryptedMessage.Type.TYPE_PREKEY_MESSAGE
         val content = encMsg.content.toByteArray()
 
-        // Try known registrationIds + own regId + default + sessions from SQLite
-        val candidates = mutableSetOf(1, signalStore.getLocalRegistrationId())
-        for ((_, info) in deviceMap) {
-            if (info.first == senderId) candidates.add(info.second)
+        val address = addressFor(senderDeviceUuid)
+        val cipher = SessionCipher(signalStore, address)
+        val decryptedBytes = if (isPreKey) {
+            cipher.decrypt(PreKeySignalMessage(content))
+        } else {
+            cipher.decrypt(SignalMessage(content))
         }
-        // Scan persisted sessions for this sender (survives restart even if deviceMap is empty)
-        candidates.addAll(signalStore.getAllSessionRegistrationIds(senderId))
+        val clientMsg = ClientMessage.parseFrom(decryptedBytes)
 
-        // For PreKey messages, try addresses WITHOUT sessions first
-        val withSession = mutableListOf<Int>()
-        val withoutSession = mutableListOf<Int>()
-        for (regId in candidates) {
-            val addr = SignalProtocolAddress(senderId, regId)
-            if (signalStore.containsSession(addr)) withSession.add(regId) else withoutSession.add(regId)
-        }
-        val ordered = if (isPreKey) withoutSession + withSession else withSession + withoutSession
+        // Learn the sender's device so later fan-out to this user includes it (F6). The mapping
+        // is (deviceUuid -> user); the regId slot is diagnostic only.
+        deviceMap.putIfAbsent(senderDeviceUuid, Pair(senderId, 1))
 
-        var lastError: Exception? = null
-        for (regId in ordered) {
-            val address = SignalProtocolAddress(senderId, regId)
-            try {
-                val cipher = SessionCipher(signalStore, address)
-                val decryptedBytes = if (isPreKey) {
-                    cipher.decrypt(PreKeySignalMessage(content))
-                } else {
-                    cipher.decrypt(SignalMessage(content))
-                }
-
-                val clientMsg = ClientMessage.parseFrom(decryptedBytes)
-
-                var senderDeviceId: String? = null
-                for ((devId, info) in deviceMap) {
-                    if (info.first == senderId && info.second == regId) {
-                        senderDeviceId = devId
-                        break
-                    }
-                }
-
-                return@withContext DecryptedMessage(clientMsg, senderId, senderDeviceId, regId)
-            } catch (e: Exception) {
-                lastError = e
-            }
-        }
-
-        throw lastError ?: IllegalStateException("No record for $senderId")
+        // authorDeviceId is the address of the session that decrypted. A valid MAC proves
+        // possession of that session's chain key, which only the sender's device has — so this
+        // attribution is cryptographically sound, never a wire-field to be trusted blindly.
+        DecryptedMessage(clientMsg, senderId, senderDeviceUuid)
     }
 
-    private suspend fun ensureSession(targetUserId: String, registrationId: Int) {
-        val address = SignalProtocolAddress(targetUserId, registrationId)
+    private suspend fun ensureSession(targetUserId: String, targetDeviceUuid: String) {
+        val address = addressFor(targetDeviceUuid)
         if (!signalStore.containsSession(address)) {
             val bundlesJson = api.fetchPreKeyBundles(targetUserId)
             val bundles = parsePreKeyBundles(bundlesJson, targetUserId)
-            val bundle = bundles.find { it.registrationId == registrationId } ?: bundles.firstOrNull()
-                ?: throw IllegalStateException("No prekey bundles available for $targetUserId")
-            val builder = SessionBuilder(signalStore, address)
-            builder.process(bundle)
+            // Select the bundle by DEVICE UUID. No firstOrNull() fallback: sending under an
+            // arbitrary device's keys is exactly the F1 bug.
+            val bundle = bundles.firstOrNull { it.first == targetDeviceUuid }?.second
+                ?: throw IllegalStateException(
+                    "No prekey bundle for device $targetDeviceUuid of user $targetUserId"
+                )
+            SessionBuilder(signalStore, address).process(bundle)
         }
     }
 
-    private fun encrypt(targetUserId: String, plaintext: ByteArray, registrationId: Int): Pair<Int, ByteArray> {
-        val address = SignalProtocolAddress(targetUserId, registrationId)
-        val cipher = SessionCipher(signalStore, address)
+    private fun encrypt(targetDeviceUuid: String, plaintext: ByteArray): Pair<Int, ByteArray> {
+        val cipher = SessionCipher(signalStore, addressFor(targetDeviceUuid))
         val ciphertext = cipher.encrypt(plaintext)
         return Pair(ciphertext.type, ciphertext.serialize())
     }
 
-    private fun parsePreKeyBundles(bundlesJson: JSONArray, userId: String): List<PreKeyBundle> {
+    // Returns (deviceUuid, PreKeyBundle) pairs and populates deviceMap as a side effect.
+    private fun parsePreKeyBundles(bundlesJson: JSONArray, userId: String): List<Pair<String, PreKeyBundle>> {
         return (0 until bundlesJson.length()).map { i ->
             val b = bundlesJson.getJSONObject(i)
             val deviceId = b.getString("deviceId")
@@ -212,7 +216,7 @@ class MessengerDomain internal constructor(
             val spk = b.getJSONObject("signedPreKey")
             val otp = if (b.has("oneTimePreKey") && !b.isNull("oneTimePreKey")) b.getJSONObject("oneTimePreKey") else null
 
-            PreKeyBundle(
+            deviceId to PreKeyBundle(
                 regId, 1,
                 otp?.getInt("keyId") ?: 0,
                 otp?.let { Curve.decodePoint(it.getString("publicKey").fromBase64(), 0) },
@@ -224,4 +228,18 @@ class MessengerDomain internal constructor(
         }
     }
 
+    companion object {
+        // The deviceId slot of every ProtocolAddress. Constant because the device UUID in the
+        // name slot already uniquely identifies the peer device; libsignal just needs SOME
+        // stable int here.
+        private const val ADDR_DEVICE_ID = 1
+
+        /**
+         * THE single ProtocolAddress constructor for a peer device, used by BOTH send
+         * (queueMessage/ensureSession/encrypt) and receive (decrypt). name = device UUID,
+         * deviceId = constant. If send and receive ever built different addresses for the same
+         * device the bidirectional session would split — this function is why they cannot.
+         */
+        fun addressFor(deviceUuid: String) = SignalProtocolAddress(deviceUuid, ADDR_DEVICE_ID)
+    }
 }

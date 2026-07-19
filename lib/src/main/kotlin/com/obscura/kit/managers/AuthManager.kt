@@ -11,6 +11,7 @@ import com.obscura.kit.network.LoginResult
 import com.obscura.kit.network.LoginScenario
 import com.obscura.kit.network.ProvisionDeviceRequest
 import com.obscura.kit.stores.DeviceIdentityData
+import com.obscura.kit.stores.OwnDeviceData
 import kotlinx.coroutines.*
 
 /**
@@ -70,6 +71,14 @@ internal class AuthManager(
             userId = requireNotNull(session.userId) { "userId not set - register failed to resolve user" },
             username = username,
             token = deviceToken
+        ))
+
+        // F9: record THIS device in the own-device registry so DeviceAnnounce / approveLink can
+        // ship a real device list. Without this the registry stays empty and propagation is inert.
+        devices.addOwnDevice(OwnDeviceData(
+            deviceId = requireNotNull(session.deviceId),
+            deviceName = config.deviceName,
+            signalIdentityKey = identityKeyPair.publicKey.serialize()
         ))
 
         setAuthState(AuthState.AUTHENTICATED)
@@ -187,6 +196,14 @@ internal class AuthManager(
             userId = requireNotNull(session.userId) { "userId not set - loginAndProvision failed to resolve user" },
             username = username,
             token = deviceToken
+        ))
+
+        // F9: record THIS (as-yet-unapproved) device so it knows itself. The approving device
+        // ships the full account device list, which setOwnDevices() then reconciles on approval.
+        devices.addOwnDevice(OwnDeviceData(
+            deviceId = requireNotNull(session.deviceId),
+            deviceName = deviceName,
+            signalIdentityKey = identityKeyPair.publicKey.serialize()
         ))
 
         // Device is provisioned on the server but NOT approved by an existing device yet.

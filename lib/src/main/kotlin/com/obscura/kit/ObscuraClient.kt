@@ -930,7 +930,10 @@ class ObscuraClient(
             ClientMessage.PayloadCase.MODEL_SYNC -> handleModelSync(msg, sourceUserId)
             ClientMessage.PayloadCase.SYNC_BLOB -> handleSyncBlob(msg, sourceUserId)
             ClientMessage.PayloadCase.SENT_SYNC -> handleSentSync(msg)
-            ClientMessage.PayloadCase.SESSION_RESET -> signalStore.deleteAllSessions(sourceUserId)
+            ClientMessage.PayloadCase.SESSION_RESET ->
+                // Sessions are keyed on the DEVICE UUID (Phase 2), so reset every session we hold
+                // with any of this user's devices.
+                messenger.getDeviceIdsForUser(sourceUserId).forEach { signalStore.deleteAllSessions(it) }
             ClientMessage.PayloadCase.FRIEND_SYNC -> handleFriendSync(msg, sourceUserId)
             ClientMessage.PayloadCase.DEVICE_LINK_APPROVAL -> handleLinkApproval(msg, sourceUserId)
             ClientMessage.PayloadCase.MODEL_SIGNAL -> handleModelSignal(msg, sourceUserId, senderDeviceId)
@@ -990,7 +993,9 @@ class ObscuraClient(
 
             // Identity comes from the authenticated envelope, never the payload:
             // the device from the decrypted session, the display name from the friend graph.
-            val authorDeviceId = senderDeviceId ?: sourceUserId
+            // authorDeviceId is the sending device's UUID (proven by the session MAC); it MUST
+            // NOT fall back to a user id — a user id in a device field is a false claim (F4).
+            val authorDeviceId = senderDeviceId ?: "unknown"
             val senderUsername = friends.getAccepted().find { it.userId == sourceUserId }?.username ?: sourceUserId
             val data = mapOf<String, Any?>(
                 "conversationId" to sig.contextId,

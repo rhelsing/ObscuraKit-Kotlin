@@ -96,6 +96,23 @@ internal class DeviceManager(
 
     suspend fun approveLink(newDeviceId: String, challengeResponse: ByteArray) {
         val identity = devices.getIdentity()
+
+        // F9: the approver must ship the REAL own-device list, including the device it is approving
+        // right now — otherwise the approvee's setOwnDevices() writes a list missing itself (or,
+        // before this fix, an empty list). Record the new device in our own registry (resolving its
+        // human name from the server device list), then ship the full list.
+        val newDeviceName = try {
+            val serverDevices = api.listDevices()
+            (0 until serverDevices.length())
+                .map { serverDevices.getJSONObject(it) }
+                .firstOrNull { it.getString("deviceId") == newDeviceId }
+                ?.optString("name", "Device")
+        } catch (e: Exception) { null } ?: "Device"
+        devices.addOwnDevice(com.obscura.kit.stores.OwnDeviceData(
+            deviceId = newDeviceId,
+            deviceName = newDeviceName
+        ))
+
         val ownDeviceList = devices.getOwnDevices()
         val friendsExportStr = friends.exportAll()
 
@@ -148,11 +165,10 @@ internal class DeviceManager(
         ))
 
         // Clear all old sessions — identity key changed, old sessions are invalid.
-        // Next send will do a fresh PreKey exchange with the new identity.
-        val allSessions = signalStore.getAllSessionRegistrationIds("")
-        // Delete sessions for all known friends
+        // Next send will do a fresh PreKey exchange with the new identity. Sessions are keyed on
+        // the DEVICE UUID (Phase 2), so delete per friend device.
         for (friend in friends.getAccepted()) {
-            signalStore.deleteAllSessions(friend.userId)
+            messenger.getDeviceIdsForUser(friend.userId).forEach { signalStore.deleteAllSessions(it) }
         }
 
         messenger.mapDevice(
