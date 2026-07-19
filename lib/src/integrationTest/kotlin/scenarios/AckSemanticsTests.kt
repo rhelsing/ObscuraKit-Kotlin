@@ -77,9 +77,10 @@ class AckSemanticsTests {
      * decrypt step (bad MAC), exactly the path F2 is about.
      */
     private fun sendCorruptCiphertext(bob: ObscuraClient, aliceUserId: String, aliceDeviceId: String) {
-        val regId = bob.messenger.deviceMap(aliceDeviceId)?.second
-            ?: error("bob has no deviceMap entry / session for Alice's device — fixture broken")
-        val addr = SignalProtocolAddress(aliceUserId, regId)
+        // Phase 2: Signal sessions are keyed on the peer's DEVICE UUID, so Bob's session with
+        // Alice's device lives at (aliceDeviceId, 1) — the same address production encrypts under
+        // (MessengerDomain.addressFor). Encrypt a real ciphertext here, then flip its MAC.
+        val addr = SignalProtocolAddress(aliceDeviceId, 1)
         require(bob.signalStore.containsSession(addr)) {
             "bob has no Signal session at $addr — send a warmup message first"
         }
