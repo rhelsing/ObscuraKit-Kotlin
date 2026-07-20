@@ -64,6 +64,23 @@ class MessengerDomain internal constructor(
         return deviceMap.entries.filter { it.value.first == userId }.map { it.key }
     }
 
+    /**
+     * Snapshot the devices we currently know for [userId] (learned from prekey fetches / the friend
+     * graph) as [FriendDeviceInfo], so a caller can PERSIST them into the friend record. That is
+     * what makes the device -> user mapping DURABLE across a restart: on the next connect,
+     * rebuildDeviceMap(getAccepted()) restores deviceMap from the persisted friend.devices. Without
+     * this, deviceMap is in-memory only and a friend's messages become unattributable after restart.
+     */
+    fun knownDevicesFor(userId: String): List<FriendDeviceInfo> =
+        deviceMap.entries.filter { it.value.first == userId }.map {
+            FriendDeviceInfo(
+                deviceUuid = it.key,
+                deviceId = it.key,
+                deviceName = "",
+                registrationId = it.value.second
+            )
+        }
+
     fun rebuildDeviceMap(friends: List<FriendData>) {
         for (friend in friends) {
             for (device in friend.devices) {

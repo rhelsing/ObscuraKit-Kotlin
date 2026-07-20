@@ -31,7 +31,9 @@ internal class FriendshipManager(
             .setTimestamp(System.currentTimeMillis()).build()
 
         messageSender.sendToAllDevices(targetUserId, msg)
-        friends.add(targetUserId, targetUsername, FriendStatus.PENDING_SENT)
+        // Persist the friend's devices (learned by the prekey fetch above) so the device->user
+        // mapping survives a restart: rebuildDeviceMap(getAccepted()) restores it from here.
+        friends.add(targetUserId, targetUsername, FriendStatus.PENDING_SENT, messenger.knownDevicesFor(targetUserId))
 
         syncFriendToOwnDevices(targetUsername, FriendSyncAction.ADD.value, FriendStatus.PENDING_SENT.value)
     }
@@ -47,7 +49,7 @@ internal class FriendshipManager(
             .setTimestamp(System.currentTimeMillis()).build()
 
         messageSender.sendToAllDevices(targetUserId, msg)
-        friends.add(targetUserId, targetUsername, FriendStatus.ACCEPTED)
+        friends.add(targetUserId, targetUsername, FriendStatus.ACCEPTED, messenger.knownDevicesFor(targetUserId))
 
         syncFriendToOwnDevices(targetUsername, FriendSyncAction.ADD.value, FriendStatus.ACCEPTED.value)
     }

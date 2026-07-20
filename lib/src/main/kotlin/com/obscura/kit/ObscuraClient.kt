@@ -1049,14 +1049,18 @@ class ObscuraClient(
 
     private suspend fun handleFriendRequest(msg: ClientMessage, sourceUserId: String) {
         // sourceUserId is the VERIFIED requester (resolveAndVerifyFriendRequestUser). username is a
-        // display label only; identity is sourceUserId. The sending device is already in deviceMap
-        // (the verification fetch enumerated the requester's devices), so subsequent messages from
-        // it resolve via the friend graph.
-        friends.add(sourceUserId, msg.friendRequest.username, FriendStatus.PENDING_RECEIVED)
+        // display label only; identity is sourceUserId. The verification fetch enumerated the
+        // requester's devices into deviceMap; persist them so the device->user mapping survives a
+        // restart (rebuildDeviceMap restores it from the friend record).
+        friends.add(sourceUserId, msg.friendRequest.username, FriendStatus.PENDING_RECEIVED,
+            messenger.knownDevicesFor(sourceUserId))
     }
 
     private suspend fun handleFriendResponse(msg: ClientMessage, sourceUserId: String) {
-        if (msg.friendResponse.accepted) friends.add(sourceUserId, msg.friendResponse.username, FriendStatus.ACCEPTED)
+        if (msg.friendResponse.accepted) {
+            friends.add(sourceUserId, msg.friendResponse.username, FriendStatus.ACCEPTED,
+                messenger.knownDevicesFor(sourceUserId))
+        }
     }
 
     private suspend fun handleTextMessage(msg: ClientMessage, sourceUserId: String, senderDeviceId: String?) {
