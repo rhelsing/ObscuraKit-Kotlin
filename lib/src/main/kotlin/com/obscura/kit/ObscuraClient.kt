@@ -857,18 +857,11 @@ class ObscuraClient(
                     val decrypted = messenger.decrypt(envelope)
                     val msg = decrypted.clientMessage
 
-                    // 1b. RESOLVE THE USER FROM OUR OWN FRIEND GRAPH — never from the envelope,
-                    // which carries no user (SPEC §0.5). deviceMap maps deviceUuid -> userId and is
-                    // populated from the friend graph (rebuildDeviceMap/F9) and from prekey fetches.
-                    // A FriendRequest is the ONE payload whose sender is not yet in the graph, so it
-                    // self-identifies in its (encrypted) payload; we VERIFY that claim against the
-                    // identity key of the session that just decrypted before trusting it.
-                    val resolvedUserId: String? =
-                        if (msg.payloadCase == ClientMessage.PayloadCase.FRIEND_REQUEST) {
-                            resolveAndVerifyFriendRequestUser(msg, senderDeviceId)
-                        } else {
-                            messenger.resolveUser(senderDeviceId)
-                        }
+                    // 1b. RESOLVE THE USER FROM WHAT THIS CLIENT KNOWS — never from the envelope,
+                    // which carries no user (SPEC §0.5). See resolveSourceUser: friend graph for
+                    // peers, verified payload for a first-contact FriendRequest, own-device registry
+                    // for our account's other devices.
+                    val resolvedUserId: String? = resolveSourceUser(msg, senderDeviceId)
 
                     if (resolvedUserId == null) {
                         // Non-FR: a known friend's device whose DeviceAnnounce/prekey-fetch hasn't
@@ -976,6 +969,50 @@ class ObscuraClient(
             ClientMessage.PayloadCase.MODEL_SIGNAL -> handleModelSignal(msg, sourceUserId, senderDeviceId)
             else -> { }
         }
+    }
+
+    /**
+     * Resolve the authoring USER of a decrypted message from what THIS client knows — never from
+     * the envelope, which carries no user (SPEC §0.5). Resolution order:
+     *  1. A FriendRequest self-identifies in its (encrypted) payload; we VERIFY that claim against
+     *     the identity key of the session that decrypted before trusting it.
+     *  2. Friend graph: deviceMap maps the sending device UUID -> its owning user (populated from
+     *     the friend graph via rebuildDeviceMap/F9 and from prekey fetches).
+     *  3. Own-device messages come from OUR account's other devices, which are not in the friend
+     *     graph. If the sender is a device in our own-device registry, it is us. DEVICE_LINK_APPROVAL
+     *     is the bootstrap of that registry (the approver is not recorded yet); it is authenticated
+     *     by the challenge inside handleLinkApproval, so it too resolves to self.
+     * Returns null (UNATTRIBUTABLE) when none apply — e.g. a friend's newly-linked device whose
+     * DeviceAnnounce/prekey-fetch has not landed yet. The caller then leaves it on the server.
+     */
+    private suspend fun resolveSourceUser(msg: ClientMessage, senderDeviceId: String): String? {
+        if (msg.payloadCase == ClientMessage.PayloadCase.FRIEND_REQUEST) {
+            return resolveAndVerifyFriendRequestUser(msg, senderDeviceId)
+        }
+        messenger.resolveUser(senderDeviceId)?.let { return it }
+        if (msg.payloadCase == ClientMessage.PayloadCase.DEVICE_LINK_APPROVAL) {
+            // Bootstrap of the own-device relationship: the approver is not yet in our registry.
+            // handleLinkApproval authenticates it by the challenge we minted, so attribute to self
+            // and let that handler validate.
+            return userId
+        }
+        if (isOwnDevicePayload(msg.payloadCase) &&
+            devices.getOwnDevices().any { it.deviceId == senderDeviceId }
+        ) {
+            return userId
+        }
+        return null
+    }
+
+    // Payloads that are meaningful only from our OWN account's other devices. Their handlers all
+    // guard `sourceUserId != userId`; resolution attributes them to self only when the sending
+    // device is in our own-device registry (or, for link approval, is challenge-authenticated).
+    private fun isOwnDevicePayload(case: ClientMessage.PayloadCase): Boolean = when (case) {
+        ClientMessage.PayloadCase.FRIEND_SYNC,
+        ClientMessage.PayloadCase.SYNC_BLOB,
+        ClientMessage.PayloadCase.SENT_SYNC,
+        ClientMessage.PayloadCase.DEVICE_LINK_APPROVAL -> true
+        else -> false
     }
 
     /**
