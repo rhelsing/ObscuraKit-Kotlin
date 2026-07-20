@@ -13,7 +13,7 @@ okhttp = "4.12.0"
 coroutines = "1.8.1"
 junit = "5.10.2"
 serialization = "1.6.3"
-kover = "0.9.8"
+kover = "0.9.9"
 
 [libraries]
 protobuf-kotlin = { module = "com.google.protobuf:protobuf-kotlin", version.ref = "protobuf" }
