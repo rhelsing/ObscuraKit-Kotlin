@@ -19,14 +19,13 @@ internal class FriendshipManager(
         require(targetUserId != session.userId) { "Cannot befriend yourself" }
         messenger.fetchPreKeyBundles(targetUserId)
 
-        // Self-identify inside the ENCRYPTED payload. The envelope carries only our device
-        // (Phase 2), and on first contact the recipient has no device->user mapping for us yet, so
-        // it needs our user_id to resolve identity. username is a display label; user_id is the
-        // identity the recipient verifies against our device's identity key. (SPEC §0.5)
+        // The FriendRequest carries only our display username — a first-contact bootstrap label
+        // (SPEC §0.5). Our IDENTITY is not in the payload: the server stamps envelope.sender_id with
+        // our user id, and the recipient's Signal session pins our identity key on first contact
+        // (TOFU), exactly as Signal authenticates. No user_id field is needed or sent.
         val msg = ClientMessage.newBuilder()
             .setFriendRequest(obscura.client.v1.friendRequest {
                 username = session.username ?: ""
-                userId = session.userId ?: ""
             })
             .setTimestamp(System.currentTimeMillis()).build()
 

@@ -822,19 +822,21 @@ class ObscuraClient(
         envelopeJob?.cancel()
         envelopeJob = scope.launch {
             for (envelope in gateway.envelopes) {
-                // Phase 2: the envelope carries ONLY the sending DEVICE (sender_id is gone). We use
-                // that device UUID to (a) key the decrypt-failure rate limiter and (b) resolve the
-                // authoring USER from our own friend graph after decrypt. We never guess either.
-                val senderDeviceId = try {
-                    val bytes = envelope.senderDeviceId.toByteArray()
+                // Phase 2 / Option B: the envelope carries BOTH the sending USER (sender_id, a
+                // routing/attribution HINT) and the sending DEVICE (sender_device_id, which selects
+                // the inbound Signal session). We take the message's user from sender_id and key the
+                // decrypt-failure rate limiter on it. We do NOT resolve the user from the friend
+                // graph — the graph supplies only the DISPLAY NAME (SPEC §0.5).
+                val senderId = try {
+                    val bytes = envelope.senderId.toByteArray()
                     if (bytes.size != 16) null
                     else UuidCodec.bytesToUuid(bytes).toString()
                 } catch (_: Exception) { null }
 
-                if (senderDeviceId == null) {
-                    // No sending device on the wire — we can neither decrypt nor attribute it, and
-                    // we do NOT guess. Leave it on the server (persist-then-ack); do not ack.
-                    log("RECV FAIL envelope carries no sender_device_id (left on server, not acked)")
+                if (senderId == null) {
+                    // No sending user on the wire — a malformed/unroutable envelope. We do NOT guess.
+                    // Leave it on the server (persist-then-ack); do not ack.
+                    log("RECV FAIL envelope carries no sender_id (left on server, not acked)")
                     continue
                 }
 
@@ -845,45 +847,35 @@ class ObscuraClient(
                 // on the next reconnect. There is exactly one ack in this loop, and it is the last
                 // thing that happens after a successful decrypt + persist.
 
-                // F3: a rate-limited sender (keyed on the sending device now) is NOT processed and
-                // NOT persisted -> do NOT ack. It is retried once the failure window expires.
-                if (isDecryptRateLimited(senderDeviceId)) {
-                    log("RECV BLOCKED rate-limited device=$senderDeviceId (left on server, not acked)")
+                // F3: a rate-limited sender (keyed on the sending user) is NOT processed and NOT
+                // persisted -> do NOT ack. It is retried once the failure window expires.
+                if (isDecryptRateLimited(senderId)) {
+                    log("RECV BLOCKED rate-limited sender=$senderId (left on server, not acked)")
                     continue
                 }
 
                 try {
                     // 1. DECRYPT. Throws on a bad MAC / missing session -> falls to catch -> no ack.
+                    // The session is selected by the sending DEVICE (sender_device_id); a valid MAC
+                    // then authenticates the sender. decrypted.sourceUserId == envelope.sender_id.
                     val decrypted = messenger.decrypt(envelope)
                     val msg = decrypted.clientMessage
+                    val sourceUserId = decrypted.sourceUserId
 
-                    // 1b. RESOLVE THE USER FROM WHAT THIS CLIENT KNOWS — never from the envelope,
-                    // which carries no user (SPEC §0.5). See resolveSourceUser: friend graph for
-                    // peers, verified payload for a first-contact FriendRequest, own-device registry
-                    // for our account's other devices.
-                    val resolvedUserId: String? = resolveSourceUser(msg, senderDeviceId)
-
-                    if (resolvedUserId == null) {
-                        // Non-FR: a known friend's device whose DeviceAnnounce/prekey-fetch hasn't
-                        //   landed yet — a race; the device isn't mapped to a user, so the message
-                        //   is UNATTRIBUTABLE. Leave it on the server; it redelivers once mapped.
-                        // FR: the self-asserted user_id FAILED identity verification -> rejected.
-                        // Either way NOTHING was persisted -> do NOT ack (persist-then-ack, F2).
-                        log("RECV UNATTRIBUTABLE ${msg.payloadCase.name} device=$senderDeviceId (left on server, not acked)")
-                        logger.decryptFailed(senderDeviceId, "unattributable: device not resolvable to a friend-graph user")
-                        continue
-                    }
-
-                    log("RECV ${msg.payloadCase.name} from=${resolvedUserId.take(8)} device=${senderDeviceId.take(8)} text=${msg.text.text.take(40)}")
+                    log("RECV ${msg.payloadCase.name} from=${sourceUserId.take(8)} device=${decrypted.senderDeviceId.take(8)} text=${msg.text.text.take(40)}")
 
                     // 2. PERSIST (durable). routeMessage's handlers write to the SQLDelight store
                     // (e.g. handleTextMessage -> messagesDomain.add -> messageQueries.insert;
                     // friends.add; orm.handleSync). This is the source of truth. If it throws, we
                     // fall to catch and do NOT ack, so the message survives on the server.
-                    routeMessage(msg, resolvedUserId, decrypted.senderDeviceId)
+                    routeMessage(msg, sourceUserId, decrypted.senderDeviceId)
 
-                    decryptFailures.remove(senderDeviceId)
+                    decryptFailures.remove(senderId)
 
+                    // DISPLAY NAME (SPEC §0.5): for a friend REQUEST/RESPONSE — first contact, sender
+                    // not yet a friend — the display username is the legitimate payload bootstrap.
+                    // For every other payload the display name is NOT read here; it comes from the
+                    // friend graph keyed on sourceUserId when the app renders the conversation.
                     val username = when (msg.payloadCase) {
                         ClientMessage.PayloadCase.FRIEND_REQUEST -> msg.friendRequest.username
                         ClientMessage.PayloadCase.FRIEND_RESPONSE -> msg.friendResponse.username
@@ -894,7 +886,7 @@ class ObscuraClient(
                         text = msg.text.text,
                         username = username,
                         accepted = msg.payloadCase == ClientMessage.PayloadCase.FRIEND_RESPONSE && msg.friendResponse.accepted,
-                        sourceUserId = resolvedUserId,
+                        sourceUserId = sourceUserId,
                         senderDeviceId = decrypted.senderDeviceId,
                         raw = msg
                     )
@@ -923,9 +915,9 @@ class ObscuraClient(
                 } catch (e: Exception) {
                     // Decrypt failed OR persistence (routeMessage) threw. The message is NOT durably
                     // stored -> do NOT ack (F2). It stays on the server and redelivers on reconnect.
-                    log("RECV FAIL device=$senderDeviceId err=${e.message?.take(60)} (left on server, not acked)")
-                    trackDecryptFailure(senderDeviceId)
-                    logger.decryptFailed(senderDeviceId, e.message ?: "unknown")
+                    log("RECV FAIL sender=$senderId err=${e.message?.take(60)} (left on server, not acked)")
+                    trackDecryptFailure(senderId)
+                    logger.decryptFailed(senderId, e.message ?: "unknown")
                 }
             }
         }
@@ -971,87 +963,14 @@ class ObscuraClient(
         }
     }
 
-    /**
-     * Resolve the authoring USER of a decrypted message from what THIS client knows — never from
-     * the envelope, which carries no user (SPEC §0.5). Resolution order:
-     *  1. A FriendRequest self-identifies in its (encrypted) payload; we VERIFY that claim against
-     *     the identity key of the session that decrypted before trusting it.
-     *  2. Friend graph: deviceMap maps the sending device UUID -> its owning user (populated from
-     *     the friend graph via rebuildDeviceMap/F9 and from prekey fetches).
-     *  3. Own-device messages come from OUR account's other devices, which are not in the friend
-     *     graph. If the sender is a device in our own-device registry, it is us. DEVICE_LINK_APPROVAL
-     *     is the bootstrap of that registry (the approver is not recorded yet); it is authenticated
-     *     by the challenge inside handleLinkApproval, so it too resolves to self.
-     * Returns null (UNATTRIBUTABLE) when none apply — e.g. a friend's newly-linked device whose
-     * DeviceAnnounce/prekey-fetch has not landed yet. The caller then leaves it on the server.
-     */
-    private suspend fun resolveSourceUser(msg: ClientMessage, senderDeviceId: String): String? {
-        if (msg.payloadCase == ClientMessage.PayloadCase.FRIEND_REQUEST) {
-            return resolveAndVerifyFriendRequestUser(msg, senderDeviceId)
-        }
-        messenger.resolveUser(senderDeviceId)?.let { return it }
-        if (msg.payloadCase == ClientMessage.PayloadCase.DEVICE_LINK_APPROVAL) {
-            // Bootstrap of the own-device relationship: the approver is not yet in our registry.
-            // handleLinkApproval authenticates it by the challenge we minted, so attribute to self
-            // and let that handler validate.
-            return userId
-        }
-        if (isOwnDevicePayload(msg.payloadCase) &&
-            devices.getOwnDevices().any { it.deviceId == senderDeviceId }
-        ) {
-            return userId
-        }
-        return null
-    }
-
-    // Payloads that are meaningful only from our OWN account's other devices. Their handlers all
-    // guard `sourceUserId != userId`; resolution attributes them to self only when the sending
-    // device is in our own-device registry (or, for link approval, is challenge-authenticated).
-    private fun isOwnDevicePayload(case: ClientMessage.PayloadCase): Boolean = when (case) {
-        ClientMessage.PayloadCase.FRIEND_SYNC,
-        ClientMessage.PayloadCase.SYNC_BLOB,
-        ClientMessage.PayloadCase.SENT_SYNC,
-        ClientMessage.PayloadCase.DEVICE_LINK_APPROVAL -> true
-        else -> false
-    }
-
-    /**
-     * A FriendRequest is first contact: the sender's device is not yet in our friend graph, so we
-     * cannot resolve the user from deviceMap. The requester therefore self-identifies inside the
-     * ENCRYPTED payload (FriendRequest.user_id — a peer assertion the server never sees). We MUST
-     * NOT trust that claim blindly: a peer could name someone else's user id. So we VERIFY it
-     * against the identity key of the session that just decrypted this message — the claim is
-     * accepted only if [senderDeviceId] is registered on the server under the claimed user with the
-     * same identity key that produced the MAC we already verified. Returns the verified user id, or
-     * null to reject (unverifiable claim). username stays a display label; user_id is the identity.
-     */
-    private suspend fun resolveAndVerifyFriendRequestUser(msg: ClientMessage, senderDeviceId: String): String? {
-        val claimedUserId = msg.friendRequest.userId
-        if (claimedUserId.isBlank()) {
-            log("RECV friend request from device=$senderDeviceId carries no user_id — rejecting")
-            logger.signatureVerificationFailed(senderDeviceId, "FRIEND_REQUEST(no user_id)")
-            return null
-        }
-        if (claimedUserId == userId) {
-            log("RECV friend request claims OUR own user_id from device=$senderDeviceId — rejecting")
-            logger.signatureVerificationFailed(claimedUserId, "FRIEND_REQUEST(self-claim)")
-            return null
-        }
-        val verified = messenger.verifyDeviceBelongsToUser(senderDeviceId, claimedUserId)
-        if (!verified) {
-            log("RECV friend request user_id=${claimedUserId.take(8)} FAILED identity verification " +
-                "against device=$senderDeviceId — rejecting (possible id spoof)")
-            logger.signatureVerificationFailed(claimedUserId, "FRIEND_REQUEST")
-            return null
-        }
-        return claimedUserId
-    }
-
     private suspend fun handleFriendRequest(msg: ClientMessage, sourceUserId: String) {
-        // sourceUserId is the VERIFIED requester (resolveAndVerifyFriendRequestUser). username is a
-        // display label only; identity is sourceUserId. The verification fetch enumerated the
-        // requester's devices into deviceMap; persist them so the device->user mapping survives a
-        // restart (rebuildDeviceMap restores it from the friend record).
+        // sourceUserId is envelope.sender_id — the requester's USER id, server-stamped and
+        // authenticated by the Signal session that decrypted this message (TOFU: libsignal pins the
+        // sender's identity key on first contact, exactly as Signal does). This is first contact, so
+        // the sender is not yet in our friend graph and we take the DISPLAY NAME from the payload
+        // (FriendRequest.username) — the ONE legitimate bootstrap exception to SPEC §0.5. The
+        // sending device was learned into deviceMap on decrypt; persist what we know so the
+        // device -> user mapping survives a restart (rebuildDeviceMap restores it from the record).
         friends.add(sourceUserId, msg.friendRequest.username, FriendStatus.PENDING_RECEIVED,
             messenger.knownDevicesFor(sourceUserId))
     }

@@ -20,13 +20,15 @@ import java.util.*
 
 data class DecryptedMessage(
     val clientMessage: ClientMessage,
+    // The sending USER's UUID, taken from envelope.sender_id (Signal's source_service_id). This is
+    // a routing/attribution HINT the server stamps: the recipient uses it to key the conversation
+    // and to look up the display name in its OWN friend graph — it never trusts it as a display
+    // name and never reads a user from the payload (SPEC §0.5). The Signal session (selected by the
+    // sending device below) is the actual authentication.
+    val sourceUserId: String,
     // The sending device's UUID. Phase 2: this is the address of the session that
     // decrypted (== envelope.sender_device_id, PROVEN by the successful MAC), never a
     // guess and never a user id. Always non-null on a successful decrypt.
-    //
-    // NOTE: there is NO user id here. The envelope no longer carries `sender_id` (SPEC §0.5):
-    // the recipient resolves device -> user from ITS OWN friend graph (deviceMap), never from a
-    // server assertion. The caller does that resolution.
     val senderDeviceId: String
 )
 
@@ -165,17 +167,21 @@ class MessengerDomain internal constructor(
     }
 
     suspend fun decrypt(envelope: Envelope): DecryptedMessage = withContext(dispatcher) {
-        // Phase 2 receive-side addressing. The envelope carries ONLY the SENDER'S DEVICE UUID
+        // The USER hint. envelope.sender_id (Signal's source_service_id) is server-stamped from the
+        // sender's account; we take the message's user from it and look up the display name in our
+        // OWN friend graph (SPEC §0.5) — never from the payload. It is a routing/attribution hint,
+        // NOT the trust root: the Signal session (selected by the device below) authenticates.
+        val senderId = UuidCodec.bytesToUuid(envelope.senderId.toByteArray()).toString()
+
+        // Phase 2 receive-side addressing. The envelope also carries the SENDER'S DEVICE UUID
         // (sender_device_id, stamped by the server from the device-scoped JWT — unforgeable by
-        // the sender). It no longer carries any user id. Signal sessions are pairwise
-        // device-to-device and a SignalMessage carries no sender identity, so this is how we
-        // select the inbound session. Missing/empty is an ERROR path — never a guess. There is no
-        // candidate-registrationId loop anymore. The owning USER is resolved by the caller from
-        // its own friend graph, keyed on this device UUID (SPEC §0.5).
+        // the sender). Signal sessions are pairwise device-to-device and a SignalMessage carries
+        // no sender identity, so this is how we select the inbound session. Missing/empty is an
+        // ERROR path — never a guess. There is no candidate-registrationId loop anymore.
         val senderDeviceBytes = envelope.senderDeviceId.toByteArray()
         if (senderDeviceBytes.size != 16) {
             throw IllegalStateException(
-                "Envelope has no sender_device_id (${senderDeviceBytes.size} bytes); " +
+                "Envelope from $senderId has no sender_device_id (${senderDeviceBytes.size} bytes); " +
                     "cannot select an inbound session"
             )
         }
@@ -194,46 +200,15 @@ class MessengerDomain internal constructor(
         }
         val clientMsg = ClientMessage.parseFrom(decryptedBytes)
 
+        // Learn the sender's device so later fan-out to this user includes it (F6). The mapping
+        // is (deviceUuid -> user); the regId slot is diagnostic only.
+        deviceMap.putIfAbsent(senderDeviceUuid, Pair(senderId, 1))
+
         // authorDeviceId is the address of the session that decrypted. A valid MAC proves
         // possession of that session's chain key, which only the sender's device has — so this
         // attribution is cryptographically sound, never a wire-field to be trusted blindly.
-        DecryptedMessage(clientMsg, senderDeviceUuid)
+        DecryptedMessage(clientMsg, senderId, senderDeviceUuid)
     }
-
-    /**
-     * Resolve the USER that owns [deviceUuid] from what we've learned (friend graph + prekey
-     * fetches). Returns null if this device isn't mapped yet (e.g. a friend linked a new device
-     * whose DeviceAnnounce hasn't landed — a race the caller treats as unattributable).
-     */
-    suspend fun resolveUser(deviceUuid: String): String? = withContext(dispatcher) {
-        deviceMap[deviceUuid]?.first
-    }
-
-    /**
-     * Verify that [claimedUserId] genuinely OWNS [senderDeviceUuid], by confirming the identity
-     * key the server publishes for that device under that user matches the identity key of the
-     * session that just decrypted the message (stored at [addressFor]). This is what stops a peer
-     * from claiming another user's id in a FriendRequest payload: the claim is only trusted if the
-     * device that produced the MAC we already verified is registered under the claimed user with
-     * the same identity key. Returns true iff verified. Populates deviceMap as a side effect (the
-     * fetch enumerates the claimed user's devices).
-     */
-    suspend fun verifyDeviceBelongsToUser(senderDeviceUuid: String, claimedUserId: String): Boolean =
-        withContext(dispatcher) {
-            // The identity key libsignal saved for the session that decrypted this message.
-            val sessionIdentity = signalStore.getIdentity(addressFor(senderDeviceUuid))
-                ?: return@withContext false
-            val bundlesJson = try {
-                api.fetchPreKeyBundles(claimedUserId)
-            } catch (e: Exception) {
-                return@withContext false
-            }
-            val claimedDeviceBundle = parsePreKeyBundles(bundlesJson, claimedUserId)
-                .firstOrNull { it.first == senderDeviceUuid }?.second
-                ?: return@withContext false
-            // Byte-for-byte identity-key comparison (not object identity).
-            claimedDeviceBundle.identityKey.serialize().contentEquals(sessionIdentity.serialize())
-        }
 
     private suspend fun ensureSession(targetUserId: String, targetDeviceUuid: String) {
         val address = addressFor(targetDeviceUuid)
