@@ -68,7 +68,9 @@ internal class ClientSyncManager(
     }
 
     suspend fun resetSessionWith(targetUserId: String, reason: String = "manual") {
-        signalStore.deleteAllSessions(targetUserId)
+        // Sessions are keyed on the DEVICE UUID (Phase 2), so clear every session with each of
+        // the user's devices.
+        clearSessionsWithUser(targetUserId)
 
         val msg = ClientMessage.newBuilder()
             .setSessionReset(obscura.client.v1.sessionReset { this.reason = reason })
@@ -79,7 +81,11 @@ internal class ClientSyncManager(
         // Delete the session that was just built to send the reset message.
         // This forces the next send to use a fresh PreKey exchange,
         // which the receiver can handle after they also cleared their session.
-        signalStore.deleteAllSessions(targetUserId)
+        clearSessionsWithUser(targetUserId)
+    }
+
+    private fun clearSessionsWithUser(targetUserId: String) {
+        messenger.getDeviceIdsForUser(targetUserId).forEach { signalStore.deleteAllSessions(it) }
     }
 
     suspend fun resetAllSessions(reason: String = "manual") {

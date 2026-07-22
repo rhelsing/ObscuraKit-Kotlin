@@ -3,6 +3,7 @@ package com.obscura.kit
 import app.cash.sqldelight.driver.jdbc.sqlite.JdbcSqliteDriver
 import com.obscura.kit.crypto.ParsedSyncBlob
 import com.obscura.kit.crypto.SignalStore
+import com.obscura.kit.crypto.UuidCodec
 import com.obscura.kit.crypto.toBase64
 import com.obscura.kit.db.ObscuraDatabase
 import com.obscura.kit.managers.*
@@ -821,25 +822,60 @@ class ObscuraClient(
         envelopeJob?.cancel()
         envelopeJob = scope.launch {
             for (envelope in gateway.envelopes) {
+                // Phase 2 / Option B: the envelope carries BOTH the sending USER (sender_id, a
+                // routing/attribution HINT) and the sending DEVICE (sender_device_id, which selects
+                // the inbound Signal session). We take the message's user from sender_id and key the
+                // decrypt-failure rate limiter on it. We do NOT resolve the user from the friend
+                // graph — the graph supplies only the DISPLAY NAME (SPEC §0.5).
                 val senderId = try {
-                    val bb = java.nio.ByteBuffer.wrap(envelope.senderId.toByteArray())
-                    java.util.UUID(bb.getLong(), bb.getLong()).toString()
-                } catch (_: Exception) { "unknown" }
+                    val bytes = envelope.senderId.toByteArray()
+                    if (bytes.size != 16) null
+                    else UuidCodec.bytesToUuid(bytes).toString()
+                } catch (_: Exception) { null }
 
+                if (senderId == null) {
+                    // No sending user on the wire — a malformed/unroutable envelope. We do NOT guess.
+                    // Leave it on the server (persist-then-ack); do not ack.
+                    log("RECV FAIL envelope carries no sender_id (left on server, not acked)")
+                    continue
+                }
+
+                // PERSIST-THEN-ACK. An ACK is a DELETE on the server (gateway AckBatcher ->
+                // message_service.delete_batch -> DELETE FROM messages). So we ACK ONLY WHAT WE
+                // HAVE DURABLY PERSISTED. Every path below that has not persisted the message must
+                // skip the ack and leave it on the server, where a fresh MessagePump redelivers it
+                // on the next reconnect. There is exactly one ack in this loop, and it is the last
+                // thing that happens after a successful decrypt + persist.
+
+                // F3: a rate-limited sender (keyed on the sending user) is NOT processed and NOT
+                // persisted -> do NOT ack. It is retried once the failure window expires.
                 if (isDecryptRateLimited(senderId)) {
-                    log("RECV BLOCKED rate-limited sender=$senderId")
-                    try { gateway.ack(listOf(envelope.id)) } catch (e: Exception) { log("envelope ack failed: ${e.message}") }
+                    log("RECV BLOCKED rate-limited sender=$senderId (left on server, not acked)")
                     continue
                 }
 
                 try {
+                    // 1. DECRYPT. Throws on a bad MAC / missing session -> falls to catch -> no ack.
+                    // The session is selected by the sending DEVICE (sender_device_id); a valid MAC
+                    // then authenticates the sender. decrypted.sourceUserId == envelope.sender_id.
                     val decrypted = messenger.decrypt(envelope)
                     val msg = decrypted.clientMessage
-                    log("RECV ${msg.payloadCase.name} from=${decrypted.sourceUserId.take(8)} text=${msg.text.text.take(40)}")
-                    routeMessage(msg, decrypted.sourceUserId, decrypted.senderDeviceId)
+                    val sourceUserId = decrypted.sourceUserId
 
-                    decryptFailures.remove(decrypted.sourceUserId)
+                    log("RECV ${msg.payloadCase.name} from=${sourceUserId.take(8)} device=${decrypted.senderDeviceId.take(8)} text=${msg.text.text.take(40)}")
 
+                    // 2. PERSIST (durable). routeMessage's handlers write to the SQLDelight store
+                    // (e.g. handleTextMessage -> messagesDomain.add -> messageQueries.insert;
+                    // friends.add; orm.handleSync). This is the source of truth. If it throws, we
+                    // fall to catch and do NOT ack, so the message survives on the server.
+                    routeMessage(msg, sourceUserId, decrypted.senderDeviceId)
+
+                    decryptFailures.remove(senderId)
+
+                    // DISPLAY NAME (SPEC §0.5): for a friend REQUEST/RESPONSE — first contact, sender
+                    // not yet a friend — the display username is the legitimate payload bootstrap.
+                    // For every other payload the display name is NOT read here; it comes from the
+                    // friend graph keyed on sourceUserId when the app renders the conversation.
                     val username = when (msg.payloadCase) {
                         ClientMessage.PayloadCase.FRIEND_REQUEST -> msg.friendRequest.username
                         ClientMessage.PayloadCase.FRIEND_RESPONSE -> msg.friendResponse.username
@@ -850,22 +886,39 @@ class ObscuraClient(
                         text = msg.text.text,
                         username = username,
                         accepted = msg.payloadCase == ClientMessage.PayloadCase.FRIEND_RESPONSE && msg.friendResponse.accepted,
-                        sourceUserId = decrypted.sourceUserId,
+                        sourceUserId = sourceUserId,
                         senderDeviceId = decrypted.senderDeviceId,
                         raw = msg
                     )
 
-                    incomingMessages.trySend(received)
-                    _events.tryEmit(received)
+                    // 3. NOTIFY (best-effort). These emits are wake-up notifications over data that
+                    // step 2 has ALREADY durably persisted -- the app model is "event -> refetch
+                    // everything from the store", and the store, not this channel/flow, is the
+                    // durable delivery path. So a dropped emit loses a NOTIFICATION, never a
+                    // message, precisely because persistence happened-before the ack below. We keep
+                    // them droppable rather than a suspending send() on purpose: incomingMessages is
+                    // a 1000-capacity channel the app does not always drain, and a blocking send
+                    // would stall the whole receive loop (and thus all acking) behind a full buffer.
+                    // We log a drop so it is observable and never silent.
+                    if (!incomingMessages.trySend(received).isSuccess) {
+                        log("RECV NOTE incomingMessages full; dropped a wake-up (data already persisted)")
+                    }
+                    if (!_events.tryEmit(received)) {
+                        log("RECV NOTE events buffer full; dropped a wake-up (data already persisted)")
+                    }
 
                     checkAndReplenishPreKeys()
+
+                    // 4. ACK. Reached only when decrypt AND persist both succeeded. This is the sole
+                    // ack in the loop; the rate-limit early-return and the catch below both skip it.
+                    try { gateway.ack(listOf(envelope.id)) } catch (e: Exception) { log("envelope ack failed: ${e.message}") }
                 } catch (e: Exception) {
-                    log("RECV FAIL decrypt sender=$senderId err=${e.message?.take(60)}")
+                    // Decrypt failed OR persistence (routeMessage) threw. The message is NOT durably
+                    // stored -> do NOT ack (F2). It stays on the server and redelivers on reconnect.
+                    log("RECV FAIL sender=$senderId err=${e.message?.take(60)} (left on server, not acked)")
                     trackDecryptFailure(senderId)
                     logger.decryptFailed(senderId, e.message ?: "unknown")
                 }
-
-                try { gateway.ack(listOf(envelope.id)) } catch (e: Exception) { log("envelope ack failed: ${e.message}") }
             }
         }
     }
@@ -899,7 +952,10 @@ class ObscuraClient(
             ClientMessage.PayloadCase.MODEL_SYNC -> handleModelSync(msg, sourceUserId)
             ClientMessage.PayloadCase.SYNC_BLOB -> handleSyncBlob(msg, sourceUserId)
             ClientMessage.PayloadCase.SENT_SYNC -> handleSentSync(msg)
-            ClientMessage.PayloadCase.SESSION_RESET -> signalStore.deleteAllSessions(sourceUserId)
+            ClientMessage.PayloadCase.SESSION_RESET ->
+                // Sessions are keyed on the DEVICE UUID (Phase 2), so reset every session we hold
+                // with any of this user's devices.
+                messenger.getDeviceIdsForUser(sourceUserId).forEach { signalStore.deleteAllSessions(it) }
             ClientMessage.PayloadCase.FRIEND_SYNC -> handleFriendSync(msg, sourceUserId)
             ClientMessage.PayloadCase.DEVICE_LINK_APPROVAL -> handleLinkApproval(msg, sourceUserId)
             ClientMessage.PayloadCase.MODEL_SIGNAL -> handleModelSignal(msg, sourceUserId, senderDeviceId)
@@ -908,11 +964,22 @@ class ObscuraClient(
     }
 
     private suspend fun handleFriendRequest(msg: ClientMessage, sourceUserId: String) {
-        friends.add(sourceUserId, msg.friendRequest.username, FriendStatus.PENDING_RECEIVED)
+        // sourceUserId is envelope.sender_id — the requester's USER id, server-stamped and
+        // authenticated by the Signal session that decrypted this message (TOFU: libsignal pins the
+        // sender's identity key on first contact, exactly as Signal does). This is first contact, so
+        // the sender is not yet in our friend graph and we take the DISPLAY NAME from the payload
+        // (FriendRequest.username) — the ONE legitimate bootstrap exception to SPEC §0.5. The
+        // sending device was learned into deviceMap on decrypt; persist what we know so the
+        // device -> user mapping survives a restart (rebuildDeviceMap restores it from the record).
+        friends.add(sourceUserId, msg.friendRequest.username, FriendStatus.PENDING_RECEIVED,
+            messenger.knownDevicesFor(sourceUserId))
     }
 
     private suspend fun handleFriendResponse(msg: ClientMessage, sourceUserId: String) {
-        if (msg.friendResponse.accepted) friends.add(sourceUserId, msg.friendResponse.username, FriendStatus.ACCEPTED)
+        if (msg.friendResponse.accepted) {
+            friends.add(sourceUserId, msg.friendResponse.username, FriendStatus.ACCEPTED,
+                messenger.knownDevicesFor(sourceUserId))
+        }
     }
 
     private suspend fun handleTextMessage(msg: ClientMessage, sourceUserId: String, senderDeviceId: String?) {
@@ -959,7 +1026,9 @@ class ObscuraClient(
 
             // Identity comes from the authenticated envelope, never the payload:
             // the device from the decrypted session, the display name from the friend graph.
-            val authorDeviceId = senderDeviceId ?: sourceUserId
+            // authorDeviceId is the sending device's UUID (proven by the session MAC); it MUST
+            // NOT fall back to a user id — a user id in a device field is a false claim (F4).
+            val authorDeviceId = senderDeviceId ?: "unknown"
             val senderUsername = friends.getAccepted().find { it.userId == sourceUserId }?.username ?: sourceUserId
             val data = mapOf<String, Any?>(
                 "conversationId" to sig.contextId,

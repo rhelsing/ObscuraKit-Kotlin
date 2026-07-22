@@ -19,12 +19,20 @@ internal class FriendshipManager(
         require(targetUserId != session.userId) { "Cannot befriend yourself" }
         messenger.fetchPreKeyBundles(targetUserId)
 
+        // The FriendRequest carries only our display username — a first-contact bootstrap label
+        // (SPEC §0.5). Our IDENTITY is not in the payload: the server stamps envelope.sender_id with
+        // our user id, and the recipient's Signal session pins our identity key on first contact
+        // (TOFU), exactly as Signal authenticates. No user_id field is needed or sent.
         val msg = ClientMessage.newBuilder()
-            .setFriendRequest(obscura.client.v1.friendRequest { username = session.username ?: "" })
+            .setFriendRequest(obscura.client.v1.friendRequest {
+                username = session.username ?: ""
+            })
             .setTimestamp(System.currentTimeMillis()).build()
 
         messageSender.sendToAllDevices(targetUserId, msg)
-        friends.add(targetUserId, targetUsername, FriendStatus.PENDING_SENT)
+        // Persist the friend's devices (learned by the prekey fetch above) so the device->user
+        // mapping survives a restart: rebuildDeviceMap(getAccepted()) restores it from here.
+        friends.add(targetUserId, targetUsername, FriendStatus.PENDING_SENT, messenger.knownDevicesFor(targetUserId))
 
         syncFriendToOwnDevices(targetUsername, FriendSyncAction.ADD.value, FriendStatus.PENDING_SENT.value)
     }
@@ -40,7 +48,7 @@ internal class FriendshipManager(
             .setTimestamp(System.currentTimeMillis()).build()
 
         messageSender.sendToAllDevices(targetUserId, msg)
-        friends.add(targetUserId, targetUsername, FriendStatus.ACCEPTED)
+        friends.add(targetUserId, targetUsername, FriendStatus.ACCEPTED, messenger.knownDevicesFor(targetUserId))
 
         syncFriendToOwnDevices(targetUsername, FriendSyncAction.ADD.value, FriendStatus.ACCEPTED.value)
     }
