@@ -31,26 +31,35 @@ import obscura.client.v1.Client.ClientMessage
  *     fetch (MessageSender.kt:17), so the send encrypts ONE ciphertext at (aliceUserId, 1) and fans
  *     it out to both devices — only one can read it.
  *
- * RESULT (two tests, read them together):
+ * HISTORY — why this file is shaped the way it is (2026-07-14 → 2026-07-24):
  *
- *   `two-device happy path ...` (Order 2) — the task's literal fixture. PASSES. This is the false
- *     comfort PLAN.md warns about. It passes because a SECOND, independent bug prevents F1's
- *     precondition: Alice's own-device registry is never populated (register/loginAndProvision never
- *     record own devices; approveLink ships the approver's empty getOwnDevices() as the approval's
- *     ownDevices, so the approvee's setOwnDevices([]) writes empty too), so her DeviceAnnounce
- *     carries no devices and Bob's friend store stays EMPTY. rebuildDeviceMap has nothing to clobber,
- *     the deviceMap keeps real per-device registration IDs, and both devices decrypt.
+ *   Originally these tests DOCUMENTED the bug rather than guarding against it. Order 2 passed
+ *   vacuously and Order 3 confirmed F1 by reproducing it. That was correct then: F1 was latent,
+ *   masked by F9 (Alice's own-device registry was never populated — addOwnDevice had no callers —
+ *   so every DeviceAnnounce was empty, Bob's friend store stayed EMPTY, rebuildDeviceMap had
+ *   nothing to clobber, and the deviceMap kept the real per-device registration IDs). Order 3
+ *   therefore had to HAND-BUILD the DeviceAnnounce a fixed propagation path would send, and guard
+ *   that setup with assumeTrue — so it could silently SKIP.
  *
- *   `F1 mechanism probe ...` (Order 3) — forces F1's exact precondition by delivering a populated
- *     DeviceAnnounce (Alice's real device UUIDs, through her real encryption path — no invented wire
- *     fields; this is the message a fixed propagation path would send). Bob's friend store then lists
- *     both devices at registrationId=1; after a reconnect both are encrypted at the SAME address
- *     (aliceUserId, 1); device 2 FAILS to decrypt. F1 CONFIRMED.
+ *   Phase 2 (PR #40) fixed both: sessions are addressed by DEVICE UUID (F1) and the own-device
+ *   registry is populated (F9). These are now REGRESSION GUARDS, and every assumeTrue on the setup
+ *   is gone — after F9 there is no legitimate reason for this test to skip, and a skipped test is
+ *   not a passing one.
  *
- * Conclusion: F1 is a REAL, reproducible latent bug, currently masked by the dead device-list
- * propagation. Fixing propagation without fixing the registrationId addressing would immediately
- * break multi-device delivery. Each test prints, per Alice device, the registrationId used and the
- * ProtocolAddress the ciphertext was encrypted under, so the mechanism is verifiable, not inferred.
+ * WHAT THEY GUARD NOW:
+ *
+ *   Order 2 — the happy path: both devices decrypt on a fresh befriend, and again after the sender
+ *     reconnects. Necessary but NOT sufficient — see Order 3.
+ *
+ *   Order 3 — PLAN.md 0.1's actual acceptance criterion. Drives the REAL announceDevices() API (no
+ *     fabricated protobuf: a test that builds the message it means to verify proves only that the
+ *     builder works), asserts Bob genuinely learns BOTH device UUIDs, then forces the
+ *     sender-reconnect-after-friendship sequence that is F1's exact precondition, and requires both
+ *     devices to decrypt. Pre-Phase-2 this failed; if it ever fails again, either device-UUID
+ *     addressing or device propagation has regressed.
+ *
+ * Each test prints, per Alice device, the registrationId and the ProtocolAddress the ciphertext was
+ * encrypted under, so a failure is diagnosable from the log rather than by re-deriving the mechanism.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
 class TwoDeviceSendTests {
@@ -100,17 +109,26 @@ class TwoDeviceSendTests {
 
     private fun need() = assumeTrue(serverUp && alice2 != null)
 
-    /** What the sender believes about Alice's devices, and which Signal sessions it holds. */
+    /**
+     * What the sender believes about Alice's devices, and which Signal sessions it actually holds.
+     *
+     * Post-Phase-2 this prints the DEVICE-UUID address, because that is what the code now uses:
+     * `MessengerDomain.addressFor(deviceUuid)` -> `SignalProtocolAddress(deviceUuid, 1)`. An earlier
+     * version of this helper printed `(aliceUserId, registrationId)` and looked sessions up by
+     * registrationId — which after Phase 2 reports "no sessions" for a client that holds two healthy
+     * ones, and describes an addressing scheme the kit no longer uses. A diagnostic that lies is
+     * worse than no diagnostic: it sends the next reader after a bug that is not there.
+     */
     private fun senderState(tag: String) {
         val b = bob!!
         val aliceId = alice1!!.userId!!
         println("── $tag ──")
-        // F1's regId=1 clobber is driven by rebuildDeviceMap(friends.getAccepted()), which reads
-        // the friend store's per-device list. Print it: if it is empty, the clobber cannot fire.
+        // The rebuildDeviceMap input: the friend store's per-device list. registrationId is printed
+        // only to show it is now inert — it addresses nothing (PLAN.md F1 status, 2026-07-24).
         val storeDevices = b.friendList.value.find { it.userId == aliceId }?.devices ?: emptyList()
         println("  bob's accepted-friends store lists ${storeDevices.size} device(s) for Alice " +
             "(this is what rebuildDeviceMap reads):")
-        storeDevices.forEach { println("    ${it.deviceId} registrationId=${it.registrationId}") }
+        storeDevices.forEach { println("    ${it.deviceId} registrationId=${it.registrationId} (inert since Phase 2)") }
         val devIds = b.messenger.getDeviceIdsForUser(aliceId)
         println("  bob fans out to ${devIds.size} device(s) for Alice:")
         for (d in devIds) {
@@ -119,10 +137,14 @@ class TwoDeviceSendTests {
                 alice2!!.deviceId -> "device2"
                 else -> "UNKNOWN "
             }
-            println("    $label $d -> encrypts at address ($aliceId, ${b.messenger.deviceMap(d)?.second})")
+            // The real Phase 2 address, and whether a session exists at it. Two devices collapsing
+            // onto ONE address is precisely the F1 failure this test exists to catch.
+            val hasSession = b.signalStore.containsSession(SignalProtocolAddress(d, 1))
+            println("    $label $d -> encrypts at address ($d, 1)  session=${if (hasSession) "present" else "ABSENT"}")
         }
-        val regIds = b.signalStore.getAllSessionRegistrationIds(aliceId)
-        println("  bob holds Signal sessions for Alice at registrationIds: $regIds")
+        val distinctAddresses = devIds.toSet().size
+        println("  distinct Signal addresses in use for Alice: $distinctAddresses (must equal ${devIds.size} — " +
+            "one address for two devices is F1)")
     }
 
     /** Bob sends one message; BOTH of Alice's devices must receive and decrypt it. */
@@ -154,24 +176,26 @@ class TwoDeviceSendTests {
     }
 
     /**
-     * CONTROL — the happy-path two-device test. It PASSES, and that pass is the false comfort
-     * PLAN.md warns about: it passes only because Bob's friend store is empty (Alice's DeviceAnnounce
-     * carries no devices — see the `F1 mechanism probe` test for why), so rebuildDeviceMap has nothing
-     * to clobber and the deviceMap keeps the real per-device registration IDs from parsePreKeyBundles.
-     * A passing happy-path test is NOT evidence F1 is fixed; the `F1 mechanism probe` test below is.
+     * The happy path: Bob befriends Alice (which enumerates both her devices via the prekey fetch)
+     * and sends, before and after a reconnect. NECESSARY BUT NOT SUFFICIENT — historically this
+     * passed while F1 was live, because the friend store was empty and so the deviceMap kept the
+     * real per-device registration IDs. Order 3 is the test that actually pins the invariant; this
+     * one exists to localise a failure (if BOTH orders fail, the break is in plain fan-out, not in
+     * propagation or rebuild).
      */
     @Test @Order(2)
-    fun `two-device happy path passes because the friend store is empty`() = runBlocking {
+    fun `two-device happy path - fresh befriend and after sender reconnect`() = runBlocking {
         need()
 
         // (a) Plain send, deviceMap freshly populated by befriend()'s prekey fetch.
         senderState("(a) fresh — deviceMap from befriend()'s prekey fetch")
         sendAndBothMustDecrypt("f1-a-fresh")
 
-        // (b) Bob reconnects — connect() calls rebuildDeviceMap(friends.getAccepted()).
-        //     F1 says this rewrites both Alice devices to registrationId = 1.
+        // (b) Bob reconnects — connect() calls rebuildDeviceMap(friends.getAccepted()). Pre-Phase-2
+        //     this rewrote both Alice devices to registrationId = 1 and collapsed them onto one
+        //     session address; now the address is the device UUID, so the rebuild cannot collapse them.
         bob!!.disconnect(); delay(500); bob!!.connect(); delay(500)
-        senderState("(b) after sender reconnect — F1 predicts regId clobbered to 1")
+        senderState("(b) after sender reconnect — rebuildDeviceMap has run")
         sendAndBothMustDecrypt("f1-b-reconnect")
 
         alice1!!.disconnect(); alice2!!.disconnect(); bob!!.disconnect()
@@ -192,7 +216,7 @@ class TwoDeviceSendTests {
      *     friend device lists are never populated — which is the thing to report to Nolan.
      */
     @Test @Order(3)
-    fun `F1 mechanism probe - populate friend store via DeviceAnnounce, then reconnect and send`() = runBlocking {
+    fun `F1 regression guard - real announceDevices, sender reconnect, both devices decrypt`() = runBlocking {
         need()
         val aliceId = alice1!!.userId!!
 
@@ -201,51 +225,50 @@ class TwoDeviceSendTests {
         delay(500)
         try { while (true) { bob!!.waitForMessage(1_500) } } catch (_: Exception) {}
 
-        // Alice's linked laptop (which holds both devices in its own-device store, from link
-        // approval) broadcasts a DeviceAnnounce to its accepted friends.
-        // NOTE: Alice's own-device registry is empty in every real flow (register/loginAndProvision
-        // never record own devices, and approveLink ships the approver's empty getOwnDevices() as
-        // the approval's ownDevices, so the approvee's setOwnDevices([]) writes empty too). So the
-        // real `announceDevices()` API cannot populate Bob's friend store. To exercise F1's exact
-        // precondition we hand-build the DeviceAnnounce that a *fixed* propagation path would send —
-        // Alice's two real device UUIDs — and deliver it through Alice's genuine encryption path.
-        // handleDeviceAnnounce (ObscuraClient.kt:947) then stores each with registrationId defaulted
-        // to 1, exactly as it does for any DeviceInfo off the wire.
-        println("  alice1.getOwnDevices()=${alice1!!.devices.getOwnDevices().size} " +
-            "alice2.getOwnDevices()=${alice2!!.devices.getOwnDevices().size} (both empty = propagation dead)")
+        // ── Step 1: F9 guard. announceDevices() broadcasts whatever the own-device registry holds,
+        // so an empty registry makes the announce inert and silently voids the rest of this test.
+        // Before Phase 2 this was 0 (addOwnDevice had no callers) and the probe had to hand-build a
+        // DeviceAnnounce to reach F1's precondition at all. Assert it, do not assume it: if
+        // propagation regresses, THIS is the line that should fail, and it should fail loudly.
+        val ownDevices = alice1!!.devices.getOwnDevices()
+        println("  alice1.getOwnDevices()=${ownDevices.size} alice2.getOwnDevices()=${alice2!!.devices.getOwnDevices().size}")
+        ownDevices.forEach { println("    own: ${it.deviceId} ${it.deviceName}") }
+        assertEquals(2, ownDevices.size,
+            "F9 regression: Alice's own-device registry must list BOTH devices, or announceDevices() " +
+                "broadcasts an empty list and device propagation is dead again")
 
-        val now = System.currentTimeMillis()
-        val announce = ClientMessage.newBuilder()
-            .setTimestamp(now)
-            .setDeviceAnnounce(obscura.client.v1.deviceAnnounce {
-                devices.add(obscura.client.v1.deviceInfo {
-                    deviceUuid = alice1!!.deviceId!!; deviceId = alice1!!.deviceId!!; deviceName = "Alice Phone"
-                })
-                devices.add(obscura.client.v1.deviceInfo {
-                    deviceUuid = alice2!!.deviceId!!; deviceId = alice2!!.deviceId!!; deviceName = "Alice Laptop"
-                })
-                timestamp = now
-                isRevocation = false
-            }).build()
-        alice1!!.messenger.queueMessage(bob!!.deviceId!!, announce, bob!!.userId!!)
-        alice1!!.messenger.flushMessages()
+        // ── Step 2: the REAL propagation path. No hand-built protobuf: this is the shipping API,
+        // which is the whole point — a test that fabricates the message it is meant to verify
+        // proves only that the fabricator works.
+        alice1!!.announceDevices()
 
-        // Wait for Bob to ingest the DeviceAnnounce.
-        val deadline = System.currentTimeMillis() + 8_000
+        // ── Step 3: Bob must actually learn both devices. Hard assertion, not assumeTrue:
+        // a skipped test is not a passing one, and after F9 there is no legitimate reason to skip.
+        val deadline = System.currentTimeMillis() + 10_000
         while (System.currentTimeMillis() < deadline &&
-            (bob!!.friendList.value.find { it.userId == aliceId }?.devices?.isEmpty() != false)) {
+            (bob!!.friendList.value.find { it.userId == aliceId }?.devices?.size ?: 0) < 2) {
             try { bob!!.waitForMessage(1_500) } catch (_: Exception) {}
         }
         val storeDevices = bob!!.friendList.value.find { it.userId == aliceId }?.devices ?: emptyList()
-        println("  after DeviceAnnounce, bob's friend store lists ${storeDevices.size} device(s) for Alice:")
+        println("  after announceDevices(), bob's friend store lists ${storeDevices.size} device(s) for Alice:")
         storeDevices.forEach { println("    ${it.deviceId} registrationId=${it.registrationId}") }
-        assumeTrue(storeDevices.isNotEmpty(),
-            "DeviceAnnounce did not populate Bob's friend store — the F1 precondition could not be set up")
+        assertEquals(2, storeDevices.size,
+            "Bob's friend store must list both of Alice's devices after a real announceDevices() " +
+                "(F6/F9 propagation). Got: ${storeDevices.map { it.deviceId }}")
+        assertTrue(
+            storeDevices.map { it.deviceId }.toSet() == setOf(alice1!!.deviceId, alice2!!.deviceId),
+            "Bob learned the wrong device UUIDs: ${storeDevices.map { it.deviceId }}"
+        )
 
-        // Now the F1 trigger: Bob reconnects -> rebuildDeviceMap(friends.getAccepted()) reads the
-        // now-populated (registrationId=1) list and writes it into the deviceMap.
+        // ── Step 4: F1's exact precondition. connect() -> rebuildDeviceMap(friends.getAccepted())
+        // reads that now-populated list. Pre-Phase-2 this stamped every device registrationId = 1,
+        // the non-empty map made sendToAllDevices SKIP the corrective prekey fetch, and both devices
+        // got one ciphertext encrypted at a single (userId, 1) address — only one could read it.
+        // Post-Phase-2 the address is the device UUID, so the rebuild cannot collapse two devices
+        // onto one session. PLAN.md 0.1 is explicit that a test WITHOUT this reconnect passes
+        // vacuously; the reconnect is the load-bearing step.
         bob!!.disconnect(); delay(500); bob!!.connect(); delay(500)
-        senderState("(c) friend store populated + sender reconnect — F1's exact precondition")
+        senderState("(c) friend store populated by the real announce + sender reconnect — F1's precondition")
         sendAndBothMustDecrypt("f1-c-announce")
 
         alice1!!.disconnect(); alice2!!.disconnect(); bob!!.disconnect()
