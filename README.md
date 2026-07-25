@@ -102,8 +102,12 @@ unit figure includes the four `@TestFactory` conformance suites, which expand at
 - **ECS signals** — `model.typing(convId)` / `model.observeTyping(convId)` for ephemeral indicators
 - ~~**Cross-platform** — iOS ↔ Android proven with shared ORM wire format.~~ **Not true as
   written.** The two kits have diverged: Swift still hard-codes application field names, narrows
-  a `friends` broadcast when an entry happens to carry a `conversationId`, and has no schema
-  migration mechanism at all. The kits agree on the *wire*; they do not agree on *behavior*.
+  a `friends` broadcast when an entry happens to carry a `conversationId`, has no schema
+  migration mechanism at all, and cannot *receive* a `DEVICE_LINK_APPROVAL` (it sends them, but
+  `routeMessage` has no case for one, so a newly-linked Swift device discards the p2p keys, friends
+  export and device list this kit would store). The kits agree on the *wire*; they do not agree on
+  *behavior*. They now **do** agree on Signal session addressing — both key on the device UUID as of
+  Phase 2, each with a two-device test that reconnects the sender.
 - ~~**Chat via ORM** — `client.send()` falls back to TEXT if the model is not defined.~~ That
   fallback is a **silent-delivery bug**, not a feature: only MODEL_SYNC contributes to push
   counts, so a TEXT message arrives with no notification. Being removed.
@@ -112,8 +116,9 @@ unit figure includes the four `@TestFactory` conformance suites, which expand at
   (Phase 2, PR #40). `Envelope` now carries `sender_device_id`; the inbound Signal session is
   selected by that device UUID and `authorDeviceId` is the address of the session that decrypted,
   so a valid MAC is what proves the attribution. `AuthorDeviceIdTests` asserts it against the
-  sender's real device. The rule is normative in `obscura-proto/SPEC.md` §0.10. **Still a lie on
-  ObscuraKit-swift `main`** — its fix is on PR #6 there, which currently fails to build on macOS CI.
+  sender's real device. The rule is normative in `obscura-proto/SPEC.md` §0.10. **Fixed in
+  ObscuraKit-swift too** (its PRs #6/#8/#9, merged 2026-07-25), so both kits now report an honest
+  device id and both pin it with a test.
 
 ## What Doesn't Work Yet
 
