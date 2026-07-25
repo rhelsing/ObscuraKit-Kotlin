@@ -8,7 +8,9 @@ Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md
 [`obscura-proto/PLAN.md`](../obscura-proto/PLAN.md) (order of operations + current phase status) and
 [`obscura-proto/RESET.md`](../obscura-proto/RESET.md) **first**. They are the brief.
 
-**Where this kit is (2026-07-24):** Phases 1 and 2 have landed here. The receive loop is
+**Where this kit is (2026-07-25): Phase 2 acceptance is SIGNED OFF on both kits and Phase 3 is
+unblocked** — see `obscura-proto/PLAN.md` for the evidence and the four gaps recorded at sign-off.
+Phases 1 and 2 have landed here. The receive loop is
 persist-then-ack (`SPEC` §0.9): never ack a decrypt failure, a rate-limited skip, or anything not
 yet durably written. Signal sessions are addressed by **device UUID** (`SPEC` §0.10) — the inbound
 session comes from `Envelope.sender_device_id`, prekey bundles are selected by device UUID with no
