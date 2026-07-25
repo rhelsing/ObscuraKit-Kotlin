@@ -60,6 +60,26 @@ class FriendDomain internal constructor(private val db: ObscuraDatabase) {
             db.friendQueries.insert(userId, username, status.value, devicesJson, now, now)
         }
 
+    /** The stored record for [userId], or null if this user is not in the friend graph at all. */
+    suspend fun get(userId: String): FriendData? = withContext(dispatcher) {
+        db.friendQueries.selectById(userId).executeAsOneOrNull()?.toFriendData()
+    }
+
+    /**
+     * Move an EXISTING record to [status], keeping its username and devices.
+     *
+     * Deliberately separate from [add]: `add` writes a caller-supplied username, and the only
+     * usernames a peer can supply are attacker-chosen (SPEC §0.5, §0.10 rule 5). A status change
+     * driven by an inbound message must never be able to carry a name with it.
+     */
+    suspend fun updateStatus(userId: String, status: FriendStatus) = withContext(dispatcher) {
+        val friend = db.friendQueries.selectById(userId).executeAsOneOrNull() ?: return@withContext
+        db.friendQueries.insert(
+            userId, friend.username, status.value, friend.devices, friend.created_at,
+            System.currentTimeMillis()
+        )
+    }
+
     suspend fun getAccepted(): List<FriendData> = withContext(dispatcher) {
         db.friendQueries.selectByStatus(FriendStatus.ACCEPTED.value).executeAsList().map { it.toFriendData() }
     }
