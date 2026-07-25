@@ -113,7 +113,7 @@ runtime:
   selected by that device UUID and `authorDeviceId` is the address of the session that decrypted,
   so a valid MAC is what proves the attribution. `AuthorDeviceIdTests` asserts it against the
   sender's real device. The rule is normative in `obscura-proto/SPEC.md` §0.10. **Still a lie on
-  ObscuraKit-swift `main`** — its fix is written but unmerged and unverified.
+  ObscuraKit-swift `main`** — its fix is on PR #6 there, which currently fails to build on macOS CI.
 
 ## What Doesn't Work Yet
 
