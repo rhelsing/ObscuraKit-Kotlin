@@ -210,6 +210,11 @@ class ObscuraClient(
     private val MAX_DECRYPT_FAILURES = 10
     private val DECRYPT_FAILURE_WINDOW_MS = 60_000L
 
+    // F10: backoff between the two connect attempts in processPendingMessages. Short on purpose —
+    // the push path runs inside a tight OS budget (iOS gives an NSE ~30s), so a retry that costs
+    // seconds is worse than no retry at all.
+    private val PUSH_DRAIN_RECONNECT_RETRY_MS = 250L
+
     // Prekey replenishment
     private val PREKEY_MIN_COUNT = 20L
     private val PREKEY_REPLENISH_COUNT = 50
@@ -734,7 +739,32 @@ class ObscuraClient(
      */
     suspend fun processPendingMessages(timeoutMs: Long): ProcessedCounts {
         if (_connectionState.value != ConnectionState.CONNECTED) {
-            try { connect() } catch (_: Exception) { return ProcessedCounts() }
+            // F10 (PLAN.md). This used to be `try { connect() } catch (_: Exception) { return
+            // ProcessedCounts() }` — a failed connect returned all-zero counts, which is
+            // indistinguishable from "connected fine, nothing waiting". On the PUSH-WAKE path that
+            // means: woken by a push, silently report no messages, leave them on the server, no
+            // error anywhere. It also made `PushTests` ~25% flaky (a failing run returned in ~0.1s,
+            // well under the 500ms idle threshold a real drain must reach).
+            //
+            // The failure was transient in every observed case, so: retry once, and if it still
+            // fails, say so. The zero-count return is unchanged — callers see today's contract —
+            // but the failure is no longer invisible. Making zeros distinguishable from
+            // "could not connect" is a deliberate API change and belongs to Phase 4, where the iOS
+            // NSE forces the question.
+            try {
+                connect()
+            } catch (e: Exception) {
+                log("PUSH DRAIN connect attempt 1 failed: ${e.message}")
+                logger.log("push drain: connect failed (attempt 1/2): ${e.message}")
+                delay(PUSH_DRAIN_RECONNECT_RETRY_MS)
+                try {
+                    connect()
+                } catch (e2: Exception) {
+                    log("PUSH DRAIN connect attempt 2 failed — returning empty counts: ${e2.message}")
+                    logger.log("push drain ABORTED: could not connect after 2 attempts: ${e2.message}")
+                    return ProcessedCounts()
+                }
+            }
         }
 
         var pix = 0
