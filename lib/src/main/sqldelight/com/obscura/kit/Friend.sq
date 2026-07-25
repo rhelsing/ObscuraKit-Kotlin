@@ -7,6 +7,12 @@ CREATE TABLE IF NOT EXISTS Friend (
     updated_at INTEGER NOT NULL
 );
 
+-- getAccepted() runs on every connect (rebuildDeviceMap), and selectByStatus was a full scan.
+-- NOTE: this index is declared in TWO places on purpose — here, for fresh installs created by
+-- Schema.create(), and in 1.sqm, for installs that already exist. SchemaMigrationTests asserts the
+-- two paths produce identical schemas; if you add a table or index, do both or that test fails.
+CREATE INDEX IF NOT EXISTS friend_status_idx ON Friend(status);
+
 selectAll:
 SELECT * FROM Friend;
 

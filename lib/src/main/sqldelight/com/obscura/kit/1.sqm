@@ -1,0 +1,13 @@
+-- Migration 1 -> 2.
+--
+-- This file exists to establish the mechanism, not because the index is urgent.
+--
+-- Before it, this kit had NO .sqm files, so SQLDelight's generated schema version never moved.
+-- Adding a table to a .sq file therefore reached new installs only: on an existing database neither
+-- create() nor migrate() runs, the table is silently absent, the first write throws inside the
+-- persist step, the kit (correctly) refuses to ack — and that device then receives nothing, ever
+-- again, while the server prunes at 1000 messages / 30 days. Silent and permanent.
+--
+-- Phase 3 both ADDS tables (the inbox) and DELETES them (ORM entries, model config), so the reset
+-- cannot proceed safely without this. See obscura-proto/KIT_API.md P1.
+CREATE INDEX IF NOT EXISTS friend_status_idx ON Friend(status);
