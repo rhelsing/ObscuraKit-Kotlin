@@ -156,8 +156,13 @@ class ORMWireTests {
         bob.disconnect()
     }
 
+    // NOTE the explicit `runBlocking<Unit>`. Without it Kotlin infers this expression-bodied
+    // method's return type from the block's last expression — here `File.delete()`, a Boolean —
+    // and **JUnit 5 silently ignores a non-void @Test**. This test existed from 2026-07-06 and had
+    // never executed once; it was found on 2026-07-24 by diffing @Test counts against the tests
+    // JUnit actually reported. Pinning Unit stops the return type drifting with the last line again.
     @Test
-    fun `ORM survives file-backed restart — stories still queryable`() = runBlocking {
+    fun `ORM survives file-backed restart — stories still queryable`() = runBlocking<Unit> {
         assumeTrue(checkServer())
 
         val dbPath = "/tmp/obscura_orm_restart_test_${System.currentTimeMillis()}.db"
