@@ -85,7 +85,9 @@ Your app only touches the top. Everything below is invisible.
 
 ## What Works
 
-Tested with 400+ tests — 297 unit (no network) + 109 integration (against a containerized `obscura-server`):
+Tested with **339 unit** (no network) + **103 integration** (against a containerized
+`obscura-server`) — the counts JUnit actually reports, measured 2026-07-24, not `@Test` greps. The
+unit figure includes the four `@TestFactory` conformance suites, which expand at runtime:
 
 - **ORM auto-sync** — `model.create()` encrypts and delivers to friends automatically
 - **Typed models** — `@Serializable` data classes with `TypedModel.wrap<T>()`
@@ -105,9 +107,13 @@ Tested with 400+ tests — 297 unit (no network) + 109 integration (against a co
 - ~~**Chat via ORM** — `client.send()` falls back to TEXT if the model is not defined.~~ That
   fallback is a **silent-delivery bug**, not a feature: only MODEL_SYNC contributes to push
   counts, so a TEXT message arrives with no notification. Being removed.
-- **`authorDeviceId` is currently a lie.** `senderDeviceId` is null over the wire, so signals
-  report the sender's *userId* in a field documented as a device id. Verified against a live
-  server. Do not rely on device-level identity until this is fixed (see `RESET.md`).
+- ~~**`authorDeviceId` is currently a lie.** `senderDeviceId` is null over the wire, so signals
+  report the sender's *userId* in a field documented as a device id.~~ **Fixed in this kit**
+  (Phase 2, PR #40). `Envelope` now carries `sender_device_id`; the inbound Signal session is
+  selected by that device UUID and `authorDeviceId` is the address of the session that decrypted,
+  so a valid MAC is what proves the attribution. `AuthorDeviceIdTests` asserts it against the
+  sender's real device. The rule is normative in `obscura-proto/SPEC.md` §0.10. **Still a lie on
+  ObscuraKit-swift `main`** — its fix is on PR #6 there, which currently fails to build on macOS CI.
 
 ## What Doesn't Work Yet
 
@@ -119,8 +125,8 @@ Tested with 400+ tests — 297 unit (no network) + 109 integration (against a co
 ```bash
 export JAVA_HOME=/path/to/jdk-21
 
-./gradlew :lib:test                              # 297 unit tests (fast, no network)
-./gradlew :lib:integrationTest                   # 109 server-dependent tests
+./gradlew :lib:test                              # 339 unit tests (fast, no network)
+./gradlew :lib:integrationTest                   # 103 server-dependent tests
 ./gradlew :lib:koverHtmlReport                   # coverage report
 ```
 

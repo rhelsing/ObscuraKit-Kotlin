@@ -4,8 +4,18 @@
 
 **This repo is mid-reset. Large parts of it are scheduled for deletion.**
 
-Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md) and
+Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md),
+[`obscura-proto/PLAN.md`](../obscura-proto/PLAN.md) (order of operations + current phase status) and
 [`obscura-proto/RESET.md`](../obscura-proto/RESET.md) **first**. They are the brief.
+
+**Where this kit is (2026-07-24):** Phases 1 and 2 have landed here. The receive loop is
+persist-then-ack (`SPEC` §0.9): never ack a decrypt failure, a rate-limited skip, or anything not
+yet durably written. Signal sessions are addressed by **device UUID** (`SPEC` §0.10) — the inbound
+session comes from `Envelope.sender_device_id`, prekey bundles are selected by device UUID with no
+fallback, and `registrationId` addresses **nothing**. `FriendDeviceInfo.registrationId` still exists
+as a vestigial diagnostic slot and is on the Phase 3 deletion list; do not build on it, and do not
+"restore" registration-id addressing — that is finding F1, and it silently breaks multi-device
+delivery. Phase 3 (the reset) has **not** started.
 
 An audit found that this kit grew a schema-driven ORM, CRDT engine, query DSL, and
 audience-routing system — implemented *twice*, here and in Swift — to serve five flat models
@@ -37,7 +47,7 @@ this repo cannot see why they are unnecessary, because the evidence lives in `ob
 > target and **not** a normative implementation. Earlier versions of this file pointed agents at
 > it. That was a significant source of the mess.
 - **Build:** `JAVA_HOME=/path/to/jdk-21 ./gradlew :lib:test`
-- **Tests:** two source sets — `src/test` (297 unit tests, no network) and `src/integrationTest` (109 tests against a containerized/live `obscura-server`, all driving the `ObscuraClient` public API)
+- **Tests:** two source sets — `src/test` (339 unit tests, no network) and `src/integrationTest` (103 tests against a containerized/live `obscura-server`, all driving the `ObscuraClient` public API). Those are the counts **JUnit reports**, not `@Test` greps: `grep -o "@Test"` also matches `@TestFactory` and `@TestMethodOrder` and overcounts. Verify a suspicious count against `lib/build/test-results/*/TEST-*.xml` — that is how a test that had never executed was found (a non-void `@Test` is silently ignored by JUnit 5; see `ORMWireTests`). The integration suite needs a *correctly configured* server: seed the MinIO `test-bucket` and raise the auth rate limit, or you get ~63 environmental failures (HTTP 429/500) that are not code failures — see `PLAN.md` 0.3.
 
 ## Three-Level Architecture
 
