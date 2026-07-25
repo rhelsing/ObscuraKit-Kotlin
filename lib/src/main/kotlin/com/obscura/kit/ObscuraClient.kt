@@ -996,20 +996,51 @@ class ObscuraClient(
     private suspend fun handleFriendRequest(msg: ClientMessage, sourceUserId: String) {
         // sourceUserId is envelope.sender_id — the requester's USER id, server-stamped and
         // authenticated by the Signal session that decrypted this message (TOFU: libsignal pins the
-        // sender's identity key on first contact, exactly as Signal does). This is first contact, so
-        // the sender is not yet in our friend graph and we take the DISPLAY NAME from the payload
-        // (FriendRequest.username) — the ONE legitimate bootstrap exception to SPEC §0.5. The
-        // sending device was learned into deviceMap on decrypt; persist what we know so the
-        // device -> user mapping survives a restart (rebuildDeviceMap restores it from the record).
+        // sender's identity key on first contact, exactly as Signal does).
+        //
+        // The payload username is a FIRST-CONTACT bootstrap only (SPEC §0.10 rule 5). This used to
+        // call friends.add() unconditionally, and Friend.sq's INSERT OR REPLACE meant an
+        // already-accepted friend could re-send a FriendRequest to (a) rename themselves — including
+        // on the lock screen — and (b) reset their own status to PENDING_RECEIVED, silently dropping
+        // themselves out of getAccepted() and out of fan-out. The old comment asserted "this is
+        // first contact, so the sender is not yet in our friend graph" and nothing enforced it.
+        val existing = friends.get(sourceUserId)
+        if (existing != null) {
+            // Already known. The name now comes from our graph, never from their payload. Refresh
+            // the device list (that IS ours to learn) and change nothing else.
+            friends.updateDevices(sourceUserId, messenger.knownDevicesFor(sourceUserId))
+            logger.log(
+                "friend request from already-known peer $sourceUserId (status=${existing.status.value}); " +
+                    "keeping stored name and status"
+            )
+            return
+        }
+        // Genuine first contact: the payload username is the only name that exists.
         friends.add(sourceUserId, msg.friendRequest.username, FriendStatus.PENDING_RECEIVED,
             messenger.knownDevicesFor(sourceUserId))
     }
 
     private suspend fun handleFriendResponse(msg: ClientMessage, sourceUserId: String) {
-        if (msg.friendResponse.accepted) {
-            friends.add(sourceUserId, msg.friendResponse.username, FriendStatus.ACCEPTED,
-                messenger.knownDevicesFor(sourceUserId))
+        if (!msg.friendResponse.accepted) return
+
+        // A FRIEND_RESPONSE is only meaningful as the answer to a request WE sent. This used to call
+        // friends.add(..., ACCEPTED) unconditionally, which meant ANY authenticated user who can
+        // reach us — friendship is not required to send, the server relays to any device — could
+        // insert themselves into the friend graph as an ACCEPTED friend under a name they chose,
+        // with no interaction from us at all. Requiring a matching PENDING_SENT closes that.
+        val existing = friends.get(sourceUserId)
+        if (existing == null || existing.status != FriendStatus.PENDING_SENT) {
+            logger.log(
+                "ignoring unsolicited FRIEND_RESPONSE from $sourceUserId " +
+                    "(local status=${existing?.status?.value ?: "none"}; expected pending_sent)"
+            )
+            return
         }
+
+        // Promote in place. The name stays the one WE recorded when we sent the request; the
+        // payload's username is not consulted (SPEC §0.5 — the graph names the peer, not the peer).
+        friends.updateStatus(sourceUserId, FriendStatus.ACCEPTED)
+        friends.updateDevices(sourceUserId, messenger.knownDevicesFor(sourceUserId))
     }
 
     private suspend fun handleTextMessage(msg: ClientMessage, sourceUserId: String, senderDeviceId: String?) {
