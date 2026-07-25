@@ -47,7 +47,7 @@ this repo cannot see why they are unnecessary, because the evidence lives in `ob
 > target and **not** a normative implementation. Earlier versions of this file pointed agents at
 > it. That was a significant source of the mess.
 - **Build:** `JAVA_HOME=/path/to/jdk-21 ./gradlew :lib:test`
-- **Tests:** two source sets — `src/test` (300 unit tests, no network) and `src/integrationTest` (117 tests against a containerized/live `obscura-server`, all driving the `ObscuraClient` public API). The integration suite needs a *correctly configured* server: seed the MinIO `test-bucket` and raise the auth rate limit, or you get ~63 environmental failures (HTTP 429/500) that are not code failures — see `PLAN.md` 0.3.
+- **Tests:** two source sets — `src/test` (339 unit tests, no network) and `src/integrationTest` (103 tests against a containerized/live `obscura-server`, all driving the `ObscuraClient` public API). Those are the counts **JUnit reports**, not `@Test` greps: `grep -o "@Test"` also matches `@TestFactory` and `@TestMethodOrder` and overcounts. Verify a suspicious count against `lib/build/test-results/*/TEST-*.xml` — that is how a test that had never executed was found (a non-void `@Test` is silently ignored by JUnit 5; see `ORMWireTests`). The integration suite needs a *correctly configured* server: seed the MinIO `test-bucket` and raise the auth rate limit, or you get ~63 environmental failures (HTTP 429/500) that are not code failures — see `PLAN.md` 0.3.
 
 ## Three-Level Architecture
 

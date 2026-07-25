@@ -85,9 +85,9 @@ Your app only touches the top. Everything below is invisible.
 
 ## What Works
 
-Tested with 400+ tests — 300 unit (no network) + 117 integration (against a containerized
-`obscura-server`), counted from source on 2026-07-24; four `@TestFactory` suites expand further at
-runtime:
+Tested with **339 unit** (no network) + **103 integration** (against a containerized
+`obscura-server`) — the counts JUnit actually reports, measured 2026-07-24, not `@Test` greps. The
+unit figure includes the four `@TestFactory` conformance suites, which expand at runtime:
 
 - **ORM auto-sync** — `model.create()` encrypts and delivers to friends automatically
 - **Typed models** — `@Serializable` data classes with `TypedModel.wrap<T>()`
@@ -125,8 +125,8 @@ runtime:
 ```bash
 export JAVA_HOME=/path/to/jdk-21
 
-./gradlew :lib:test                              # 300 unit tests (fast, no network)
-./gradlew :lib:integrationTest                   # 117 server-dependent tests
+./gradlew :lib:test                              # 339 unit tests (fast, no network)
+./gradlew :lib:integrationTest                   # 103 server-dependent tests
 ./gradlew :lib:koverHtmlReport                   # coverage report
 ```
 
