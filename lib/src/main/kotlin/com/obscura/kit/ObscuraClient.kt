@@ -379,30 +379,49 @@ class ObscuraClient(
 
         // Wire ephemeral signal sending — typed MODEL_SIGNAL payload (no JSON).
         // Sender identity + timestamp ride on the ClientMessage envelope, not the payload.
+        //
+        // The signal goes to the CONVERSATION, never to the friend list. `contextId` is a
+        // canonical two-party "userIdA_userIdB" value, so broadcasting it to every accepted
+        // friend tells all of them, in real time, that you are typing to a named third party.
+        // That is what this used to do. It is the same rule `SyncManager`'s
+        // `Audience.Conversation` already enforces for entries, applied here too — and it
+        // fails CLOSED: an id that does not resolve to exactly two participants sends nothing.
         signalManager.sendSignal = { modelName, signalName, signalData ->
             val kind = com.obscura.kit.orm.WireCodec.encodeSignalKind(signalName)
             val ctxId = signalData["conversationId"] as? String ?: ""
-            val signalMsg = ClientMessage.newBuilder()
-                .setTimestamp(System.currentTimeMillis())
-                .setModelSignal(obscura.client.v1.modelSignal {
-                    model = modelName
-                    this.kind = kind
-                    contextId = ctxId
-                })
-                .build()
-            authManager.ensureFreshToken()
-            val accepted = friends.getAccepted()
-            for (f in accepted) {
-                var deviceIds = messenger.getDeviceIdsForUser(f.userId)
-                if (deviceIds.isEmpty()) {
-                    try { messenger.fetchPreKeyBundles(f.userId) } catch (e: Exception) { log("prekey bundle fetch failed: ${e.message}") }
-                    deviceIds = messenger.getDeviceIdsForUser(f.userId)
+            val participants = ctxId.split("_").filter { it.isNotBlank() }
+
+            if (participants.size != 2) {
+                // Refusing to broadcast a 1:1 signal. Dropping an ephemeral typing indicator
+                // costs nothing; guessing an audience for it leaks the conversation.
+                log("SIGNAL DROPPED: model=$modelName kind=$signalName contextId=\"$ctxId\" is not a canonical two-party id")
+                logger.log("signal dropped: contextId is not a canonical two-party value — refusing to broadcast a 1:1 signal")
+            } else {
+                val signalMsg = ClientMessage.newBuilder()
+                    .setTimestamp(System.currentTimeMillis())
+                    .setModelSignal(obscura.client.v1.modelSignal {
+                        model = modelName
+                        this.kind = kind
+                        contextId = ctxId
+                    })
+                    .build()
+                authManager.ensureFreshToken()
+                // Everyone in the conversation except this user. Own devices are deliberately
+                // excluded: a typing indicator is for the other party, and echoing it to your
+                // own devices is noise the app has never asked for.
+                val recipients = participants.filter { it != session.userId }
+                for (userId in recipients) {
+                    var deviceIds = messenger.getDeviceIdsForUser(userId)
+                    if (deviceIds.isEmpty()) {
+                        try { messenger.fetchPreKeyBundles(userId) } catch (e: Exception) { log("prekey bundle fetch failed: ${e.message}") }
+                        deviceIds = messenger.getDeviceIdsForUser(userId)
+                    }
+                    for (devId in deviceIds) {
+                        messenger.queueMessage(devId, signalMsg, userId)
+                    }
                 }
-                for (devId in deviceIds) {
-                    messenger.queueMessage(devId, signalMsg, f.userId)
-                }
+                messenger.flushMessages()
             }
-            messenger.flushMessages()
         }
 
         recoveryManager = RecoveryManager(ctx = ctx, config = config)
