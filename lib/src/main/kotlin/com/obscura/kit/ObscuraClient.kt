@@ -1476,6 +1476,26 @@ class ObscuraClient(
         messagingManager.sendEncryptedAttachment(friendUsername, plaintext, mimeType)
     suspend fun sendModelSync(friendUsername: String, model: String, entryId: String, op: String = "CREATE", data: Map<String, Any?>) =
         messagingManager.sendModelSync(friendUsername, model, entryId, op, data)
+    /**
+     * Send an application entry (`obscura-proto/KIT_API.md` §5) — the outbox half of the thin kit,
+     * paired with [inbox] on the receive side and [entries] for local storage.
+     *
+     * **The caller names the recipients.** The kit fans out to every device of every listed userId
+     * plus this user's own *other* devices, and resolves no audience of its own (SPEC §0.4). The
+     * sender receives no inbox row, so the app writes its own outgoing entry to [entries].
+     *
+     * Prefer this over `sendModelSync`, which takes a `friendUsername` and looks it up — that is the
+     * kit deciding an audience from an application concept, and it goes with the ORM in §10 step 4.
+     */
+    suspend fun send(
+        recipientUserIds: List<String>,
+        modelKey: String,
+        entryId: String,
+        op: String = "CREATE",
+        sentAt: Long = System.currentTimeMillis(),
+        payload: ByteArray,
+    ) = messagingManager.sendEntry(recipientUserIds, modelKey, entryId, op, sentAt, payload)
+
     suspend fun sendRaw(targetUserId: String, msg: ClientMessage) = messagingManager.sendRaw(targetUserId, msg)
     suspend fun uploadAttachment(data: ByteArray): Pair<String, Long> = messagingManager.uploadAttachment(data)
     suspend fun downloadAttachment(id: String): ByteArray = messagingManager.downloadAttachment(id)
