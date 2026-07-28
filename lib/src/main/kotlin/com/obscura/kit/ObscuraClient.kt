@@ -146,6 +146,15 @@ class ObscuraClient(
      */
     val inbox: InboxDomain
 
+    /**
+     * Raw storage for application entries (`obscura-proto/KIT_API.md` §8.1) — the other half of the
+     * thin kit's app-facing surface. `inbox` is how messages arrive; this is where the app keeps
+     * what it made of them.
+     *
+     * Deliberately NOT `orm`: that is the engine being deleted. This is the table being kept.
+     */
+    val entries: EntryStore
+
     private val modelStore: ModelStore
     private val syncManager: SyncManager
     private val ttlManager: TTLManager
@@ -250,6 +259,7 @@ class ObscuraClient(
         devices = DeviceDomain(db)
         messenger = MessengerDomain(signalStore, api)
         inbox = InboxDomain(db)
+        entries = EntryStore(db)
         // A discard is data loss the app chose deliberately, and §3.3 rule 5 requires it be logged
         // as a security-relevant event rather than being the quiet path.
         inbox.onDiscard = { ids, reason ->
