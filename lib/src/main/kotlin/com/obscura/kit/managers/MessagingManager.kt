@@ -86,6 +86,69 @@ internal class MessagingManager(
         messageSender.sendToAllDevices(friendData.userId, msg)
     }
 
+    /**
+     * Send an application entry (`obscura-proto/KIT_API.md` §5) — the outbox half of the thin kit.
+     *
+     * ```
+     * send(recipientUserIds, modelKey, entryId, op, sentAt, payload)
+     * ```
+     *
+     * **The caller names the recipients** (SPEC §0.4). The kit fans out to every device of every
+     * listed userId, plus the author's own *other* devices, and makes **no delivery decision of its
+     * own** — no audience resolution, no reading of `payload` to discover who it is for. That is the
+     * whole difference from [sendModelSync], which takes a `friendUsername`, looks it up, and is
+     * therefore the kit deciding an audience from an application concept.
+     *
+     * Two properties §5 asks to be proven rather than assumed, both pinned by `EntrySendTests`:
+     *
+     * 1. **The sending device is excluded from its own fan-out.** `getSelfSyncTargets()` returns
+     *    every own device *including this one*, and a message encrypted to yourself is at best waste
+     *    and at worst a duplicate the app must dedupe.
+     * 2. **The sender gets no inbox row.** Nothing loops back locally, so the app must write its own
+     *    outgoing entry — one write path in the kit, two in the app. `payload` is what the app
+     *    stores; the kit never opens it.
+     *
+     * An empty `recipientUserIds` is legitimate and not an error: it means "my own devices only",
+     * which is what a self-scoped model wants. Failing loud is for an audience the kit was asked to
+     * *guess*, and here it never guesses.
+     */
+    suspend fun sendEntry(
+        recipientUserIds: List<String>,
+        modelKey: String,
+        entryId: String,
+        op: String,
+        sentAt: Long,
+        payload: ByteArray,
+    ) {
+        val msg = ClientMessage.newBuilder()
+            .setTimestamp(System.currentTimeMillis())
+            .setModelSync(obscura.client.v1.modelSync {
+                this.model = modelKey
+                this.id = entryId
+                this.op = com.obscura.kit.orm.WireCodec.encodeOp(com.obscura.kit.orm.ModelOp.fromApp(op))
+                timestamp = sentAt
+                this.data = com.google.protobuf.ByteString.copyFrom(payload)
+                authorDeviceId = session.deviceId ?: ""
+            }).build()
+
+        // `distinct()` because the app may legitimately name the same user twice — e.g. both
+        // participants of a canonical `userIdA_userIdB` conversation where one of them is you.
+        for (userId in recipientUserIds.distinct().filter { it != session.userId }) {
+            messageSender.sendToAllDevices(userId, msg)
+        }
+
+        // Own OTHER devices. The filter is property 1 above: without it this device encrypts to
+        // itself.
+        val selfTargets = devices.getSelfSyncTargets().filter { it != session.deviceId }
+        if (selfTargets.isNotEmpty()) {
+            val selfUserId = session.userId
+            if (selfUserId != null) {
+                for (devId in selfTargets) messenger.queueMessage(devId, msg, selfUserId)
+                messenger.flushMessages()
+            }
+        }
+    }
+
     suspend fun sendRaw(targetUserId: String, msg: ClientMessage) = messageSender.sendToAllDevices(targetUserId, msg)
 
     suspend fun uploadAttachment(data: ByteArray): Pair<String, Long> {
