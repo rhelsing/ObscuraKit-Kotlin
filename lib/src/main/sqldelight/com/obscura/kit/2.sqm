@@ -1,0 +1,28 @@
+-- Migration 2 -> 3: the durable inbox (obscura-proto/KIT_API.md §3).
+--
+-- This is the first migration that carries real weight rather than establishing the mechanism, and
+-- it is the exact case P1 was adopted for. Without it, `Inbox.sq` would reach NEW installs only:
+-- on an existing database neither create() nor migrate() runs, InboxRow is silently absent, the
+-- persist step throws, the kit correctly refuses to ack — and that device receives nothing, ever
+-- again, while the server prunes it at 1000 messages / 30 days.
+--
+-- The statements below MUST stay byte-for-byte identical to `Inbox.sq`'s, because a schema change
+-- has to be written twice (`.sq` for fresh installs, `.sqm` for existing ones) and the two drifting
+-- apart is precisely the double-entry mistake that produces the silent kill above.
+-- `SchemaMigrationTests.migrated schema is identical to a freshly created one` is what enforces it.
+CREATE TABLE IF NOT EXISTS InboxRow (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    envelope_id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    received_at INTEGER NOT NULL,
+    sender_user_id TEXT NOT NULL,
+    sender_device_id TEXT,
+    sender_display_name TEXT,
+    model_key TEXT,
+    entry_id TEXT,
+    op TEXT,
+    sent_at INTEGER,
+    payload BLOB NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS inbox_id_idx ON InboxRow(id);
