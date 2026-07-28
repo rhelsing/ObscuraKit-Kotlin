@@ -52,6 +52,11 @@ class InboxTests {
 
         assertEquals("MODEL_SYNC", row.kind)
         assertEquals("story", row.modelKey, "modelKey is carried opaquely so the app can merge")
+        // The APP-FACING spelling (KIT_API.md §3.1), not the proto's `OP_CREATE`. This assertion
+        // exists because the first version of this code stored `sync.op.name` and nothing caught it
+        // until the Swift port was written — the app reads one `op` across a bridge from two kits,
+        // so `CREATE` here and `opCreate` there is a bug the app discovers, not the kits.
+        assertEquals("CREATE", row.op)
         // Identity comes from the envelope and the Signal session, never from the payload
         // (SPEC §0.5, §0.10). This is the assertion a unit test cannot make honestly.
         assertEquals(alice.userId, row.senderUserId)
