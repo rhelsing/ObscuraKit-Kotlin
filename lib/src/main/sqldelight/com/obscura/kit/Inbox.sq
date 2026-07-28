@@ -72,6 +72,13 @@ INSERT OR IGNORE INTO InboxRow(
     model_key, entry_id, op, sent_at, payload
 ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
 
+-- Whether a given envelope is already stored. This is what `put` checks BEFORE and AFTER its
+-- insert, instead of inferring "was a row added" from a row count: INSERT OR IGNORE suppresses every
+-- constraint, not just `envelope_id UNIQUE`, so a NOT NULL or CHECK violation would otherwise look
+-- exactly like a redelivery — and the caller ACKS on a redelivery.
+existsByEnvelopeId:
+SELECT EXISTS(SELECT 1 FROM InboxRow WHERE envelope_id = ?);
+
 -- Rows in drain order. Side-effect free: peeking twice without consuming returns the same rows, and
 -- that is the crash-safety property rather than a bug (§3.3 rule 3).
 peek:

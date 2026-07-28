@@ -83,13 +83,31 @@ class InboxDomain internal constructor(private val db: ObscuraDatabase) {
      * the server sending it a third time.
      */
     internal suspend fun put(record: InboxRecord): Boolean = withContext(dispatcher) {
-        val before = db.inboxQueries.depth().executeAsOne()
+        val existedBefore = db.inboxQueries.existsByEnvelopeId(record.envelopeId).executeAsOne()
         db.inboxQueries.insertRow(
             record.envelopeId, record.kind, record.receivedAt, record.senderUserId,
             record.senderDeviceId, record.senderDisplayName, record.modelKey, record.entryId,
             record.op, record.sentAt, record.payload,
         )
-        db.inboxQueries.depth().executeAsOne() > before
+
+        // Assert the postcondition the ack depends on, rather than inferring it from a row count.
+        //
+        // The obvious implementations answer a different question than the caller asks. `changes()`,
+        // or comparing depth before and after, tells you "did INSERT OR IGNORE suppress something" —
+        // and OR IGNORE suppresses EVERY constraint, not just the `envelope_id UNIQUE` it is
+        // documented against. A NOT NULL or CHECK violation reports exactly like a redelivery, and
+        // the caller ACKS on a redelivery, so the server would delete a message that was never
+        // stored. Asking "is this envelope in the table" cannot be confused that way.
+        //
+        // (Two indexed lookups on a unique key also replace two `COUNT(*)` full scans per received
+        // message, which was O(n) in the size of the backlog — worst exactly when a backlog exists.)
+        if (!db.inboxQueries.existsByEnvelopeId(record.envelopeId).executeAsOne()) {
+            throw IllegalStateException(
+                "inbox row for envelope ${record.envelopeId} is absent after insert; refusing to " +
+                    "report it as stored"
+            )
+        }
+        !existedBefore
     }
 
     /**
@@ -124,7 +142,11 @@ class InboxDomain internal constructor(private val db: ObscuraDatabase) {
      * Idempotent, and a subset is fine — partial progress is normal, not an error path.
      */
     suspend fun consume(ids: List<Long>) = withContext(dispatcher) {
-        if (ids.isNotEmpty()) db.inboxQueries.deleteByIds(ids)
+        // Chunked because `WHERE id IN ?` binds one variable per id, and SQLite caps that at 999 on
+        // older builds. The app chooses the batch size, so `peek(limit = 5000)` then `consume` of
+        // 5000 ids would throw "too many SQL variables" — and it would throw exactly when a large
+        // backlog exists, i.e. the one situation where the drain must not stall (§3.5).
+        ids.chunked(DELETE_CHUNK).forEach { db.inboxQueries.deleteByIds(it) }
     }
 
     /**
@@ -137,9 +159,14 @@ class InboxDomain internal constructor(private val db: ObscuraDatabase) {
      */
     suspend fun discard(ids: List<Long>, reason: String): List<Long> = withContext(dispatcher) {
         if (ids.isEmpty()) return@withContext emptyList()
-        db.inboxQueries.deleteByIds(ids)
+        ids.chunked(DELETE_CHUNK).forEach { db.inboxQueries.deleteByIds(it) }
         onDiscard?.invoke(ids, reason)
         ids
+    }
+
+    private companion object {
+        /** Comfortably under SQLite's 999-variable floor. */
+        const val DELETE_CHUNK = 500
     }
 
     /** Set by the client so a discard reaches the security log rather than vanishing. */
