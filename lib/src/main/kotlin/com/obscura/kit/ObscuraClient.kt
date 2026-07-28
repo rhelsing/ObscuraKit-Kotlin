@@ -323,6 +323,14 @@ class ObscuraClient(
                 db.signalKeyQueries.deleteAllSenderKeys()
                 db.modelEntryQueries.deleteAllEntries()
                 db.modelEntryQueries.deleteAllAssociations()
+                // The §3.3 rule 2 carve-out, and the reason it is worded as a MUST: the inbox holds
+                // DECRYPTED plaintext — full payloads, the resolved sender name, the model key. A
+                // wipe that spared it would leave exactly the content a revocation is meant to
+                // destroy, and on Android the database is still plaintext SQLite, so it would be
+                // readable with no key at all. Note this destroys the whole table rather than
+                // selecting rows: that is what keeps it a security operation and not the eviction
+                // policy §3.4 refuses to add.
+                db.inboxQueries.deleteAll()
             },
             onSessionChanged = { persistSession() }
         )
@@ -921,6 +929,24 @@ class ObscuraClient(
                     continue
                 }
 
+                // `Envelope.id` is now the inbox's DEDUPE KEY, so it gets the same length check
+                // `sender_id` above and `sender_device_id` in MessengerDomain already get — and for
+                // the same reason: SPEC §0.10 treats everything the relay stamps as untrusted.
+                //
+                // Without this, `UuidCodec.bytesToUuid` returns the NIL UUID for anything shorter
+                // than 16 bytes (proto3's default for an unset `bytes` field is empty). Every such
+                // envelope would then hash to one key: the first inserts and is acked, and every
+                // one after it is suppressed by INSERT OR IGNORE, reported as a duplicate, and
+                // ACKED — the server deletes messages that were never stored. Silent, permanent,
+                // and remotely triggerable by anything upstream that emits a short id.
+                val envelopeIdBytes = envelope.id.toByteArray()
+                if (envelopeIdBytes.size != 16) {
+                    log("RECV FAIL envelope id is ${envelopeIdBytes.size} bytes, expected 16 " +
+                        "(left on server, not acked)")
+                    continue
+                }
+                val envelopeId = UuidCodec.bytesToUuid(envelopeIdBytes).toString()
+
                 // PERSIST-THEN-ACK. An ACK is a DELETE on the server (gateway AckBatcher ->
                 // message_service.delete_batch -> DELETE FROM messages). So we ACK ONLY WHAT WE
                 // HAVE DURABLY PERSISTED. Every path below that has not persisted the message must
@@ -949,14 +975,9 @@ class ObscuraClient(
                     // (e.g. handleTextMessage -> messagesDomain.add -> messageQueries.insert;
                     // friends.add; orm.handleSync). This is the source of truth. If it throws, we
                     // fall to catch and do NOT ack, so the message survives on the server.
-                    // `Envelope.id` is 16 raw UUID bytes on the wire. The inbox's dedupe key must be
-                    // a STABLE text form of them — the same canonical encoding the rest of the kit
-                    // uses for user and device ids, so two encodings of one envelope can never
-                    // produce two rows.
-                    routeMessage(
-                        msg, sourceUserId, decrypted.senderDeviceId,
-                        UuidCodec.bytesToUuid(envelope.id.toByteArray()).toString(),
-                    )
+                    // `envelopeId` is the canonical text form of the 16 validated bytes above —
+                    // one encoding, so two spellings of one envelope can never produce two rows.
+                    routeMessage(msg, sourceUserId, decrypted.senderDeviceId, envelopeId)
 
                     decryptFailures.remove(senderId)
 
@@ -1103,7 +1124,14 @@ class ObscuraClient(
             InboxRecord(
                 id = 0, // assigned by the database
                 envelopeId = envelopeId,
-                kind = msg.payloadCase.name,
+                // Must match Swift byte for byte — the app reads one `kind` column from two
+                // kits, and §4.1 has pix's drain BRANCH on it (an unrecognised kind is discarded).
+                // `payloadCase.name` gives Kotlin's "PAYLOAD_NOT_SET" where Swift's WireCodec gives
+                // "", so a drain keying on one silently fails on the other platform: rows pile up,
+                // depth never returns to zero, and with the `after:` cursor deferred the head of the
+                // queue wedges. Both kits now go through WireCodec and share the UNKNOWN sentinel —
+                // an empty string is a poor value for a NOT NULL column read across a bridge.
+                kind = com.obscura.kit.orm.WireCodec.decodeType(msg.payloadCase).ifEmpty { "UNKNOWN" },
                 receivedAt = System.currentTimeMillis(),
                 senderUserId = sourceUserId,
                 senderDeviceId = senderDeviceId,
@@ -1132,7 +1160,26 @@ class ObscuraClient(
             log("RECV DUPLICATE envelope=${envelopeId.take(12)} kind=${msg.payloadCase.name} (already inboxed)")
         }
 
-        if (isModelSync) handleModelSync(msg, sourceUserId)
+        if (isModelSync) {
+            // The ORM continuation MUST NOT be able to block the ack.
+            //
+            // `inbox.put` returning means the message is durably held, which is exactly what §3.3
+            // rule 1 gates the ack on. This call is the temporary parallel path (§10 steps 2–3) into
+            // an engine that is being deleted, and `Model.decodeData` is a bare `JSONObject(...)`
+            // that throws on any non-JSON bytes — including proto3's default for an unset `data`.
+            //
+            // Left unguarded it is a remote wedge: a stranger sends `model_sync{model:"pix"}` with
+            // no `data`, the inbox row commits, the ORM throws, the ack is skipped, and the server
+            // redelivers forever. The inbox dedupes the row, so no progress is ever made, and that
+            // envelope occupies a slot in a queue that caps at 1000 and evicts oldest-first — the
+            // exact remote-wipe primitive §4.1 exists to prevent.
+            try {
+                handleModelSync(msg, sourceUserId)
+            } catch (e: Exception) {
+                log("ORM parallel path failed for ${sync.model}/${sync.id.take(20)}: ${e.message} " +
+                    "(inbox row committed; acking anyway)")
+            }
+        }
     }
 
     /**
@@ -1141,8 +1188,16 @@ class ObscuraClient(
      * Without this a peer can set `sentAt` far in the future and win every REPLACE conflict forever
      * — the tie-break can only order writes it can compare honestly.
      */
-    private fun clampFutureTimestamp(sentAt: Long): Long =
-        minOf(sentAt, System.currentTimeMillis() + 60_000L)
+    private fun clampFutureTimestamp(sentAt: Long): Long {
+        val cap = System.currentTimeMillis() + 60_000L
+        // `ModelSync.timestamp` is proto3 `uint64`, which protobuf-java surfaces as a SIGNED Long —
+        // so a peer sending >= 2^63 arrives here NEGATIVE and sails under any `minOf` cap. Swift
+        // does the same comparison in UInt64 space and correctly yields the cap, so the unguarded
+        // version stored roughly -9.2e18 on Android and now+60s on iOS for identical wire bytes.
+        // Clamping both ends keeps §2.4 honest and the two kits in agreement.
+        if (sentAt < 0) return cap
+        return minOf(sentAt, cap)
+    }
 
     private suspend fun handleFriendRequest(msg: ClientMessage, sourceUserId: String) {
         // sourceUserId is envelope.sender_id — the requester's USER id, server-stamped and

@@ -73,14 +73,24 @@ internal fun classify(arm: PayloadCase): PayloadClass = when (arm) {
     // Legacy. Deleted by RESET.md; still routed while it exists.
     PayloadCase.TEXT -> PayloadClass.KIT_INTERNAL
 
-    // Classified, unimplemented — see the enum. Not inbox fodder.
+    // Attachment references. §4 classifies these INBOXED and §4.3 resolves them as Phase 3
+    // deletions — but the deletion has NOT happened yet: both arms are still in client.proto and
+    // `ObscuraClient.sendEncryptedAttachment` is still a public sender. Classifying them
+    // UNIMPLEMENTED while a live public API can send them means the kit uploads the blob, ships the
+    // AES key over Signal, and the RECEIVER acks and destroys the key. So they follow §4's
+    // normative table until the arms and their senders are deleted together, because inboxing an
+    // arm nobody sends costs nothing and dropping one somebody can send costs the message.
+    PayloadCase.CONTENT_REFERENCE,
+    PayloadCase.CHUNKED_CONTENT_REFERENCE -> PayloadClass.INBOXED
+
+    // Classified, unimplemented — see the enum. Not inbox fodder. None of these has a live sender:
+    // DEVICE_RECOVERY_ANNOUNCE is gated behind a default-off flag, and the other three have no
+    // sender anywhere (§4.3).
     PayloadCase.DEVICE_RECOVERY_ANNOUNCE,
     PayloadCase.HISTORY_CHUNK,
     PayloadCase.SYNC_REQUEST,
     PayloadCase.SETTINGS_SYNC,
-    PayloadCase.READ_SYNC,
-    PayloadCase.CONTENT_REFERENCE,
-    PayloadCase.CHUNKED_CONTENT_REFERENCE -> PayloadClass.UNIMPLEMENTED
+    PayloadCase.READ_SYNC -> PayloadClass.UNIMPLEMENTED
 
     // Unknown or future arm, and PAYLOAD_NOT_SET. Inbox it unparsed rather than destroy it.
     else -> PayloadClass.INBOXED

@@ -82,6 +82,39 @@ class InboxDomainTest {
             "INSERT OR IGNORE keeps the first write; a later copy of the same envelope cannot overwrite it")
     }
 
+    /**
+     * **`put` must never report "stored" for a message it did not store.** This is the precondition
+     * the entire feature rests on: the caller acks on a successful `put`, and an ack is a DELETE, so
+     * a `put` that lies destroys the message.
+     *
+     * The subtle version of that lie is why this test exists. `INSERT OR IGNORE` suppresses EVERY
+     * constraint, not just the `envelope_id UNIQUE` it is written for — so the obvious "did a row
+     * get added?" implementations (`changes()`, or comparing `depth()` before and after) report a
+     * NOT NULL or CHECK violation exactly as they report a harmless redelivery. The caller acks on a
+     * redelivery. `put` therefore asserts the postcondition directly, and throws when it does not
+     * hold.
+     *
+     * Dropping the table is a blunt way to make the write fail, and that is the point: whatever the
+     * reason, "the row is not there" must reach the caller as an exception and never as `false`.
+     */
+    @Test
+    fun `put throws rather than reporting stored when the row is not there`() = runBlocking {
+        val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
+        ObscuraDatabase.Schema.create(driver)
+        val db = ObscuraDatabase(driver)
+        val store = InboxDomain(db)
+        driver.execute(null, "DROP TABLE InboxRow", 0)
+
+        assertThrows(Exception::class.java) {
+            runBlocking { store.put(record("env_1")) }
+        }
+        // `assertThrows` RETURNS the Throwable, which would make this function non-Unit — and JUnit 5
+        // silently ignores a non-void @Test. It is in `CLAUDE.md` as a known trap, and it caught this
+        // very test: it sat in the file, compiled, and never ran, while the suite stayed green.
+        // Verified by the class count (14, not 13), not by the tick.
+        Unit
+    }
+
     // ── §3.3 rule 3: peek is side-effect free ─────────────────────────────────
 
     /**

@@ -131,34 +131,21 @@ class InboxTests {
     }
 
     /**
-     * Reconnecting re-delivers anything the server did not see acked, which is by design. What must
-     * NOT happen is a second row for the same envelope — `envelope_id UNIQUE` + `INSERT OR IGNORE`
-     * is what holds that line (§3.3 rule 8), and it is load-bearing precisely because redelivery is
-     * guaranteed rather than exceptional.
+     * **Deliberately absent: an end-to-end redelivery test.**
+     *
+     * There was one here, and it could not fail. It sent one entry, let the kit persist AND ACK it,
+     * then reconnected and asserted `depth() == 1`. But the ack had already told the server to
+     * delete its copy, so the reconnect redelivered nothing — the assertion held trivially, and it
+     * held just as well with `INSERT OR IGNORE` replaced by `INSERT` and the UNIQUE constraint
+     * dropped. It named §3.3 rule 8 without exercising it.
+     *
+     * Producing a genuine redelivery needs the ack suppressed for the first delivery, which needs a
+     * seam in `GatewayConnection` that does not exist. Rather than keep a green tick over nothing,
+     * the property is covered where it can actually be exercised:
+     * `InboxDomainTest.a redelivered envelope does not create a second row` calls `put` twice with
+     * one envelope id and asserts one row — a real test of the real constraint.
+     *
+     * Add the seam and the test together if this ever needs end-to-end coverage. Do not add the test
+     * back without it.
      */
-    @Test
-    fun `reconnecting does not duplicate rows already in the inbox`() = runBlocking {
-        assumeTrue(checkServer())
-
-        val alice = registerAndConnect("inboxdup_a")
-        val bob = registerAndConnect("inboxdup_b")
-        becomeFriends(alice, bob)
-        alice.orm.define(schema())
-        bob.orm.define(schema())
-
-        alice.orm.model("story").create(mapOf("content" to "once", "author" to alice.username!!))
-        delay(3000)
-        assertEquals(1L, bob.inbox.depth())
-
-        // Deliberately do NOT consume: the row stays, and a reconnect may redeliver the envelope.
-        bob.disconnect()
-        delay(1000)
-        bob.connect()
-        delay(3000)
-
-        assertEquals(1L, bob.inbox.depth(),
-            "a redelivered envelope must be absorbed by the dedupe key, not stored twice")
-
-        alice.disconnect(); bob.disconnect()
-    }
 }
