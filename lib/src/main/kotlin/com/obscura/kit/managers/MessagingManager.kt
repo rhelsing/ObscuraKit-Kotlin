@@ -133,12 +133,26 @@ internal class MessagingManager(
 
         // `distinct()` because the app may legitimately name the same user twice — e.g. both
         // participants of a canonical `userIdA_userIdB` conversation where one of them is you.
-        for (userId in recipientUserIds.distinct().filter { it != session.userId }) {
-            messageSender.sendToAllDevices(userId, msg)
+        val targets = recipientUserIds.distinct().filter { it != session.userId }
+
+        // PER-RECIPIENT, not all-or-nothing. `sendToAllDevices` throws for a recipient with no
+        // registered devices, so letting the first failure escape would abandon recipients 2..N —
+        // and, worse, skip the own-device self-sync below, so the user's own other devices would
+        // silently never receive something they wrote. One unreachable friend must not cost the
+        // other four, or the sender's own copy.
+        val failures = mutableListOf<Pair<String, Exception>>()
+        for (userId in targets) {
+            try {
+                messageSender.sendToAllDevices(userId, msg)
+            } catch (e: Exception) {
+                // Collected rather than logged: `ClientContext` carries no logger, and the detail is
+                // more useful aggregated into the throw below than scattered across log lines.
+                failures.add(userId to e)
+            }
         }
 
-        // Own OTHER devices. The filter is property 1 above: without it this device encrypts to
-        // itself.
+        // Own OTHER devices. Runs whether or not a recipient failed — see above. The filter is
+        // §5 property 1: without it this device encrypts to itself.
         val selfTargets = devices.getSelfSyncTargets().filter { it != session.deviceId }
         if (selfTargets.isNotEmpty()) {
             val selfUserId = session.userId
@@ -146,6 +160,17 @@ internal class MessagingManager(
                 for (devId in selfTargets) messenger.queueMessage(devId, msg, selfUserId)
                 messenger.flushMessages()
             }
+        }
+
+        // Throw only when NOBODY named got it. A partial failure is logged and survivable — the
+        // entry is stored, the other recipients have it, and the caller can retry. A total failure
+        // is different in kind: the app believes it sent something that reached no one, and it must
+        // be able to tell the user so.
+        if (targets.isNotEmpty() && failures.size == targets.size) {
+            throw com.obscura.kit.ObscuraError.SendFailed(
+                "$modelKey/${entryId.take(20)} reached none of its ${targets.size} recipient(s): " +
+                    failures.joinToString { "${it.first.take(8)}=${it.second.message}" }
+            )
         }
     }
 

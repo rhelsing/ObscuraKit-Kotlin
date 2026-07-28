@@ -123,6 +123,66 @@ class EntrySendTests {
     }
 
     /**
+     * **One unreachable recipient must not cost the others, or the sender's own devices.**
+     *
+     * `sendToAllDevices` throws for a userId with no registered devices, so an all-or-nothing loop
+     * would abandon recipients 2..N on the first failure — and skip the own-device self-sync that
+     * runs after them, meaning the user's other devices silently never receive something they wrote.
+     *
+     * A userId that was never registered is the sharpest available stand-in for "unreachable": the
+     * server has no devices for it, which is exactly the NoDevices path.
+     */
+    @Test
+    fun `an unreachable recipient does not stop delivery to the others`() = runBlocking {
+        assumeTrue(checkServer())
+
+        val alice = registerAndConnect("partial_a")
+        val bob = registerAndConnect("partial_b")
+        becomeFriends(alice, bob)
+
+        val ghost = java.util.UUID.randomUUID().toString()
+
+        alice.send(
+            recipientUserIds = listOf(ghost, bob.userId!!),
+            modelKey = "story",
+            entryId = "story_partial",
+            payload = """{"content":"reaches bob anyway"}""".toByteArray(),
+        )
+        delay(3000)
+
+        assertEquals(1L, bob.inbox.depth(),
+            "a failure for the first recipient must not abandon the second")
+
+        alice.disconnect(); bob.disconnect()
+    }
+
+    /**
+     * A TOTAL failure is different in kind from a partial one and must reach the caller: the app
+     * would otherwise believe it sent something that reached nobody.
+     */
+    @Test
+    fun `a send that reaches nobody throws`() = runBlocking {
+        assumeTrue(checkServer())
+
+        val alice = registerAndConnect("nobody_a")
+        val ghost = java.util.UUID.randomUUID().toString()
+
+        assertThrows(com.obscura.kit.ObscuraError.SendFailed::class.java) {
+            runBlocking {
+                alice.send(
+                    recipientUserIds = listOf(ghost),
+                    modelKey = "story",
+                    entryId = "story_nobody",
+                    payload = """{"content":"reaches no one"}""".toByteArray(),
+                )
+            }
+        }
+
+        alice.disconnect()
+        Unit
+    }
+
+    /**
      * An empty recipient list is "my own devices only", not an error. A self-scoped model wants
      * exactly this, and the kit is not guessing an audience — the caller named one, and it was
      * empty. Failing loud is reserved for an audience the kit was asked to invent (SPEC §1.2).
