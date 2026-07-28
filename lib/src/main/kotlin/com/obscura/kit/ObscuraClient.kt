@@ -1496,6 +1496,49 @@ class ObscuraClient(
         payload: ByteArray,
     ) = messagingManager.sendEntry(recipientUserIds, modelKey, entryId, op, sentAt, payload)
 
+    // ── Ephemeral signals (typing, read receipts) ────────────────────────────────────────────
+    //
+    // These reach the app through `orm.model(name).typing(...)` today, which is the only reason the
+    // app still touches the ORM at all — and `RESET.md` KEEPS signals while deleting the ORM around
+    // them. `SignalManager` was already keep-forever code that happened to live in `orm/`; this is
+    // the door that lets it stay after the package goes.
+    //
+    // `modelKey` is opaque, exactly as it is on the inbox and the entry store: it names the app's
+    // conversation namespace and the kit neither parses nor validates it. That is what makes this a
+    // relocation rather than the ORM growing a new entrance.
+
+    /**
+     * Announce that this user is typing in a conversation.
+     *
+     * Throttled by `SignalManager` to at most once every 2s. Delivered to the conversation's
+     * participants only — never broadcast; the audience comes from the canonical two-party
+     * `conversationId`, and a value that does not name exactly two participants is DROPPED rather
+     * than widened (the leak fixed on 2026-07-25).
+     */
+    suspend fun sendTyping(modelKey: String, conversationId: String) =
+        signalManager.emit(
+            modelKey, "typing",
+            mapOf("conversationId" to conversationId, "senderUsername" to (username ?: "")),
+            deviceId ?: "",
+        )
+
+    /** Explicitly stop typing. */
+    suspend fun stopTyping(modelKey: String, conversationId: String) =
+        signalManager.emit(
+            modelKey, "stoppedTyping",
+            mapOf("conversationId" to conversationId, "senderUsername" to (username ?: "")),
+            deviceId ?: "",
+        )
+
+    /**
+     * Who is currently typing in a conversation, by display name.
+     *
+     * Auto-expires; a signal with no refresh disappears on its own, which is what makes signals
+     * droppable (`KIT_API.md` §4) rather than something the inbox has to carry.
+     */
+    fun observeTyping(modelKey: String, conversationId: String): kotlinx.coroutines.flow.Flow<List<String>> =
+        signalManager.observe(modelKey, "typing", conversationId)
+
     suspend fun sendRaw(targetUserId: String, msg: ClientMessage) = messagingManager.sendRaw(targetUserId, msg)
     suspend fun uploadAttachment(data: ByteArray): Pair<String, Long> = messagingManager.uploadAttachment(data)
     suspend fun downloadAttachment(id: String): ByteArray = messagingManager.downloadAttachment(id)

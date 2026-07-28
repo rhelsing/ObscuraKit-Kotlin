@@ -1,7 +1,5 @@
 package scenarios
 
-import com.obscura.kit.orm.ModelConfig
-import com.obscura.kit.orm.SyncStrategy
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -30,12 +28,9 @@ import org.junit.jupiter.api.Test
  */
 class SignalAudienceTests {
 
-    private val msgSchema = mapOf(
-        "directMessage" to ModelConfig(
-            fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"),
-            sync = SyncStrategy.GSET
-        )
-    )
+    // No `orm.define` anywhere in this file, deliberately. Signals do not need a schema — `modelKey`
+    // is an opaque namespace string, exactly as it is on the inbox and the entry store — and proving
+    // that here is what shows signals survive §10 step 4, when the ORM and its schema go.
 
     @Test
     fun `typing reaches the conversation peer and NOT an uninvolved friend`() = runBlocking {
@@ -50,22 +45,21 @@ class SignalAudienceTests {
         becomeFriends(alice, bob)
         becomeFriends(alice, carol)
 
-        listOf(alice, bob, carol).forEach { it.orm.define(msgSchema) }
 
         val convId = listOf(alice.userId!!, bob.userId!!).sorted().joinToString("_")
         val aliceName = alice.username!!
 
-        alice.orm.model("directMessage").typing(convId)
+        alice.sendTyping("directMessage", convId)
 
         // Bob must still get it — a fix that silences the feature is not a fix.
         val bobSees = withTimeout(15_000) {
-            bob.orm.model("directMessage").observeTyping(convId).first { it.contains(aliceName) }
+            bob.observeTyping("directMessage", convId).first { it.contains(aliceName) }
         }
         assertTrue(bobSees.contains(aliceName), "the conversation peer must still receive the signal")
 
         // Carol must not, on the conversation Alice is actually typing in...
         val carolSeesConv = withTimeoutOrNull(3_000) {
-            carol.orm.model("directMessage").observeTyping(convId).first { it.isNotEmpty() }
+            carol.observeTyping("directMessage", convId).first { it.isNotEmpty() }
         }
         assertNull(
             carolSeesConv,
@@ -76,7 +70,7 @@ class SignalAudienceTests {
         // "fix" that merely rewrites contextId while still fanning the message out.
         val carolConvId = listOf(alice.userId!!, carol.userId!!).sorted().joinToString("_")
         val carolSeesOwn = withTimeoutOrNull(2_000) {
-            carol.orm.model("directMessage").observeTyping(carolConvId).first { it.isNotEmpty() }
+            carol.observeTyping("directMessage", carolConvId).first { it.isNotEmpty() }
         }
         assertNull(carolSeesOwn, "LEAK: signal was re-scoped but still delivered to an uninvolved friend")
 
@@ -91,24 +85,23 @@ class SignalAudienceTests {
         val bob = registerAndConnect("sig_mal_b")
         becomeFriends(alice, bob)
 
-        listOf(alice, bob).forEach { it.orm.define(msgSchema) }
 
         // Not a canonical two-party id. The old code shrugged and broadcast; `SPEC.md` §1.2
         // says fail loud rather than guess an audience, and for an ephemeral signal the
         // correct failure is to send nothing — dropping a typing indicator costs nothing,
         // guessing its audience leaks the conversation.
-        alice.orm.model("directMessage").typing("not-a-conversation-id")
+        alice.sendTyping("directMessage", "not-a-conversation-id")
 
         val leaked = withTimeoutOrNull(3_000) {
-            bob.orm.model("directMessage").observeTyping("not-a-conversation-id").first { it.isNotEmpty() }
+            bob.observeTyping("directMessage", "not-a-conversation-id").first { it.isNotEmpty() }
         }
         assertNull(leaked, "a signal whose audience cannot be resolved must not be sent to anyone")
 
         // The client must still work afterwards — fail-closed, not fall-over.
         val convId = listOf(alice.userId!!, bob.userId!!).sorted().joinToString("_")
-        alice.orm.model("directMessage").typing(convId)
+        alice.sendTyping("directMessage", convId)
         val recovered = withTimeout(15_000) {
-            bob.orm.model("directMessage").observeTyping(convId).first { it.contains(alice.username!!) }
+            bob.observeTyping("directMessage", convId).first { it.contains(alice.username!!) }
         }
         assertTrue(recovered.isNotEmpty(), "a dropped signal must not wedge the send path")
 
@@ -125,17 +118,16 @@ class SignalAudienceTests {
         becomeFriends(alice, bob)
         becomeFriends(alice, carol)
 
-        listOf(alice, bob, carol).forEach { it.orm.define(msgSchema) }
 
         // This is `routing.json`'s "LEAK GUARD: conversation with a malformed 3-party id must
         // fail loud, never broadcast", asserted on the signal path rather than the entry path.
         val threeParty = listOf(alice.userId!!, bob.userId!!, carol.userId!!).sorted().joinToString("_")
-        alice.orm.model("directMessage").typing(threeParty)
+        alice.sendTyping("directMessage", threeParty)
 
         delay(2_000)
         for ((who, client) in listOf("bob" to bob, "carol" to carol)) {
             val seen = withTimeoutOrNull(1_000) {
-                client.orm.model("directMessage").observeTyping(threeParty).first { it.isNotEmpty() }
+                client.observeTyping("directMessage", threeParty).first { it.isNotEmpty() }
             }
             assertNull(seen, "$who received a signal for an id that names three participants")
         }
