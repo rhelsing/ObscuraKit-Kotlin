@@ -131,6 +131,21 @@ class ObscuraClient(
     internal val messenger: MessengerDomain
     val orm: SchemaDomain
 
+    /**
+     * The durable inbox (`obscura-proto/KIT_API.md` §3) — the thin kit's receive API.
+     *
+     * **Runs ALONGSIDE `orm` on purpose, and that is a migration step, not a design.** `KIT_API.md`
+     * §10 orders the reset so the deletion comes last: both kits gain `inbox` before obscura-pix
+     * switches to it, and only then is the old surface removed. Deleting first would break pix on
+     * both platforms — the kits are consumed from source with no published-version buffer — for the
+     * whole duration of the port, with no way to tell a real regression from expected breakage.
+     *
+     * The cost of that ordering is that a MODEL_SYNC is currently persisted **twice**: once as a
+     * model entry by the ORM, and once as an inbox row here. That is deliberate and temporary. It
+     * ends at §10 step 4, when the ORM comes out.
+     */
+    val inbox: InboxDomain
+
     private val modelStore: ModelStore
     private val syncManager: SyncManager
     private val ttlManager: TTLManager
@@ -234,6 +249,13 @@ class ObscuraClient(
         messagesDomain = MessageDomain(db)
         devices = DeviceDomain(db)
         messenger = MessengerDomain(signalStore, api)
+        inbox = InboxDomain(db)
+        // A discard is data loss the app chose deliberately, and §3.3 rule 5 requires it be logged
+        // as a security-relevant event rather than being the quiet path.
+        inbox.onDiscard = { ids, reason ->
+            logger.log("INBOX DISCARD ${ids.size} row(s) reason=\"$reason\" ids=$ids")
+            log("INBOX DISCARD ${ids.size} row(s): $reason")
+        }
 
         modelStore = ModelStore(db)
         syncManager = SyncManager(modelStore)
@@ -917,7 +939,14 @@ class ObscuraClient(
                     // (e.g. handleTextMessage -> messagesDomain.add -> messageQueries.insert;
                     // friends.add; orm.handleSync). This is the source of truth. If it throws, we
                     // fall to catch and do NOT ack, so the message survives on the server.
-                    routeMessage(msg, sourceUserId, decrypted.senderDeviceId)
+                    // `Envelope.id` is 16 raw UUID bytes on the wire. The inbox's dedupe key must be
+                    // a STABLE text form of them — the same canonical encoding the rest of the kit
+                    // uses for user and device ids, so two encodings of one envelope can never
+                    // produce two rows.
+                    routeMessage(
+                        msg, sourceUserId, decrypted.senderDeviceId,
+                        UuidCodec.bytesToUuid(envelope.id.toByteArray()).toString(),
+                    )
 
                     decryptFailures.remove(senderId)
 
@@ -992,25 +1021,116 @@ class ObscuraClient(
         }
     }
 
-    private suspend fun routeMessage(msg: ClientMessage, sourceUserId: String, senderDeviceId: String?) {
-        when (msg.payloadCase) {
-            ClientMessage.PayloadCase.FRIEND_REQUEST -> handleFriendRequest(msg, sourceUserId)
-            ClientMessage.PayloadCase.FRIEND_RESPONSE -> handleFriendResponse(msg, sourceUserId)
-            ClientMessage.PayloadCase.TEXT -> handleTextMessage(msg, sourceUserId, senderDeviceId)
-            ClientMessage.PayloadCase.DEVICE_ANNOUNCE -> handleDeviceAnnounce(msg, sourceUserId)
-            ClientMessage.PayloadCase.MODEL_SYNC -> handleModelSync(msg, sourceUserId)
-            ClientMessage.PayloadCase.SYNC_BLOB -> handleSyncBlob(msg, sourceUserId)
-            ClientMessage.PayloadCase.SENT_SYNC -> handleSentSync(msg)
-            ClientMessage.PayloadCase.SESSION_RESET ->
-                // Sessions are keyed on the DEVICE UUID (Phase 2), so reset every session we hold
-                // with any of this user's devices.
-                messenger.getDeviceIdsForUser(sourceUserId).forEach { signalStore.deleteAllSessions(it) }
-            ClientMessage.PayloadCase.FRIEND_SYNC -> handleFriendSync(msg, sourceUserId)
-            ClientMessage.PayloadCase.DEVICE_LINK_APPROVAL -> handleLinkApproval(msg, sourceUserId)
-            ClientMessage.PayloadCase.MODEL_SIGNAL -> handleModelSignal(msg, sourceUserId, senderDeviceId)
-            else -> { }
+    /**
+     * Persist a decrypted message, by class (`obscura-proto/KIT_API.md` §4).
+     *
+     * Called from the envelope loop **before** the ack, and it throws on a failed durable write so
+     * the ack is skipped and the message survives on the server (SPEC §0.9 rule 3).
+     *
+     * The `when` below is no longer the whole story: [classify] decides what each arm is *allowed*
+     * to do, and this routes accordingly. The old `else -> { }` swallowed seven arms and then let
+     * the caller ack them, which destroyed them silently.
+     */
+    private suspend fun routeMessage(
+        msg: ClientMessage,
+        sourceUserId: String,
+        senderDeviceId: String?,
+        envelopeId: String,
+    ) {
+        when (classify(msg.payloadCase)) {
+            PayloadClass.INBOXED -> inboxMessage(msg, sourceUserId, senderDeviceId, envelopeId)
+
+            PayloadClass.UNIMPLEMENTED ->
+                // Classified in §4 but implemented by neither kit. Today's behaviour (drop, then
+                // ack) is preserved deliberately — §4.2 keys the inbox fallback on absence from the
+                // classification TABLE, not absence from the handler, or the inbox becomes where
+                // unimplemented kit work goes to be forgotten. What changes is that it is no longer
+                // silent. Four of these are Phase 3 deletions; DEVICE_RECOVERY_ANNOUNCE is a
+                // deliberate deferral and cannot currently fire at all.
+                log("RECV UNIMPLEMENTED arm=${msg.payloadCase.name} from=${sourceUserId.take(8)} " +
+                    "(dropped and acked — see KIT_API.md §4.2)")
+
+            PayloadClass.DROPPABLE, PayloadClass.KIT_INTERNAL -> when (msg.payloadCase) {
+                ClientMessage.PayloadCase.FRIEND_REQUEST -> handleFriendRequest(msg, sourceUserId)
+                ClientMessage.PayloadCase.FRIEND_RESPONSE -> handleFriendResponse(msg, sourceUserId)
+                ClientMessage.PayloadCase.TEXT -> handleTextMessage(msg, sourceUserId, senderDeviceId)
+                ClientMessage.PayloadCase.DEVICE_ANNOUNCE -> handleDeviceAnnounce(msg, sourceUserId)
+                ClientMessage.PayloadCase.SYNC_BLOB -> handleSyncBlob(msg, sourceUserId)
+                ClientMessage.PayloadCase.SENT_SYNC -> handleSentSync(msg)
+                ClientMessage.PayloadCase.SESSION_RESET ->
+                    // Sessions are keyed on the DEVICE UUID (Phase 2), so reset every session we
+                    // hold with any of this user's devices.
+                    messenger.getDeviceIdsForUser(sourceUserId).forEach { signalStore.deleteAllSessions(it) }
+                ClientMessage.PayloadCase.FRIEND_SYNC -> handleFriendSync(msg, sourceUserId)
+                ClientMessage.PayloadCase.DEVICE_LINK_APPROVAL -> handleLinkApproval(msg, sourceUserId)
+                ClientMessage.PayloadCase.MODEL_SIGNAL -> handleModelSignal(msg, sourceUserId, senderDeviceId)
+                else -> error("classified ${msg.payloadCase.name} as kit-internal with no handler")
+            }
         }
     }
+
+    /**
+     * Write an inboxed payload to the durable inbox, then hand it to the ORM as well.
+     *
+     * **Both, during §10 steps 2–3.** The ORM still owns what obscura-pix reads, so removing that
+     * call here would break the app long before it has anywhere else to read from. The duplication
+     * ends when the ORM is deleted in step 4.
+     *
+     * Order matters: the inbox row commits first. If it throws, nothing is acked and the message
+     * stays on the server — which is the whole point of persist-then-ack and the reason this is not
+     * an event stream.
+     */
+    private suspend fun inboxMessage(
+        msg: ClientMessage,
+        sourceUserId: String,
+        senderDeviceId: String?,
+        envelopeId: String,
+    ) {
+        val isModelSync = msg.payloadCase == ClientMessage.PayloadCase.MODEL_SYNC
+        val sync = msg.modelSync
+
+        val inserted = inbox.put(
+            InboxRecord(
+                id = 0, // assigned by the database
+                envelopeId = envelopeId,
+                kind = msg.payloadCase.name,
+                receivedAt = System.currentTimeMillis(),
+                senderUserId = sourceUserId,
+                senderDeviceId = senderDeviceId,
+                // SPEC §0.5: the name comes from OUR friend graph, keyed on the authenticated
+                // sender, never from the payload. Null when they are not a friend — §7 covers what
+                // the app should show then, and it is not a peer-chosen string.
+                senderDisplayName = friends.get(sourceUserId)?.username,
+                // ModelSync-derived, so null for an unknown arm — there is nothing to derive from.
+                modelKey = if (isModelSync) sync.model else null,
+                entryId = if (isModelSync) sync.id else null,
+                // The enum's NAME, not its ordinal: the inbox is read by the app across a bridge,
+                // and an ordinal would silently re-map if the proto ever reorders the enum.
+                op = if (isModelSync) sync.op.name else null,
+                sentAt = if (isModelSync) clampFutureTimestamp(sync.timestamp) else null,
+                // Opaque bytes. For an unknown arm this is the whole serialized message, because the
+                // kit cannot know which sub-field would have been the payload.
+                payload = if (isModelSync) sync.data.toByteArray() else msg.toByteArray(),
+            )
+        )
+
+        if (!inserted) {
+            // A redelivered envelope. Not an error: persist-then-ack guarantees this happens, and
+            // absorbing it here is what keeps depth() and the app's counts honest. Still ack.
+            log("RECV DUPLICATE envelope=${envelopeId.take(12)} kind=${msg.payloadCase.name} (already inboxed)")
+        }
+
+        if (isModelSync) handleModelSync(msg, sourceUserId)
+    }
+
+    /**
+     * SPEC §2.4: a peer-supplied timestamp is clamped before it is stored, not after.
+     *
+     * Without this a peer can set `sentAt` far in the future and win every REPLACE conflict forever
+     * — the tie-break can only order writes it can compare honestly.
+     */
+    private fun clampFutureTimestamp(sentAt: Long): Long =
+        minOf(sentAt, System.currentTimeMillis() + 60_000L)
 
     private suspend fun handleFriendRequest(msg: ClientMessage, sourceUserId: String) {
         // sourceUserId is envelope.sender_id — the requester's USER id, server-stamped and

@@ -1,0 +1,96 @@
+-- The durable inbox (obscura-proto/KIT_API.md §3).
+--
+-- One row per successfully decrypted INBOXED message (§4). The kit stores bytes it cannot read:
+-- every column is either kit-owned identity or a declared client.proto field, and `payload` is
+-- never parsed here.
+--
+-- The rule that shapes all of this: AN ACK IS A DELETE (SPEC §0.9). Once the kit acks, the server
+-- destroys its copy and this row is the ONLY one. So the row must commit before the ack, and it may
+-- only be removed by an explicit consume() or discard() from the app — never on reconnect, never on
+-- logout, never on a cap or a timer.
+--
+-- ⚠️ The CREATE statements below are duplicated verbatim in `2.sqm`, and they must stay that way.
+-- `sqlite_master` stores CREATE TABLE text LITERALLY — including comments — so an inline comment
+-- here that is absent there makes a migrated database differ from a fresh one, and
+-- `SchemaMigrationTests` fails. That is why the column notes live in this header rather than in the
+-- statement. (Found the honest way: the test caught it.)
+--
+-- Column notes, in declaration order:
+--
+--   id                  Monotonic per install; drain order. AUTOINCREMENT is NOT decoration — a
+--                       plain INTEGER PRIMARY KEY aliases rowid, and SQLite REUSES rowids after
+--                       deletion, so a drained-then-refilled inbox would hand out ids that go
+--                       backwards while `peek` orders by id.
+--   envelope_id         The dedupe key (§3.3 rule 8). Persist-then-ack GUARANTEES redelivery: the
+--                       ack is best-effort and its failure is swallowed, so the server's
+--                       per-connection cursor re-sends on reconnect. Correct — losing the message
+--                       would be worse — but it means the same envelope arrives more than once.
+--                       Without UNIQUE + INSERT OR IGNORE this design would be strictly LESS
+--                       idempotent than the ORM it replaces, whose INSERT OR REPLACE absorbed
+--                       duplicates by accident.
+--   kind                The payload oneof arm, e.g. 'MODEL_SYNC'. Present because the record must
+--                       describe all 18 arms, not just a ModelSync — the omission that made "the
+--                       inbox closes the ack-before-persist hole by construction" false in rev 1.
+--   received_at         Kit clock, not a peer-supplied time.
+--   sender_user_id      Authenticated (SPEC §0.10).
+--   sender_device_id    The address of the Signal session that decrypted this — cryptographic
+--                       attribution rather than an assertion in a payload, which is exactly why it
+--                       can serve as the REPLACE tie-break (§8.2).
+--   sender_display_name Resolved from the LOCAL friend graph keyed on sender_user_id (SPEC §0.5),
+--                       never from the payload. NULL when the sender is not a friend.
+--   model_key           }
+--   entry_id            } ModelSync-derived, so NULL for every other kind — including an unknown
+--   op                  } arm, which has no ModelSync to derive them from (§4.1). Opaque: stored
+--   sent_at             } and echoed, never acted on. sent_at is clamped per SPEC §2.4 before it
+--                       } gets here.
+--   payload             Opaque bytes. The kit MUST NOT parse this (SPEC §0.4).
+CREATE TABLE IF NOT EXISTS InboxRow (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    envelope_id TEXT NOT NULL UNIQUE,
+    kind TEXT NOT NULL,
+    received_at INTEGER NOT NULL,
+    sender_user_id TEXT NOT NULL,
+    sender_device_id TEXT,
+    sender_display_name TEXT,
+    model_key TEXT,
+    entry_id TEXT,
+    op TEXT,
+    sent_at INTEGER,
+    payload BLOB NOT NULL
+);
+
+-- Drain order. `peek` reads by id ascending and the depth count scans everything, so this is the
+-- one index that earns its place.
+CREATE INDEX IF NOT EXISTS inbox_id_idx ON InboxRow(id);
+
+-- INSERT OR IGNORE, paired with the UNIQUE above, is what makes redelivery a no-op rather than a
+-- duplicate row. A duplicate would inflate inboxDepth(), inflate the app's processing counts, and
+-- post a second notification for a message the user already has.
+insertRow:
+INSERT OR IGNORE INTO InboxRow(
+    envelope_id, kind, received_at, sender_user_id, sender_device_id, sender_display_name,
+    model_key, entry_id, op, sent_at, payload
+) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?);
+
+-- Rows in drain order. Side-effect free: peeking twice without consuming returns the same rows, and
+-- that is the crash-safety property rather than a bug (§3.3 rule 3).
+peek:
+SELECT * FROM InboxRow ORDER BY id ASC LIMIT ?;
+
+-- consume() and discard() are the ONLY ways a row leaves this table (§3.3 rule 2). They are the same
+-- statement because the difference between them is not in the SQL — it is that discard is data loss
+-- the app chose out loud, and must be logged as such.
+deleteByIds:
+DELETE FROM InboxRow WHERE id IN ?;
+
+-- Depth must be exposed (§3.3 rule 7): an inbox that grows without bound means the app has stopped
+-- draining, and that has to be visible rather than silently absorbed. §3.5 spells out where it ends
+-- if it is not — disk pressure, refused acks, and the SERVER evicting the oldest messages silently.
+depth:
+SELECT COUNT(*) FROM InboxRow;
+
+-- The security carve-out in §3.3 rule 2: a device wipe or remote revocation MUST be able to destroy
+-- decrypted plaintext. Note it destroys the whole table rather than selecting rows — that is what
+-- keeps it a security operation and not an eviction policy in disguise.
+deleteAll:
+DELETE FROM InboxRow;
