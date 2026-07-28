@@ -42,7 +42,7 @@ class InboxDomainTest {
         senderDisplayName = "alice",
         modelKey = modelKey,
         entryId = "entry_1",
-        op = "OP_CREATE",
+        op = "CREATE",
         sentAt = 1_700_000_000_000,
         payload = payload,
     )
@@ -214,7 +214,7 @@ class InboxDomainTest {
         assertEquals("alice", row.senderDisplayName)
         assertEquals("directMessage", row.modelKey)
         assertEquals("entry_1", row.entryId)
-        assertEquals("OP_CREATE", row.op)
+        assertEquals("CREATE", row.op)
         assertArrayEquals(payload, row.payload, "payload is opaque bytes and must not be re-encoded")
     }
 
