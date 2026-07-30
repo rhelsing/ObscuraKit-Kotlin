@@ -70,24 +70,52 @@ class InboxTests {
     }
 
     /**
-     * The migration invariant for §10 step 2: adding the inbox must not take anything away from the
-     * ORM, because obscura-pix is still reading through it and will be until step 3.
+     * **Removed 2026-07-29: "the ORM still receives the same entry while the inbox runs alongside".**
+     *
+     * That test pinned the dual write, and the dual write is now deliberately gone — keeping it
+     * would assert the bug it was written to protect. The ORM's parallel write did not merely
+     * duplicate: it wrote `sync.authorDeviceId` (peer-asserted, wire field 7) and an unclamped
+     * timestamp, and APPEND first-write-wins meant the app kept THAT row instead of the one carrying
+     * the authenticated `senderDeviceId`. See `ObscuraClient.inboxMessage`.
+     *
+     * The invariant it was protecting — "adding the inbox must not take anything away" — held, and
+     * is now covered by the fact that obscura-pix reads only the entry store.
+     */
+
+    /**
+     * **Offline delivery, relocated from `ORMMessageTests`** when the ORM's receive path was
+     * disconnected. The behaviour is the whole point of a durable inbox: the server holds what it
+     * could not deliver, and hands it over on reconnect.
+     *
+     * This is also the case the drain's cold-start trigger exists for — a message that arrives while
+     * the app is not listening must still reach the app.
      */
     @Test
-    fun `the ORM still receives the same entry while the inbox is running alongside`() = runBlocking {
+    fun `a message sent while the recipient is offline arrives after reconnect`() = runBlocking {
         assumeTrue(checkServer())
 
-        val alice = registerAndConnect("inboxorm_a")
-        val bob = registerAndConnect("inboxorm_b")
+        val alice = registerAndConnect("inboxoff_a")
+        val bob = registerAndConnect("inboxoff_b")
         becomeFriends(alice, bob)
-        alice.orm.define(schema())
-        bob.orm.define(schema())
 
-        alice.orm.model("story").create(mapOf("content" to "both paths", "author" to alice.username!!))
-        delay(3000)
+        bob.disconnect()
+        delay(500)
 
-        assertEquals(1, bob.orm.model("story").all().size, "the ORM path must keep working")
-        assertEquals(1L, bob.inbox.depth(), "and the inbox must fill in parallel")
+        alice.send(
+            recipientUserIds = listOf(bob.userId!!),
+            modelKey = "directMessage",
+            entryId = "dm_offline",
+            payload = """{"content":"You there?"}""".toByteArray(),
+        )
+        delay(500)
+
+        bob.connect()
+        delay(4000)
+
+        val rows = bob.inbox.peek()
+        assertEquals(1, rows.size, "the server held it and delivered it on reconnect")
+        assertEquals("dm_offline", rows[0].entryId)
+        assertEquals("""{"content":"You there?"}""", String(rows[0].payload))
 
         alice.disconnect(); bob.disconnect()
     }

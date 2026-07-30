@@ -141,6 +141,7 @@ internal class MessagingManager(
         // silently never receive something they wrote. One unreachable friend must not cost the
         // other four, or the sender's own copy.
         val failures = mutableListOf<Pair<String, Exception>>()
+        val selfSyncFailures = mutableListOf<Pair<String, Exception>>()
         for (userId in targets) {
             try {
                 messageSender.sendToAllDevices(userId, msg)
@@ -154,12 +155,24 @@ internal class MessagingManager(
         // Own OTHER devices. Runs whether or not a recipient failed — see above. The filter is
         // §5 property 1: without it this device encrypts to itself.
         val selfTargets = devices.getSelfSyncTargets().filter { it != session.deviceId }
-        if (selfTargets.isNotEmpty()) {
-            val selfUserId = session.userId
-            if (selfUserId != null) {
-                for (devId in selfTargets) messenger.queueMessage(devId, msg, selfUserId)
-                messenger.flushMessages()
+        val selfUserId = session.userId
+        if (selfTargets.isNotEmpty() && selfUserId != null) {
+            // PER-DEVICE, and the flush is unconditional — the same rule as the recipient loop above,
+            // for the same reason. One own device with a broken Signal session would otherwise abort
+            // the loop, leave the messages already queued for the OTHER own devices unflushed, and
+            // propagate out of `sendEntry`. The app then reports "reached nobody" for a send that
+            // reached everybody, because `writeEntry` re-throws on a total failure.
+            //
+            // Swift already did this correctly (per-device `do/catch`, unconditional flush); this is
+            // Kotlin catching up, not a new rule.
+            for (devId in selfTargets) {
+                try {
+                    messenger.queueMessage(devId, msg, selfUserId)
+                } catch (e: Exception) {
+                    selfSyncFailures.add(devId to e)
+                }
             }
+            messenger.flushMessages()
         }
 
         // Throw only when NOBODY named got it. A partial failure is logged and survivable — the

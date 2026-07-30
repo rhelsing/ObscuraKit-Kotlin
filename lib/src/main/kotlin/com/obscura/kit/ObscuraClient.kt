@@ -1160,26 +1160,27 @@ class ObscuraClient(
             log("RECV DUPLICATE envelope=${envelopeId.take(12)} kind=${msg.payloadCase.name} (already inboxed)")
         }
 
-        if (isModelSync) {
-            // The ORM continuation MUST NOT be able to block the ack.
-            //
-            // `inbox.put` returning means the message is durably held, which is exactly what §3.3
-            // rule 1 gates the ack on. This call is the temporary parallel path (§10 steps 2–3) into
-            // an engine that is being deleted, and `Model.decodeData` is a bare `JSONObject(...)`
-            // that throws on any non-JSON bytes — including proto3's default for an unset `data`.
-            //
-            // Left unguarded it is a remote wedge: a stranger sends `model_sync{model:"pix"}` with
-            // no `data`, the inbox row commits, the ORM throws, the ack is skipped, and the server
-            // redelivers forever. The inbox dedupes the row, so no progress is ever made, and that
-            // envelope occupies a slot in a queue that caps at 1000 and evicts oldest-first — the
-            // exact remote-wipe primitive §4.1 exists to prevent.
-            try {
-                handleModelSync(msg, sourceUserId)
-            } catch (e: Exception) {
-                log("ORM parallel path failed for ${sync.model}/${sync.id.take(20)}: ${e.message} " +
-                    "(inbox row committed; acking anyway)")
-            }
-        }
+        // THE ORM PARALLEL WRITE IS GONE, and removing it FIXED a live data-integrity bug rather
+        // than merely tidying up.
+        //
+        // Until now this called `handleModelSync`, so every inbound MODEL_SYNC was written twice:
+        // once as an inbox row (with the AUTHENTICATED `senderDeviceId` and a §2.4-clamped `sentAt`)
+        // and once by the ORM — which passed `sync.authorDeviceId`, wire field 7, **peer-asserted**,
+        // and an unclamped timestamp. `KIT_API.md` §8.2 names that field as the one that contradicts
+        // SPEC §0.10 rule 4.
+        //
+        // The app then read the ORM's row as existing state, and for APPEND models
+        // (`directMessage`, `story`) first-write-wins meant the authenticated row LOST. So the row
+        // obscura-pix kept carried a peer-chosen `author_device_id` — and a peer choosing a high
+        // string wins every future REPLACE tie-break for that entry. The authenticated tie-break the
+        // whole new path was built around was not in effect while both paths ran.
+        //
+        // That inverts the framing this migration was sequenced under: the side-by-side state was
+        // LESS safe than either end state, not a safety net. The dual write was worth having only
+        // while pix still READ through the ORM, and pix stopped doing that in §10 step 3.
+        //
+        // The ORM itself is still present and now genuinely inert on the receive path. It goes in
+        // step 4.
     }
 
     /**
