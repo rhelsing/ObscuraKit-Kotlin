@@ -18,6 +18,16 @@ import org.junit.jupiter.api.Test
  */
 class ORMMessageTests {
 
+    // Two tests were removed on 2026-07-29: `ORM message shows up in conversations` and
+    // `ORM message arrives after offline reconnect`. Both asserted the ORM's RECEIVE path, which is
+    // now deliberately inert — `ObscuraClient.inboxMessage` no longer calls `handleModelSync`,
+    // because that parallel write was storing a peer-asserted `author_device_id`.
+    //
+    // The offline-delivery behaviour is real and did NOT go away with them: it moved to
+    // `InboxTests.a message sent while the recipient is offline arrives after reconnect`. Coverage
+    // relocated, not dropped.
+
+
     private val messageSchema = mapOf(
         "directMessage" to ModelConfig(
             fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"),
@@ -57,30 +67,6 @@ class ORMMessageTests {
     }
 
     @Test
-    fun `ORM message shows up in conversations`() = runBlocking {
-        assumeTrue(checkServer())
-
-        val alice = registerAndConnect("omsg_ca")
-        val bob = registerAndConnect("omsg_cb")
-        becomeFriends(alice, bob)
-
-        alice.orm.define(messageSchema)
-        bob.orm.define(messageSchema)
-
-        alice.send(bob.username!!, "Check my conversations")
-        bob.waitForMessage(15_000)
-        delay(500)
-
-        // Bob's conversations should have the message
-        val msgs = bob.getMessages(alice.userId!!)
-        assertTrue(msgs.any { it.content == "Check my conversations" },
-            "Message should appear in Bob's conversation with Alice")
-
-        alice.disconnect()
-        bob.disconnect()
-    }
-
-    @Test
     fun `Bidirectional ORM messages`() = runBlocking {
         assumeTrue(checkServer())
 
@@ -102,42 +88,6 @@ class ORMMessageTests {
         assertEquals("MODEL_SYNC", msg2.type)
         val data = JSONObject(String(msg2.raw!!.modelSync.data.toByteArray()))
         assertEquals("Hey Alice", data.getString("content"))
-
-        alice.disconnect()
-        bob.disconnect()
-    }
-
-    @Test
-    fun `ORM message arrives after offline reconnect`() = runBlocking {
-        assumeTrue(checkServer())
-
-        val alice = registerAndConnect("omsg_oa")
-        val bob = registerAndConnect("omsg_ob")
-        becomeFriends(alice, bob)
-
-        alice.orm.define(messageSchema)
-        bob.orm.define(messageSchema)
-
-        // Bob goes offline
-        bob.disconnect()
-        delay(500)
-
-        // Alice sends while Bob is away
-        alice.send(bob.username!!, "You there?")
-        delay(500)
-
-        // Bob reconnects
-        bob.connect()
-
-        val msg = bob.waitForMessage(15_000)
-        assertEquals("MODEL_SYNC", msg.type)
-        val data = JSONObject(String(msg.raw!!.modelSync.data.toByteArray()))
-        assertEquals("You there?", data.getString("content"))
-
-        // Should also be in conversations
-        delay(500)
-        val msgs = bob.getMessages(alice.userId!!)
-        assertTrue(msgs.any { it.content == "You there?" })
 
         alice.disconnect()
         bob.disconnect()
