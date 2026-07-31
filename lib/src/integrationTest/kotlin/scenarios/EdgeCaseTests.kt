@@ -91,8 +91,7 @@ class EdgeCaseTests {
             data = mapOf("displayName" to "Alice Display", "avatarUrl" to "att-avatar-123"))
 
         // Bob receives and verifies
-        val msg = bob.waitForMessage()
-        assertEquals("MODEL_SYNC", msg.type, "Message type should be MODEL_SYNC")
+        val msg = bob.waitForType("MODEL_SYNC")
         assertEquals(alice.userId, msg.sourceUserId, "Source should be alice")
         assertEquals("profile", msg.raw!!.modelSync.model, "Model should be 'profile'")
 
@@ -121,8 +120,7 @@ class EdgeCaseTests {
 
         alice.sendAttachment(bob.username!!, attId, ByteArray(32), ByteArray(12), "application/octet-stream", payload.size.toLong())
 
-        val msg = bob.waitForMessage()
-        assertEquals("CONTENT_REFERENCE", msg.type)
+        val msg = bob.waitForType("CONTENT_REFERENCE")
         assertEquals(alice.userId, msg.sourceUserId)
 
         val ref = msg.raw!!.contentReference

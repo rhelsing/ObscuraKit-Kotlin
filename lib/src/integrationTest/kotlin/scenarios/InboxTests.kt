@@ -1,7 +1,6 @@
 package scenarios
 
-import com.obscura.kit.orm.ModelConfig
-import com.obscura.kit.orm.SyncStrategy
+import com.obscura.kit.ObscuraClient
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.*
@@ -22,12 +21,17 @@ import org.junit.jupiter.api.Test
  */
 class InboxTests {
 
-    private fun schema() = mapOf(
-        "story" to ModelConfig(
-            fields = mapOf("content" to "string", "author" to "string"),
-            sync = SyncStrategy.GSET,
+    // No schema is defined anywhere in this file. The inbox does not need one — `modelKey` is an
+    // opaque namespace string — and after §10 step 4 there is nothing to define it with.
+
+    /** Send an entry the way obscura-pix does: the caller names the recipient (SPEC §0.4). */
+    private suspend fun sendStory(from: ObscuraClient, to: ObscuraClient, entryId: String, content: String) =
+        from.send(
+            recipientUserIds = listOf(to.userId!!),
+            modelKey = "story",
+            entryId = entryId,
+            payload = org.json.JSONObject(mapOf("content" to content)).toString().toByteArray(),
         )
-    )
 
     @Test
     fun `a received MODEL_SYNC lands in the inbox with authenticated identity`() = runBlocking {
@@ -36,14 +40,10 @@ class InboxTests {
         val alice = registerAndConnect("inbox_a")
         val bob = registerAndConnect("inbox_b")
         becomeFriends(alice, bob)
-        alice.orm.define(schema())
-        bob.orm.define(schema())
 
         assertEquals(0L, bob.inbox.depth(), "inbox starts empty")
 
-        alice.orm.model("story").create(
-            mapOf("content" to "hello from the wire", "author" to alice.username!!)
-        )
+        sendStory(alice, bob, "story_7557", "hello from the wire")
         delay(3000)
 
         val rows = bob.inbox.peek()
@@ -81,6 +81,48 @@ class InboxTests {
      * The invariant it was protecting — "adding the inbox must not take anything away" — held, and
      * is now covered by the fact that obscura-pix reads only the entry store.
      */
+
+    /**
+     * **SPEC §2.4: a peer-supplied timestamp is clamped BEFORE it is stored.**
+     *
+     * This property lost its only Kotlin coverage when the CRDT engine was deleted — `LWWMapTest`
+     * held the clamp tests, and the surviving implementation is `ObscuraClient.clampFutureTimestamp`
+     * on the inbox path. `RESET.md` explicitly says to KEEP §2.4, so it needs a test that outlives
+     * the engine.
+     *
+     * Without the clamp a peer sets `sentAt` far in the future and wins every REPLACE conflict
+     * forever: the tie-break can only order writes it can compare honestly.
+     *
+     * `Long.MAX_VALUE` also exercises the subtle half. `ModelSync.timestamp` is proto3 `uint64`,
+     * which protobuf-java surfaces as a SIGNED Long — so a large enough value arrives NEGATIVE and
+     * sails under a naive `minOf` cap. Both ends are clamped.
+     */
+    @Test
+    fun `a far-future peer timestamp is clamped before it is stored`() = runBlocking {
+        assumeTrue(checkServer())
+
+        val alice = registerAndConnect("clamp_a")
+        val bob = registerAndConnect("clamp_b")
+        becomeFriends(alice, bob)
+
+        val before = System.currentTimeMillis()
+        alice.send(
+            recipientUserIds = listOf(bob.userId!!),
+            modelKey = "story",
+            entryId = "story_clamped",
+            sentAt = Long.MAX_VALUE,
+            payload = """{"content":"from the far future"}""".toByteArray(),
+        )
+        delay(3000)
+
+        val row = bob.inbox.peek().find { it.entryId == "story_clamped" }
+        assertTrue(row != null, "the entry should still arrive — clamping is not rejection")
+        assertTrue(row!!.sentAt!! <= before + 120_000,
+            "sentAt must be clamped to about now, not stored as ${row.sentAt}")
+        assertTrue(row.sentAt!! > 0, "a signed-Long overflow must not store a negative timestamp")
+
+        alice.disconnect(); bob.disconnect()
+    }
 
     /**
      * **Offline delivery, relocated from `ORMMessageTests`** when the ORM's receive path was
@@ -132,13 +174,10 @@ class InboxTests {
         val alice = registerAndConnect("inboxdrain_a")
         val bob = registerAndConnect("inboxdrain_b")
         becomeFriends(alice, bob)
-        alice.orm.define(schema())
-        bob.orm.define(schema())
 
-        val story = alice.orm.model("story")
-        story.create(mapOf("content" to "one", "author" to alice.username!!))
+        sendStory(alice, bob, "story_one", "one")
         delay(1500)
-        story.create(mapOf("content" to "two", "author" to alice.username!!))
+        sendStory(alice, bob, "story_two", "two")
         delay(3000)
 
         assertEquals(2L, bob.inbox.depth())

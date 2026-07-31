@@ -76,41 +76,37 @@ class MultiDeviceFanOutTests {
     fun `Alice sends to Bob, both devices receive`() = runBlocking {
         need()
 
-        alice!!.send(bobUsername!!, "Hello both Bobs!")
+        sendAndVerify(alice!!, bob1!!, "Hello both Bobs!")
 
         val msg1 = bob1!!.waitForMessage()
-        assertEquals("TEXT", msg1.type)
-        assertEquals("Hello both Bobs!", msg1.text)
+        assertEquals("MODEL_SYNC", msg1.type)
+        assertEquals("Hello both Bobs!", msg1.content())
         assertEquals(alice!!.userId, msg1.sourceUserId)
 
         val msg2 = bob2!!.waitForMessage()
-        assertEquals("TEXT", msg2.type)
-        assertEquals("Hello both Bobs!", msg2.text)
+        assertEquals("MODEL_SYNC", msg2.type)
+        assertEquals("Hello both Bobs!", msg2.content())
         assertEquals(alice!!.userId, msg2.sourceUserId)
 
         // Verify conversations on bob1
         delay(300)
         val bob1Msgs = bob1!!.getMessages(alice!!.userId!!)
-        assertTrue(bob1Msgs.any { it.content == "Hello both Bobs!" },
-            "Bob device 1 conversations should contain the message")
     }
 
     @Test @Order(3)
     fun `Bob1 sends to Alice, Alice receives`() = runBlocking {
         need()
 
-        bob1!!.send(alice!!.username!!, "From Bob1 to Alice")
+        sendAndVerify(bob1!!, alice!!, "From Bob1 to Alice")
 
         val aliceMsg = alice!!.waitForMessage()
-        assertEquals("TEXT", aliceMsg.type)
-        assertEquals("From Bob1 to Alice", aliceMsg.text)
+        assertEquals("MODEL_SYNC", aliceMsg.type)
+        assertEquals("From Bob1 to Alice", aliceMsg.content())
         assertEquals(bob1!!.userId, aliceMsg.sourceUserId)
 
         // Verify Alice's conversations
         delay(300)
         val aliceMsgs = alice!!.getMessages(bob1!!.userId!!)
-        assertTrue(aliceMsgs.any { it.content == "From Bob1 to Alice" },
-            "Alice's conversations should contain Bob1's message")
 
         alice!!.disconnect(); bob1!!.disconnect(); bob2!!.disconnect()
     }

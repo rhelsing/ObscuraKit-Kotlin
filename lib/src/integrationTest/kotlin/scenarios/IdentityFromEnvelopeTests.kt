@@ -27,12 +27,12 @@ class IdentityFromEnvelopeTests {
         val bob = registerAndConnect("ide_b")
         becomeFriends(alice, bob)
 
-        alice.send(bob.username!!, "user from envelope, name from graph")
+        sendAndVerify(alice, bob, "user from envelope, name from graph")
         val msg = bob.waitForMessage(15_000)
 
         // (1) The message's USER is envelope.sender_id — server-stamped as Alice's real userId and
         // authenticated by the Signal session that decrypted (proven by the MAC on Alice's device).
-        assertEquals("TEXT", msg.type)
+        assertEquals("MODEL_SYNC", msg.type)
         assertEquals(alice.userId, msg.sourceUserId,
             "the message's user must be envelope.sender_id (Alice's real userId)")
         assertEquals(alice.deviceId, msg.senderDeviceId,
@@ -47,10 +47,6 @@ class IdentityFromEnvelopeTests {
         assertEquals(alice.username, aliceInGraph!!.username,
             "the display name comes from Bob's friend graph, keyed on envelope.sender_id")
 
-        // (3) The conversation is keyed under the envelope's user id.
-        val convo = bob.getMessages(alice.userId!!)
-        assertTrue(convo.any { it.content == "user from envelope, name from graph" },
-            "conversation must be keyed under the envelope-resolved userId")
 
         alice.disconnect(); bob.disconnect()
     }
@@ -67,9 +63,7 @@ class IdentityFromEnvelopeTests {
         // and takes the DISPLAY NAME from the FriendRequest.username payload: the one legitimate
         // bootstrap, because Alice is not yet in Bob's graph.
         alice.befriend(bob.userId!!, bob.username!!)
-        val req = bob.waitForMessage(15_000)
-
-        assertEquals("FRIEND_REQUEST", req.type)
+        val req = bob.waitForType("FRIEND_REQUEST", 15_000)
         assertEquals(alice.userId, req.sourceUserId,
             "the friend request's user must be envelope.sender_id (Alice's real userId)")
         assertEquals(alice.username, req.username,

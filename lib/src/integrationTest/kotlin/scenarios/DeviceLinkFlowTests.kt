@@ -92,15 +92,13 @@ class DeviceLinkFlowTests {
         try { while (true) { device2.waitForMessage(2_000) } } catch (_: Exception) {}
 
         // Carol sends — both devices should receive
-        carol.send(username, "Hello both devices")
+        sendAndVerify(carol, device1, "Hello both devices")
 
-        val msg1 = device1.waitForMessage()
-        assertEquals("TEXT", msg1.type)
-        assertEquals("Hello both devices", msg1.text)
+        val msg1 = device1.waitForType("MODEL_SYNC")
+        assertEquals("Hello both devices", msg1.content())
 
-        val msg2 = device2.waitForMessage()
-        assertEquals("TEXT", msg2.type)
-        assertEquals("Hello both devices", msg2.text)
+        val msg2 = device2.waitForType("MODEL_SYNC")
+        assertEquals("Hello both devices", msg2.content())
 
         device1.disconnect(); device2.disconnect(); carol.disconnect()
     }

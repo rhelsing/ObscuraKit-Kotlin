@@ -15,35 +15,16 @@ internal class MessagingManager(
     private val friends get() = ctx.friends
     private val devices get() = ctx.devices
     private val messageSender get() = ctx.messageSender
-    suspend fun send(friendUsername: String, text: String) {
-        val friendData = friends.getAccepted().find { it.username == friendUsername }
-            ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
-
-        val msg = ClientMessage.newBuilder()
-            .setText(obscura.client.v1.textMessage { this.text = text })
-            .setTimestamp(System.currentTimeMillis()).build()
-
-        messageSender.sendToAllDevices(friendData.userId, msg)
-
-        // Self-sync: SENT_SYNC to own devices
-        val selfTargets = devices.getSelfSyncTargets().filter { it != session.deviceId }
-        if (selfTargets.isNotEmpty()) {
-            val msgId = java.util.UUID.randomUUID().toString()
-            val sentSync = ClientMessage.newBuilder()
-                .setTimestamp(System.currentTimeMillis())
-                .setSentSync(obscura.client.v1.sentSync {
-                    recipientUsername = friendUsername
-                    messageId = msgId
-                    timestamp = System.currentTimeMillis()
-                    content = com.google.protobuf.ByteString.copyFrom(text.toByteArray())
-                })
-                .build()
-            for (devId in selfTargets) {
-                messenger.queueMessage(devId, sentSync, session.userId)
-            }
-            messenger.flushMessages()
-        }
-    }
+    // `send(friendUsername, text)` is gone: the legacy TEXT sender, and with it the only local
+    // writer to `MessageDomain`. Its sole caller — `ObscuraClient.send(friendUsername, text)` — went
+    // with the ORM, because resolving a friend from a USERNAME is the kit deciding an audience from
+    // an application concept (SPEC §0.4).
+    //
+    // `MessageDomain` / the `conversations` StateFlow are now reachable only if a FOREIGN client
+    // (an old Swift kit, obscura-client-web) sends a TEXT or SENT_SYNC arm. obscura-pix reads
+    // neither. RESET.md lists them for deletion; doing it here would also remove `getMessages`,
+    // which several integration tests still call, so it is a follow-up rather than a silent
+    // half-removal.
 
     suspend fun sendAttachment(friendUsername: String, attachmentId: String, contentKey: ByteArray, nonce: ByteArray, mimeType: String, sizeBytes: Long) {
         val friendData = friends.getAccepted().find { it.username == friendUsername }
@@ -72,7 +53,7 @@ internal class MessagingManager(
         val friendData = friends.getAccepted().find { it.username == friendUsername }
             ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
 
-        val opEnum = com.obscura.kit.orm.WireCodec.encodeOp(com.obscura.kit.orm.ModelOp.fromApp(op))
+        val opEnum = com.obscura.kit.wire.WireCodec.encodeOp(com.obscura.kit.wire.ModelOp.fromApp(op))
 
         val msg = ClientMessage.newBuilder()
             .setTimestamp(System.currentTimeMillis())
@@ -125,7 +106,7 @@ internal class MessagingManager(
             .setModelSync(obscura.client.v1.modelSync {
                 this.model = modelKey
                 this.id = entryId
-                this.op = com.obscura.kit.orm.WireCodec.encodeOp(com.obscura.kit.orm.ModelOp.fromApp(op))
+                this.op = com.obscura.kit.wire.WireCodec.encodeOp(com.obscura.kit.wire.ModelOp.fromApp(op))
                 timestamp = sentAt
                 this.data = com.google.protobuf.ByteString.copyFrom(payload)
                 authorDeviceId = session.deviceId ?: ""

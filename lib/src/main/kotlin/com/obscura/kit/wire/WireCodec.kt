@@ -1,4 +1,4 @@
-package com.obscura.kit.orm
+package com.obscura.kit.wire
 
 import obscura.client.v1.Client
 

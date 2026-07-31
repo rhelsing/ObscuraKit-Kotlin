@@ -12,11 +12,8 @@ import com.obscura.kit.network.APIClient
 import com.obscura.kit.network.GatewayConnection
 import com.obscura.kit.network.GatewayState
 import com.obscura.kit.network.UploadDeviceKeysRequest
-import com.obscura.kit.orm.ModelStore
-import com.obscura.kit.orm.SignalManager
-import com.obscura.kit.orm.ModelSyncData
-import com.obscura.kit.orm.SyncManager
-import com.obscura.kit.orm.TTLManager
+import com.obscura.kit.wire.SignalManager
+import com.obscura.kit.wire.WireCodec
 import com.obscura.kit.stores.*
 import app.cash.sqldelight.coroutines.asFlow
 import app.cash.sqldelight.coroutines.mapToList
@@ -29,8 +26,6 @@ import kotlinx.coroutines.flow.StateFlow
 import kotlinx.coroutines.flow.map
 import kotlinx.coroutines.sync.Mutex
 import kotlinx.coroutines.sync.withLock
-import com.obscura.kit.orm.ModelConfig
-import com.obscura.kit.orm.SyncStrategy
 import com.obscura.kit.persistence.NoOpSessionStorage
 import com.obscura.kit.persistence.SessionStorage
 import obscura.client.v1.Client.ClientMessage
@@ -129,7 +124,6 @@ class ObscuraClient(
     private val messagesDomain: MessageDomain
     internal val devices: DeviceDomain
     internal val messenger: MessengerDomain
-    val orm: SchemaDomain
 
     /**
      * The durable inbox (`obscura-proto/KIT_API.md` §3) — the thin kit's receive API.
@@ -155,9 +149,6 @@ class ObscuraClient(
      */
     val entries: EntryStore
 
-    private val modelStore: ModelStore
-    private val syncManager: SyncManager
-    private val ttlManager: TTLManager
     private val signalManager: SignalManager
 
     // Session — shared mutable state
@@ -267,20 +258,9 @@ class ObscuraClient(
             log("INBOX DISCARD ${ids.size} row(s): $reason")
         }
 
-        modelStore = ModelStore(db)
-        syncManager = SyncManager(modelStore)
-        ttlManager = TTLManager(modelStore)
         signalManager = SignalManager()
         gateway = GatewayConnection(api, scope)
 
-        orm = SchemaDomain(
-            modelStore, syncManager, ttlManager,
-            // Read the deviceId fresh on each entry create — it's null at
-            // construction time and only becomes available after register /
-            // loginAndProvision / restoreSession.
-            deviceIdProvider = { session.deviceId ?: "" },
-            signalManager = signalManager,
-        )
 
         // Create ClientContext — shared dependencies for all managers
         val ctx = ClientContext(
@@ -356,78 +336,16 @@ class ObscuraClient(
             }
         }
 
-        // Wire ORM auto-sync: model.create() → encrypt → fan out → flush
-        syncManager.getSelfSyncTargets = { devices.getSelfSyncTargets() }
-        syncManager.getFriendTargets = {
-            val accepted = friends.getAccepted()
-            val targets = mutableListOf<String>()
-            for (f in accepted) {
-                var deviceIds = messenger.getDeviceIdsForUser(f.userId)
-                if (deviceIds.isEmpty()) {
-                    // Discover devices via prekey bundle fetch (same as MessageSender)
-                    try { messenger.fetchPreKeyBundles(f.userId) } catch (e: Exception) { log("prekey bundle fetch failed: ${e.message}") }
-                    deviceIds = messenger.getDeviceIdsForUser(f.userId)
-                }
-                targets.addAll(deviceIds)
-            }
-            targets
-        }
-        syncManager.queueModelSync = { targetDeviceId, modelSync ->
-            val msg = ClientMessage.newBuilder()
-                .setTimestamp(System.currentTimeMillis())
-                .setModelSync(obscura.client.v1.modelSync {
-                    model = modelSync.model; id = modelSync.id
-                    op = com.obscura.kit.orm.WireCodec.encodeOp(modelSync.op)
-                    timestamp = modelSync.timestamp
-                    data = com.google.protobuf.ByteString.copyFrom(modelSync.data)
-                    authorDeviceId = modelSync.authorDeviceId
-                }).build()
-            val mapped = messenger.deviceMap(targetDeviceId)
-            messenger.queueMessage(targetDeviceId, msg, mapped?.first)
-        }
-        syncManager.getDevicesForUsername = { username ->
-            val friend = friends.getAccepted().find { it.username == username }
-            if (friend != null) {
-                var deviceIds = messenger.getDeviceIdsForUser(friend.userId)
-                if (deviceIds.isEmpty()) {
-                    try { messenger.fetchPreKeyBundles(friend.userId) } catch (e: Exception) { log("prekey bundle fetch failed: ${e.message}") }
-                    deviceIds = messenger.getDeviceIdsForUser(friend.userId)
-                }
-                deviceIds
-            } else emptyList()
-        }
-        syncManager.getDevicesForUserId = { userId ->
-            // Resolve ONLY accepted friends. A 1:1 conversationId ("selfId_friendId") contains
-            // the sender's own id too, but self-sync is handled separately by getSelfSyncTargets
-            // (which excludes the current device). Resolving self here would target the sender's
-            // OWN current device and echo the message back into the sender's own inbox. Excluding
-            // self also blocks sending a scoped payload to an arbitrary (e.g. tampered) userId.
-            val isFriend = friends.getAccepted().any { it.userId == userId }
-            if (isFriend) {
-                var deviceIds = messenger.getDeviceIdsForUser(userId)
-                if (deviceIds.isEmpty()) {
-                    try { messenger.fetchPreKeyBundles(userId) } catch (e: Exception) { log("prekey bundle fetch failed: ${e.message}") }
-                    deviceIds = messenger.getDeviceIdsForUser(userId)
-                }
-                deviceIds
-            } else emptyList()
-        }
-        syncManager.flushQueue = {
-            authManager.ensureFreshToken()
-            messenger.flushMessages()
-        }
-
-        // Wire ephemeral signal sending — typed MODEL_SIGNAL payload (no JSON).
-        // Sender identity + timestamp ride on the ClientMessage envelope, not the payload.
+        // The ORM's SyncManager wiring lived here: getSelfSyncTargets / getFriendTargets /
+        // queueModelSync / getDevicesForUsername / getDevicesForUserId / flushQueue. That was the
+        // audience-routing engine, and it is gone — SPEC §0.4 puts audience resolution in the
+        // caller, and obscura-pix now does it (`src/domain/audience.ts`) with the five
+        // `routing.json` leak guards vendored alongside it.
         //
-        // The signal goes to the CONVERSATION, never to the friend list. `contextId` is a
-        // canonical two-party "userIdA_userIdB" value, so broadcasting it to every accepted
-        // friend tells all of them, in real time, that you are typing to a named third party.
-        // That is what this used to do. It is the same rule `SyncManager`'s
-        // `Audience.Conversation` already enforces for entries, applied here too — and it
-        // fails CLOSED: an id that does not resolve to exactly two participants sends nothing.
+        // The signal wiring below is NOT part of that and stays: ephemeral signals are on RESET.md's
+        // Keep list, and their audience is the two-party conversation id, resolved fail-CLOSED.
         signalManager.sendSignal = { modelName, signalName, signalData ->
-            val kind = com.obscura.kit.orm.WireCodec.encodeSignalKind(signalName)
+            val kind = WireCodec.encodeSignalKind(signalName)
             val ctxId = signalData["conversationId"] as? String ?: ""
             val participants = ctxId.split("_").filter { it.isNotBlank() }
 
@@ -521,11 +439,9 @@ class ObscuraClient(
 
     suspend fun register(username: String, password: String) {
         authManager.register(username, password)
-        orm.setUsername(username)
     }
     suspend fun login(username: String, password: String): com.obscura.kit.network.LoginResult {
         val result = authManager.login(username, password)
-        orm.setUsername(username)
         return result
     }
     suspend fun loginAndProvision(username: String, password: String, deviceName: String = "Device 2") =
@@ -540,7 +456,6 @@ class ObscuraClient(
         registrationId: Int = 0
     ) {
         authManager.restoreSession(token, refreshToken, userId, deviceId, username, registrationId)
-        if (username != null) orm.setUsername(username)
     }
 
     fun hasSession(): Boolean = authManager.hasSession()
@@ -597,16 +512,6 @@ class ObscuraClient(
             registrationId = (saved["registrationId"] as? Number)?.toInt() ?: 0
         )
 
-        // Define models from cached schema if available
-        val cachedSchema = saved["cachedSchema"] as? String
-        if (cachedSchema != null) {
-            try {
-                defineModelsFromJson(cachedSchema)
-                log("SESSION models defined from cache")
-            } catch (e: Exception) {
-                log("SESSION cached schema invalid: ${e.message}")
-            }
-        }
 
         // Refresh token + connect
         try {
@@ -627,28 +532,6 @@ class ObscuraClient(
     }
 
     // ─── Facade Methods (bridges call these 1:1) ────────────
-
-    /**
-     * Parse ORM schema from JSON (matches schema.ts format) and define models.
-     * JSON shape:
-     *   {"modelName": {"fields": {"name": "string"}, "sync": "gset", "ttl": "24h",
-     *                  "audience": {"kind": "conversation", "field": "conversationId"}}}
-     * `audience` is optional (defaults to broadcast-to-friends). Supported kinds:
-     * "friends", "self", "recipient" (+field), "conversation" (+field).
-     */
-    suspend fun defineModelsFromJson(jsonString: String) {
-        val schema = JSONObject(jsonString)
-        val models = mutableMapOf<String, ModelConfig>()
-        for (name in schema.keys()) {
-            models[name] = com.obscura.kit.orm.ModelConfig.fromWire(schema.getJSONObject(name))
-        }
-        orm.define(models)
-        // Cache schema for cold-start restore
-        val existing = sessionStorage.load()?.toMutableMap() ?: mutableMapOf()
-        existing["cachedSchema"] = jsonString
-        sessionStorage.save(existing)
-        log("MODELS defined + cached: ${models.keys.joinToString()}")
-    }
 
     /**
      * Decode a friend code (base64 JSON) and befriend the user.
@@ -991,7 +874,7 @@ class ObscuraClient(
                         else -> ""
                     }
                     val received = ReceivedMessage(
-                        type = com.obscura.kit.orm.WireCodec.decodeType(msg.payloadCase),
+                        type = WireCodec.decodeType(msg.payloadCase),
                         text = msg.text.text,
                         username = username,
                         accepted = msg.payloadCase == ClientMessage.PayloadCase.FRIEND_RESPONSE && msg.friendResponse.accepted,
@@ -1131,7 +1014,7 @@ class ObscuraClient(
                 // depth never returns to zero, and with the `after:` cursor deferred the head of the
                 // queue wedges. Both kits now go through WireCodec and share the UNKNOWN sentinel —
                 // an empty string is a poor value for a NOT NULL column read across a bridge.
-                kind = com.obscura.kit.orm.WireCodec.decodeType(msg.payloadCase).ifEmpty { "UNKNOWN" },
+                kind = WireCodec.decodeType(msg.payloadCase).ifEmpty { "UNKNOWN" },
                 receivedAt = System.currentTimeMillis(),
                 senderUserId = sourceUserId,
                 senderDeviceId = senderDeviceId,
@@ -1146,13 +1029,21 @@ class ObscuraClient(
                 // across a bridge, so this must be the app-facing CREATE/UPDATE/DELETE that
                 // KIT_API.md §3.1 specifies and that the ORM path already emits. `sync.op.name`
                 // gives the PROTO spelling `OP_CREATE`, which no other surface uses.
-                op = if (isModelSync) com.obscura.kit.orm.WireCodec.decodeOp(sync.op).name else null,
+                op = if (isModelSync) WireCodec.decodeOp(sync.op).name else null,
                 sentAt = if (isModelSync) clampFutureTimestamp(sync.timestamp) else null,
                 // Opaque bytes. For an unknown arm this is the whole serialized message, because the
                 // kit cannot know which sub-field would have been the payload.
                 payload = if (isModelSync) sync.data.toByteArray() else msg.toByteArray(),
             )
         )
+
+        // The typed event stream's only app-data event. It deliberately carries NO payload: the
+        // bytes are in the inbox and the app drains them, so an event carrying data would be a
+        // second delivery path competing with the store (KIT_API §2). Emitting it here — after the
+        // row has committed — keeps it a wake-up about something already durable.
+        if (isModelSync) {
+            _typedEvents.tryEmit(ObscuraEvent.MessageReceived(sync.model))
+        }
 
         if (!inserted) {
             // A redelivered envelope. Not an error: persist-then-ack guarantees this happens, and
@@ -1256,7 +1147,7 @@ class ObscuraClient(
             id = msgId, conversationId = sourceUserId,
             authorDeviceId = senderDeviceId ?: "unknown",
             content = msg.text.text, timestamp = msg.timestamp,
-            type = com.obscura.kit.orm.WireCodec.decodeType(msg.payloadCase).lowercase()
+            type = WireCodec.decodeType(msg.payloadCase).lowercase()
         )
         messagesDomain.add(sourceUserId, msgData)
         refreshConversation(sourceUserId)
@@ -1289,7 +1180,7 @@ class ObscuraClient(
             val sig = msg.modelSignal
             if (sig.model.isBlank()) return
 
-            val signalName = com.obscura.kit.orm.WireCodec.decodeSignalKind(sig.kind)
+            val signalName = WireCodec.decodeSignalKind(sig.kind)
                 ?: return // unknown/unspecified — ignore
 
             // Identity comes from the authenticated envelope, never the payload:
@@ -1311,46 +1202,6 @@ class ObscuraClient(
         } catch (e: Exception) {
             // Never let signal handling crash the envelope loop.
             log("model signal handling failed: ${e.message}")
-        }
-    }
-
-    private suspend fun handleModelSync(msg: ClientMessage, sourceUserId: String) {
-        val sync = msg.modelSync
-        val syncData = ModelSyncData(
-            model = sync.model, id = sync.id, op = com.obscura.kit.orm.WireCodec.decodeOp(sync.op),
-            timestamp = sync.timestamp, data = sync.data.toByteArray(),
-            authorDeviceId = sync.authorDeviceId
-        )
-        orm.handleSync(syncData, sourceUserId)
-
-        // Emit typed event for bridges
-        try {
-            val dataMap = mutableMapOf<String, Any?>()
-            val dataJson = org.json.JSONObject(String(sync.data.toByteArray()))
-            for (key in dataJson.keys()) dataMap[key] = if (dataJson.isNull(key)) null else dataJson.get(key)
-            val entry = com.obscura.kit.orm.OrmEntry(
-                id = sync.id, data = dataMap,
-                timestamp = sync.timestamp, authorDeviceId = sync.authorDeviceId
-            )
-            _typedEvents.tryEmit(ObscuraEvent.MessageReceived(sync.model, entry))
-        } catch (e: Exception) { log("typed-event emit for '${sync.model}' failed: ${e.message}") }
-
-        // DirectMessage MODEL_SYNC → also route to conversations for chat UI
-        if (sync.model == "directMessage") {
-            try {
-                val json = org.json.JSONObject(String(sync.data.toByteArray()))
-                val content = json.optString("content", "")
-                // File under the sender's userId — that's who we're chatting with
-                val conversationWith = sourceUserId
-                val msgData = MessageData(
-                    id = sync.id, conversationId = conversationWith,
-                    authorDeviceId = sync.authorDeviceId,
-                    content = content, timestamp = sync.timestamp,
-                    type = "text"
-                )
-                messagesDomain.add(conversationWith, msgData)
-                refreshConversation(conversationWith)
-            } catch (e: Exception) { log("directMessage conversation routing failed: ${e.message}") }
         }
     }
 
@@ -1442,35 +1293,11 @@ class ObscuraClient(
         return msgs
     }
 
-    /**
-     * Send a text message via ORM (MODEL_SYNC). Interoperable with iOS DirectMessage.
-     * Falls back to legacy TEXT if directMessage model is not defined.
-     */
-    suspend fun send(friendUsername: String, text: String) {
-        log("SEND to=$friendUsername text=${text.take(40)}")
-        val directMessage = orm.modelOrNull("directMessage")
-        if (directMessage != null) {
-            val friendData = friends.getAccepted().find { it.username == friendUsername }
-                ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
-            val convId = listOf(userId ?: "", friendData.userId).sorted().joinToString("_")
-            // Create via ORM — auto-syncs to friend via MODEL_SYNC
-            val entry = directMessage.create(mapOf(
-                "conversationId" to convId,
-                "content" to text,
-                "senderUsername" to (username ?: "")
-            ))
-            // Also persist locally to conversations (keyed by friend userId for StateFlow compat)
-            messagesDomain.add(friendData.userId, MessageData(
-                id = entry.id, conversationId = friendData.userId,
-                authorDeviceId = deviceId ?: "self",
-                content = text, timestamp = entry.timestamp, type = "text"
-            ))
-            refreshConversation(friendData.userId)
-        } else {
-            // Legacy path — sends TEXT (type 0) instead of MODEL_SYNC
-            messagingManager.send(friendUsername, text)
-        }
-    }
+    // `send(friendUsername, text)` is gone (RESET.md: "legacy TEXT path", "sendText"). It resolved
+    // a friend from a USERNAME and created an ORM entry — the kit deciding an audience from an
+    // application concept, which SPEC §0.4 forbids. The replacement is `send(recipientUserIds, ...)`
+    // above, with obscura-pix naming the recipients.
+
     suspend fun sendAttachment(friendUsername: String, attachmentId: String, contentKey: ByteArray, nonce: ByteArray, mimeType: String, sizeBytes: Long) =
         messagingManager.sendAttachment(friendUsername, attachmentId, contentKey, nonce, mimeType, sizeBytes)
     suspend fun sendEncryptedAttachment(friendUsername: String, plaintext: ByteArray, mimeType: String = "application/octet-stream") =

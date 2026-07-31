@@ -1,6 +1,5 @@
 package com.obscura.kit
 
-import com.obscura.kit.orm.OrmEntry
 import org.junit.jupiter.api.Assertions.assertEquals
 import org.junit.jupiter.api.Assertions.assertNotEquals
 import org.junit.jupiter.api.Test
@@ -25,11 +24,9 @@ class ObscuraEventTest {
     }
 
     @Test
-    fun `MessageReceived carries the model name and entry`() {
-        val entry = OrmEntry(id = "dm_1", data = mapOf("content" to "hi"), timestamp = 1L, authorDeviceId = "d1")
-        val e = ObscuraEvent.MessageReceived("directMessage", entry)
+    fun `MessageReceived carries the model name — the payload is in the inbox`() {
+        val e = ObscuraEvent.MessageReceived("directMessage")
         assertEquals("directMessage", e.model)
-        assertEquals("dm_1", e.entry.id)
     }
 
     @Test

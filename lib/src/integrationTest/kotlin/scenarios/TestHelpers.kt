@@ -10,6 +10,40 @@ import kotlinx.coroutines.withTimeout
 import org.junit.jupiter.api.Assertions.*
 
 /** Test-only: suspend until the next inbound message (or time out). */
+/**
+ * The human-readable content of a received message, wherever it actually lives.
+ *
+ * `ReceivedMessage.text` is the legacy TEXT arm's field and is empty for a MODEL_SYNC — the content
+ * is inside the opaque payload, which only the APP knows how to read. Tests that used to assert
+ * `msg.text` are asserting on app data, so they go through here.
+ */
+fun ReceivedMessage.content(): String =
+    if (type == "MODEL_SYNC") {
+        runCatching {
+            org.json.JSONObject(String(raw!!.modelSync.data.toByteArray())).optString("content", "")
+        }.getOrDefault("")
+    } else text
+
+/**
+ * Wait for the next message OF A PARTICULAR KIND, skipping anything else already queued.
+ *
+ * `waitForMessage` takes whatever is at the head of `incomingMessages`, which was fine when
+ * `sendAndVerify` consumed its own notification. It no longer does — it asserts on the inbox row
+ * instead, because the row is the delivery path and the notification is droppable (SPEC §0.9
+ * rule 4). So a test that sends a message and then waits for a SESSION_RESET now finds the earlier
+ * MODEL_SYNC notification sitting in front of it.
+ *
+ * Skipping by kind is more honest than draining: the test says which message it is waiting for.
+ */
+suspend fun ObscuraClient.waitForType(type: String, timeoutMs: Long = 15_000): ReceivedMessage =
+    withTimeout(timeoutMs) {
+        while (true) {
+            val msg = incomingMessages.receive()
+            if (msg.type == type) return@withTimeout msg
+        }
+        @Suppress("UNREACHABLE_CODE") error("unreachable")
+    }
+
 suspend fun ObscuraClient.waitForMessage(timeoutMs: Long = 15_000): ReceivedMessage =
     withTimeout(timeoutMs) { incomingMessages.receive() }
 
@@ -88,16 +122,86 @@ suspend fun becomeFriends(a: ObscuraClient, b: ObscuraClient) {
     assertEquals(bFriendsBefore + 1, b.friendList.value.size)
 }
 
-suspend fun sendAndVerify(sender: ObscuraClient, receiver: ObscuraClient, text: String, timeoutMs: Long = 15_000) {
-    sender.send(receiver.username!!, text)
-    val msg = receiver.waitForMessage(timeoutMs)
-    assertEquals("TEXT", msg.type)
-    assertEquals(text, msg.text)
-    assertEquals(sender.userId, msg.sourceUserId)
-    delay(500)
+/**
+ * Send a message the way obscura-pix does, and assert it arrived.
+ *
+ * This used to call `sender.send(receiver.username, text)` — the kit resolving a friend from a
+ * USERNAME and creating an ORM entry. That is gone (SPEC §0.4: the caller names the recipients), so
+ * the helper now does what the app does: name the recipient by userId, carry a canonical
+ * conversation id in the payload, and read the result out of the receiver's INBOX.
+ *
+ * Keeping the helper rather than rewriting 25 call sites is deliberate — those tests are about
+ * transport, acking and identity, not about how a send is addressed.
+ */
+/**
+ * Send without asserting delivery — for tests where the receiver is deliberately OFFLINE and the
+ * point is that the SERVER queues it. [sendAndVerify] polls the receiver's inbox, which cannot
+ * succeed until they reconnect.
+ */
+/**
+ * Whether [client] has received an entry whose payload carries [content].
+ *
+ * Replaces `getMessages(...).any { it.content == ... }`. `MessageDomain` is populated only by the
+ * legacy TEXT arm and SENT_SYNC, so a MODEL_SYNC never reaches it — received app data lives in the
+ * INBOX now, and `MessageDomain` is itself on RESET.md's deletion list.
+ */
+suspend fun ObscuraClient.hasReceived(content: String, timeoutMs: Long = 10_000): Boolean {
+    val deadline = System.currentTimeMillis() + timeoutMs
+    while (System.currentTimeMillis() < deadline) {
+        val hit = inbox.peek(200).any {
+            runCatching {
+                org.json.JSONObject(String(it.payload)).optString("content", "") == content
+            }.getOrDefault(false)
+        }
+        if (hit) return true
+        delay(250)
+    }
+    return false
+}
 
-    // Verify receiver's conversations has it
-    val recvMsgs = receiver.getMessages(sender.userId!!)
-    assertTrue(recvMsgs.any { it.content == text },
-        "Receiver's conversations should contain '$text'")
+suspend fun sendOnly(sender: ObscuraClient, receiver: ObscuraClient, text: String): String {
+    val entryId = "dm_${System.currentTimeMillis()}_${(0..99999).random()}"
+    sender.send(
+        recipientUserIds = listOf(receiver.userId!!),
+        modelKey = "directMessage",
+        entryId = entryId,
+        payload = org.json.JSONObject(mapOf(
+            "conversationId" to listOf(sender.userId!!, receiver.userId!!).sorted().joinToString("_"),
+            "content" to text,
+            "senderUsername" to (sender.username ?: ""),
+        )).toString().toByteArray(),
+    )
+    return entryId
+}
+
+suspend fun sendAndVerify(sender: ObscuraClient, receiver: ObscuraClient, text: String, timeoutMs: Long = 15_000) {
+    val convId = listOf(sender.userId!!, receiver.userId!!).sorted().joinToString("_")
+    val entryId = "dm_${System.currentTimeMillis()}_${(0..99999).random()}"
+    sender.send(
+        recipientUserIds = listOf(receiver.userId!!),
+        modelKey = "directMessage",
+        entryId = entryId,
+        payload = org.json.JSONObject(mapOf(
+            "conversationId" to convId,
+            "content" to text,
+            "senderUsername" to (sender.username ?: ""),
+        )).toString().toByteArray(),
+    )
+
+    // Poll the INBOX rather than consuming from `incomingMessages`.
+    //
+    // That is not a style choice. The channel is a droppable wake-up (SPEC §0.9 rule 4) and the ROW
+    // is the delivery path — so asserting on the row is what the architecture says to do. It also
+    // fixes a real breakage: consuming a channel item here stole it from callers that do their own
+    // `waitForMessage` afterwards, which timed out 10 integration tests.
+    val deadline = System.currentTimeMillis() + timeoutMs
+    var row: com.obscura.kit.stores.InboxRecord? = null
+    while (System.currentTimeMillis() < deadline && row == null) {
+        row = receiver.inbox.peek(200).find { it.entryId == entryId }
+        if (row == null) delay(250)
+    }
+
+    assertTrue(row != null, "receiver's inbox should contain entry $entryId within ${timeoutMs}ms")
+    assertEquals(sender.userId, row!!.senderUserId)
+    assertEquals(text, org.json.JSONObject(String(row.payload)).getString("content"))
 }

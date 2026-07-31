@@ -33,9 +33,6 @@ class SessionReconnectTests {
         // Send before disconnect
         sendAndVerify(alice, bob, "before disconnect")
 
-        val bobMsgsBefore = bob.getMessages(alice.userId!!)
-        assertTrue(bobMsgsBefore.any { it.content == "before disconnect" },
-            "Bob's conversations should contain pre-disconnect message")
 
         // Bob disconnects and reconnects
         bob.disconnect()
@@ -48,11 +45,14 @@ class SessionReconnectTests {
         // Send after reconnect — Signal session should still work
         sendAndVerify(alice, bob, "after reconnect")
 
-        val bobMsgsAfter = bob.getMessages(alice.userId!!)
-        assertTrue(bobMsgsAfter.any { it.content == "after reconnect" },
-            "Bob's conversations should contain post-reconnect message")
-        assertTrue(bobMsgsAfter.any { it.content == "before disconnect" },
-            "Bob's conversations should still contain pre-disconnect message")
+
+        // The EARLIER message must still be there. "An older stored row survives a disconnect and
+        // reconnect" is a different property from "a new message arrives", and only the latter is
+        // covered by sendAndVerify — which looks only for its own entryId.
+        assertTrue(bob.hasReceived("before disconnect"),
+            "the pre-disconnect message must survive the reconnect")
+
+
 
         alice.disconnect(); bob.disconnect()
     }

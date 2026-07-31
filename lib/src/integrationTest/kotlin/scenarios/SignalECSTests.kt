@@ -1,8 +1,6 @@
 package scenarios
 
-import com.obscura.kit.orm.ModelConfig
-import com.obscura.kit.orm.SyncStrategy
-import com.obscura.kit.orm.SignalManager
+import com.obscura.kit.wire.SignalManager
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.first
 import kotlinx.coroutines.runBlocking
@@ -112,19 +110,11 @@ class SignalECSTests {
         val bob = registerAndConnect("sig_b")
         becomeFriends(alice, bob)
 
-        val msgSchema = mapOf(
-            "directMessage" to ModelConfig(
-                fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"),
-                sync = SyncStrategy.GSET
-            )
-        )
-        alice.orm.define(msgSchema)
-        bob.orm.define(msgSchema)
 
         val convId = listOf(alice.userId!!, bob.userId!!).sorted().joinToString("_")
 
         // Alice starts typing
-        alice.orm.model("directMessage").typing(convId)
+        alice.sendTyping("directMessage", convId)
 
         // Bob receives the typed MODEL_SIGNAL over the wire and surfaces it as a
         // typing indicator. Signals no longer carry a JSON payload in the text
@@ -133,7 +123,7 @@ class SignalECSTests {
         // observes Alice typing in this conversation.
         val aliceName = alice.username!!
         val typers = withTimeout(15_000) {
-            bob.orm.model("directMessage").observeTyping(convId)
+            bob.observeTyping("directMessage", convId)
                 .first { it.contains(aliceName) }
         }
         assertTrue(typers.contains(aliceName), "Bob should observe Alice typing")
@@ -150,14 +140,6 @@ class SignalECSTests {
         val bob = registerAndConnect("sig_ob")
         becomeFriends(alice, bob)
 
-        val msgSchema = mapOf(
-            "directMessage" to ModelConfig(
-                fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"),
-                sync = SyncStrategy.GSET
-            )
-        )
-        alice.orm.define(msgSchema)
-        bob.orm.define(msgSchema)
 
         val convId = listOf(alice.userId!!, bob.userId!!).sorted().joinToString("_")
 
@@ -166,14 +148,14 @@ class SignalECSTests {
         delay(500)
 
         // Alice types while Bob is offline
-        alice.orm.model("directMessage").typing(convId)
+        alice.sendTyping("directMessage", convId)
         delay(500)
 
         // Bob reconnects — server may deliver the queued MODEL_SIGNAL
         bob.connect()
 
         // Send a real message to prove the channel works
-        alice.send(bob.username!!, "Done typing")
+        sendAndVerify(alice, bob, "Done typing")
 
         // Drain messages — signal may arrive before the real message
         var realMessageReceived = false

@@ -128,9 +128,9 @@ class AckSemanticsTests {
 
         // Warmup: a normal Bob -> Alice message. Establishes the Bob->Alice Signal session and
         // proves the delivery plumbing works before we corrupt anything.
-        bob.send(alice.username!!, "warmup ok")
+        sendAndVerify(bob, alice, "warmup ok")
         val warm = alice.waitForMessage(15_000)
-        assertEquals("warmup ok", warm.text, "warmup message should decrypt fine")
+        assertEquals("warmup ok", warm.content(), "warmup message should decrypt fine")
         assertEquals(0, aliceLogger.decryptFailures.get(), "warmup must not have failed to decrypt")
         delay(500)
 

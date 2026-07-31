@@ -88,14 +88,7 @@ class CoreFlowTests {
         // Bob -> Alice
         sendAndVerify(bob, alice, "Hello Alice!")
 
-        // Verify both sides have the full conversation
-        val bobMsgs = bob.getMessages(alice.userId!!)
-        assertTrue(bobMsgs.any { it.content == "Hello Bob from Kotlin!" },
-            "Bob's conversations should contain Alice's message")
 
-        val aliceMsgs = alice.getMessages(bob.userId!!)
-        assertTrue(aliceMsgs.any { it.content == "Hello Alice!" },
-            "Alice's conversations should contain Bob's message")
 
         alice.disconnect(); bob.disconnect()
     }
@@ -115,7 +108,7 @@ class CoreFlowTests {
         delay(1000)
 
         // Alice sends while Bob offline
-        alice.send(bob.username!!, "You were offline!")
+        sendOnly(alice, bob, "You were offline!")
         delay(1000)
 
         // Bob reconnects
@@ -123,16 +116,11 @@ class CoreFlowTests {
         assertEquals(ConnectionState.CONNECTED, bob.connectionState.value,
             "Bob should be CONNECTED after reconnect")
 
-        val msg = bob.waitForMessage(20_000)
-        assertEquals("TEXT", msg.type)
-        assertEquals("You were offline!", msg.text)
+        val msg = bob.waitForType("MODEL_SYNC", 20_000)
+        assertEquals("You were offline!", msg.content())
         assertEquals(alice.userId, msg.sourceUserId)
         delay(300)
 
-        // Verify in Bob's conversations
-        val bobMsgs = bob.getMessages(alice.userId!!)
-        assertTrue(bobMsgs.any { it.content == "You were offline!" },
-            "Bob's conversations should contain the offline message")
 
         alice.disconnect(); bob.disconnect()
     }

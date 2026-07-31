@@ -59,8 +59,7 @@ class AttachmentTests {
         alice.sendAttachment(bob.username!!, attId, contentKey, nonce, "image/jpeg", jpeg.size.toLong())
 
         // Bob receives the CONTENT_REFERENCE message
-        val msg = bob.waitForMessage()
-        assertEquals("CONTENT_REFERENCE", msg.type, "Message type should be CONTENT_REFERENCE")
+        val msg = bob.waitForType("CONTENT_REFERENCE")
         assertEquals(alice.userId, msg.sourceUserId, "Source should be alice")
 
         // Verify the attachment ID in the received message
@@ -90,8 +89,7 @@ class AttachmentTests {
         alice.sendAttachment(bob.username!!, attId, ByteArray(32), ByteArray(12), "application/octet-stream", data.size.toLong())
 
         // Bob receives
-        val msg = bob.waitForMessage()
-        assertEquals("CONTENT_REFERENCE", msg.type)
+        val msg = bob.waitForType("CONTENT_REFERENCE")
         assertEquals(alice.userId, msg.sourceUserId)
 
         // Verify the content reference fields

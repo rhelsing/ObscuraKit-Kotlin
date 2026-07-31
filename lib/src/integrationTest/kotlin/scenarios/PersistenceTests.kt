@@ -54,16 +54,14 @@ class PersistenceTests {
         // Exchange a message to prove sessions work
         sendAndVerify(alice, bob1, "before restart")
 
-        val bob1Msgs = bob1.getMessages(alice.userId!!)
-        assertTrue(bob1Msgs.any { it.content == "before restart" },
-            "Bob1 conversations should contain pre-restart message")
 
         // Bob disconnects (simulates app killed)
         bob1.disconnect()
         assertEquals(ConnectionState.DISCONNECTED, bob1.connectionState.value)
 
-        // Alice sends while Bob is offline — server queues it
-        alice.send(bobUsername!!, "while you were gone")
+        // Alice sends while Bob is offline — server queues it. `sendOnly`, not `sendAndVerify`:
+        // the latter polls the receiver's inbox, which cannot fill until Bob reconnects.
+        sendOnly(alice, bob1, "while you were gone")
         delay(1000)
 
         // Simulate restart: new ObscuraClient, same file-backed DB
@@ -83,29 +81,23 @@ class PersistenceTests {
             "Bob2 should be CONNECTED after restore + connect")
 
         // Receive the queued message
-        val received = bob2.waitForMessage(20_000)
-        assertEquals("TEXT", received.type)
-        assertEquals("while you were gone", received.text)
+        val received = bob2.waitForType("MODEL_SYNC", 20_000)
+        assertEquals("while you were gone", received.content())
         assertEquals(alice.userId, received.sourceUserId)
+        // THE assertion this test is named for: it survived a restart into a durable STORE, not
+        // merely into the in-process channel — which SPEC §0.9 rule 4 calls droppable.
+        assertTrue(bob2.hasReceived("while you were gone"),
+            "the queued message must be in the restarted client's durable inbox")
         delay(300)
 
-        // Verify in Bob2's conversations
-        val bob2Msgs = bob2.getMessages(alice.userId!!)
-        assertTrue(bob2Msgs.any { it.content == "while you were gone" },
-            "Bob2 conversations should contain the offline message after restart")
 
         // Prove bidirectional works after restart
-        bob2.send(alice.username!!, "I'm back")
-        val reply = alice.waitForMessage()
-        assertEquals("TEXT", reply.type)
-        assertEquals("I'm back", reply.text)
+        sendAndVerify(bob2, alice, "I'm back")
+        val reply = alice.waitForType("MODEL_SYNC")
+        assertEquals("I'm back", reply.content())
         assertEquals(bobUserId, reply.sourceUserId)
         delay(300)
 
-        // Verify Alice's conversations
-        val aliceMsgs = alice.getMessages(bobUserId)
-        assertTrue(aliceMsgs.any { it.content == "I'm back" },
-            "Alice's conversations should contain Bob's reply after restart")
 
         alice.disconnect(); bob2.disconnect()
     }
