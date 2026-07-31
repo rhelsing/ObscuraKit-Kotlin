@@ -512,15 +512,6 @@ class ObscuraClient(
             registrationId = (saved["registrationId"] as? Number)?.toInt() ?: 0
         )
 
-        // Define models from cached schema if available
-        val cachedSchema = saved["cachedSchema"] as? String
-        if (cachedSchema != null) {
-            try {
-                log("SESSION models defined from cache")
-            } catch (e: Exception) {
-                log("SESSION cached schema invalid: ${e.message}")
-            }
-        }
 
         // Refresh token + connect
         try {
@@ -1045,6 +1036,14 @@ class ObscuraClient(
                 payload = if (isModelSync) sync.data.toByteArray() else msg.toByteArray(),
             )
         )
+
+        // The typed event stream's only app-data event. It deliberately carries NO payload: the
+        // bytes are in the inbox and the app drains them, so an event carrying data would be a
+        // second delivery path competing with the store (KIT_API §2). Emitting it here — after the
+        // row has committed — keeps it a wake-up about something already durable.
+        if (isModelSync) {
+            _typedEvents.tryEmit(ObscuraEvent.MessageReceived(sync.model))
+        }
 
         if (!inserted) {
             // A redelivered envelope. Not an error: persist-then-ack guarantees this happens, and

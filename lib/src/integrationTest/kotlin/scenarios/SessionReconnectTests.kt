@@ -46,6 +46,14 @@ class SessionReconnectTests {
         sendAndVerify(alice, bob, "after reconnect")
 
 
+        // The EARLIER message must still be there. "An older stored row survives a disconnect and
+        // reconnect" is a different property from "a new message arrives", and only the latter is
+        // covered by sendAndVerify — which looks only for its own entryId.
+        assertTrue(bob.hasReceived("before disconnect"),
+            "the pre-disconnect message must survive the reconnect")
+
+
+
         alice.disconnect(); bob.disconnect()
     }
 

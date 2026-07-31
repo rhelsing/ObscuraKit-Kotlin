@@ -83,10 +83,10 @@ class CoreFlowTests {
         becomeFriends(alice, bob)
 
         // Alice -> Bob
-        sendOnly(alice, bob, "Hello Bob from Kotlin!")
+        sendAndVerify(alice, bob, "Hello Bob from Kotlin!")
 
         // Bob -> Alice
-        sendOnly(bob, alice, "Hello Alice!")
+        sendAndVerify(bob, alice, "Hello Alice!")
 
 
 

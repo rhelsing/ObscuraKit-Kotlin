@@ -83,6 +83,48 @@ class InboxTests {
      */
 
     /**
+     * **SPEC §2.4: a peer-supplied timestamp is clamped BEFORE it is stored.**
+     *
+     * This property lost its only Kotlin coverage when the CRDT engine was deleted — `LWWMapTest`
+     * held the clamp tests, and the surviving implementation is `ObscuraClient.clampFutureTimestamp`
+     * on the inbox path. `RESET.md` explicitly says to KEEP §2.4, so it needs a test that outlives
+     * the engine.
+     *
+     * Without the clamp a peer sets `sentAt` far in the future and wins every REPLACE conflict
+     * forever: the tie-break can only order writes it can compare honestly.
+     *
+     * `Long.MAX_VALUE` also exercises the subtle half. `ModelSync.timestamp` is proto3 `uint64`,
+     * which protobuf-java surfaces as a SIGNED Long — so a large enough value arrives NEGATIVE and
+     * sails under a naive `minOf` cap. Both ends are clamped.
+     */
+    @Test
+    fun `a far-future peer timestamp is clamped before it is stored`() = runBlocking {
+        assumeTrue(checkServer())
+
+        val alice = registerAndConnect("clamp_a")
+        val bob = registerAndConnect("clamp_b")
+        becomeFriends(alice, bob)
+
+        val before = System.currentTimeMillis()
+        alice.send(
+            recipientUserIds = listOf(bob.userId!!),
+            modelKey = "story",
+            entryId = "story_clamped",
+            sentAt = Long.MAX_VALUE,
+            payload = """{"content":"from the far future"}""".toByteArray(),
+        )
+        delay(3000)
+
+        val row = bob.inbox.peek().find { it.entryId == "story_clamped" }
+        assertTrue(row != null, "the entry should still arrive — clamping is not rejection")
+        assertTrue(row!!.sentAt!! <= before + 120_000,
+            "sentAt must be clamped to about now, not stored as ${row.sentAt}")
+        assertTrue(row.sentAt!! > 0, "a signed-Long overflow must not store a negative timestamp")
+
+        alice.disconnect(); bob.disconnect()
+    }
+
+    /**
      * **Offline delivery, relocated from `ORMMessageTests`** when the ORM's receive path was
      * disconnected. The behaviour is the whole point of a durable inbox: the server holds what it
      * could not deliver, and hands it over on reconnect.

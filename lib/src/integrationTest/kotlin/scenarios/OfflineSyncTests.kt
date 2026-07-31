@@ -41,6 +41,9 @@ class OfflineSyncTests {
 
         val msg1 = bob.waitForType("MODEL_SYNC", 20_000)
         assertEquals(alice.userId, msg1.sourceUserId)
+        // Content, not just arrival: two notifications prove nothing about WHICH two messages.
+        assertTrue(bob.hasReceived("Offline message 1"), "queued message 1 must arrive intact")
+        assertTrue(bob.hasReceived("Offline message 2"), "queued message 2 must arrive intact")
 
         val msg2 = bob.waitForType("MODEL_SYNC", 20_000)
         assertEquals(alice.userId, msg2.sourceUserId)

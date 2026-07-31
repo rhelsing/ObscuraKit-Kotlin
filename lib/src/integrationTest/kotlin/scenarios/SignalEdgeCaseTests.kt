@@ -39,6 +39,8 @@ class SignalEdgeCaseTests {
         sendAndVerify(alice, bob, "Signal test message 1")
         sendAndVerify(bob, alice, "Signal test reply 1")
 
+
+
         alice.disconnect(); bob.disconnect()
     }
 
@@ -63,8 +65,12 @@ class SignalEdgeCaseTests {
         sendAndVerify(alice, bob, "After reset from Alice", timeoutMs = 30_000)
         sendAndVerify(bob, alice, "After reset from Bob", timeoutMs = 30_000)
 
-        // Verify conversations state
+        // The EARLIER message must still be there. "An older stored row survives a session reset"
+        // is a different property from "a new message arrives", and only the latter is covered by
+        // sendAndVerify — which looks only for its own entryId.
         delay(300)
+        assertTrue(bob.hasReceived("Before reset"),
+            "the pre-reset message must survive the session reset")
 
         alice.disconnect(); bob.disconnect()
     }

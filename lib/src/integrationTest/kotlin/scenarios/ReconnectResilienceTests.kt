@@ -167,7 +167,7 @@ class ReconnectResilienceTests {
 
         delay(5000)
 
-        sendOnly(alice, bob, "after 5s idle")
+        sendAndVerify(alice, bob, "after 5s idle")
 
         alice.disconnect()
         bob.disconnect()
@@ -186,7 +186,7 @@ class ReconnectResilienceTests {
         // and this test fails.
         delay(35_000)
 
-        sendOnly(alice, bob, "after 35s idle — ping kept us alive")
+        sendAndVerify(alice, bob, "after 35s idle — ping kept us alive")
 
         alice.disconnect()
         bob.disconnect()

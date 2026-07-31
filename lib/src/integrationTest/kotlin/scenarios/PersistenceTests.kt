@@ -84,6 +84,10 @@ class PersistenceTests {
         val received = bob2.waitForType("MODEL_SYNC", 20_000)
         assertEquals("while you were gone", received.content())
         assertEquals(alice.userId, received.sourceUserId)
+        // THE assertion this test is named for: it survived a restart into a durable STORE, not
+        // merely into the in-process channel — which SPEC §0.9 rule 4 calls droppable.
+        assertTrue(bob2.hasReceived("while you were gone"),
+            "the queued message must be in the restarted client's durable inbox")
         delay(300)
 
 
