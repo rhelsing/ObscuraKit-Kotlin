@@ -1,3 +1,34 @@
+-- The app's entry store (`obscura-proto/KIT_API.md` §8.1). Read and written by `EntryStore.kt`.
+--
+-- The ORM engine that used to sit on this table is deleted (`RESET.md` §10 step 4). The table is
+-- not: RESET.md is explicit that the engine dies and the table does not. What went with the engine
+-- was `ModelAssociation` (relationships, never bridged, zero callers) and six queries that only the
+-- query DSL and `TTLManager` ever called — `selectByModelAndId`, `selectByModelWhere` (the `LIKE`
+-- the DSL compiled to), `selectExpired`, `deleteExpired`, `selectAssociations`, `insertAssociation`.
+--
+-- ## Why `ttl_expires_at` is still here
+--
+-- It is dead — nothing reads it, and `EntryStore.put` writes `null` — and `RESET.md` lists it for a
+-- later migration. It stays because dropping it costs more than it saves, in two ways worth writing
+-- down so nobody "finishes the job" and breaks something:
+--
+--   1. `ALTER TABLE ... DROP COLUMN` needs SQLite 3.35+. obscura-pix runs `AndroidSqliteDriver`
+--      against the SYSTEM SQLite with `minSdk 24`, and Android did not reach 3.35 until API 34
+--      (Android 14). The statement would throw on every older device, mid-migration.
+--   2. The portable alternative — create/copy/drop/rename — changes what `sqlite_master` stores:
+--      `ALTER TABLE ... RENAME TO` writes `CREATE TABLE "ModelEntry"`, with quotes, where a fresh
+--      install has `CREATE TABLE ModelEntry`. `SchemaMigrationTests.migrated schema is identical to
+--      a freshly created one` compares exactly that text and would fail. (Checked against SQLite
+--      3.50: `DROP COLUMN` is byte-identical to a fresh create, the rebuild is not.)
+--
+-- ObscuraKit-swift's `ObscuraSchema` v2 *does* rebuild its equivalent table, and that is not a
+-- divergence in judgement: iOS ships its own SQLite inside GRDB's SQLCipher, so reason 1 does not
+-- apply, and its `SchemaTests` compares table NAMES rather than CREATE text, so reason 2 does not
+-- either. Different constraints, not different opinions.
+--
+-- `deleted` is NOT dead — `delete` soft-deletes and `selectByModel` filters on it. That is a
+-- deliberate difference from the Swift kit, which hard-deletes; the observable behaviour through
+-- the bridge is identical, because both make the entry stop appearing in `all`.
 CREATE TABLE IF NOT EXISTS ModelEntry (
     model_name TEXT NOT NULL,
     entry_id TEXT NOT NULL,
@@ -9,25 +40,8 @@ CREATE TABLE IF NOT EXISTS ModelEntry (
     PRIMARY KEY (model_name, entry_id)
 );
 
-CREATE TABLE IF NOT EXISTS ModelAssociation (
-    model_name TEXT NOT NULL,
-    entry_id TEXT NOT NULL,
-    belongs_to_model TEXT NOT NULL,
-    belongs_to_id TEXT NOT NULL,
-    PRIMARY KEY (model_name, entry_id, belongs_to_model, belongs_to_id)
-);
-
 selectByModel:
 SELECT * FROM ModelEntry WHERE model_name = ? AND deleted = 0;
-
-selectByModelAndId:
-SELECT * FROM ModelEntry WHERE model_name = ? AND entry_id = ?;
-
-selectByModelWhere:
-SELECT * FROM ModelEntry WHERE model_name = ? AND deleted = 0 AND data LIKE ?;
-
-selectExpired:
-SELECT * FROM ModelEntry WHERE ttl_expires_at IS NOT NULL AND ttl_expires_at < ?;
 
 insertEntry:
 INSERT OR REPLACE INTO ModelEntry(model_name, entry_id, data, timestamp, author_device_id, deleted, ttl_expires_at)
@@ -36,21 +50,5 @@ VALUES (?, ?, ?, ?, ?, ?, ?);
 markDeleted:
 UPDATE ModelEntry SET deleted = 1, timestamp = ? WHERE model_name = ? AND entry_id = ?;
 
-deleteExpired:
-DELETE FROM ModelEntry WHERE ttl_expires_at IS NOT NULL AND ttl_expires_at < ?;
-
--- Associations
-selectAssociations:
-SELECT me.* FROM ModelEntry me
-INNER JOIN ModelAssociation ma ON me.model_name = ma.model_name AND me.entry_id = ma.entry_id
-WHERE ma.belongs_to_model = ? AND ma.belongs_to_id = ? AND me.deleted = 0;
-
-insertAssociation:
-INSERT OR REPLACE INTO ModelAssociation(model_name, entry_id, belongs_to_model, belongs_to_id)
-VALUES (?, ?, ?, ?);
-
 deleteAllEntries:
 DELETE FROM ModelEntry;
-
-deleteAllAssociations:
-DELETE FROM ModelAssociation;
