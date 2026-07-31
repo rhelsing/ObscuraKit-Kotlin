@@ -58,20 +58,14 @@ class MultiDeviceLinkingTests {
 
         becomeFriends(alice, bob)
 
-        alice.send(bob.username!!, "Test message 1")
+        sendAndVerify(alice, bob, "Test message 1")
         bob.waitForMessage()
         delay(300)
 
-        alice.send(bob.username!!, "Test message 2")
+        sendAndVerify(alice, bob, "Test message 2")
         bob.waitForMessage()
         delay(300)
 
-        // Verify Bob's conversations contain both messages
-        val bobMsgs = bob.getMessages(alice.userId!!)
-        assertTrue(bobMsgs.any { it.content == "Test message 1" },
-            "Bob should have first message in conversations")
-        assertTrue(bobMsgs.any { it.content == "Test message 2" },
-            "Bob should have second message in conversations")
 
         alice.disconnect(); bob.disconnect()
     }

@@ -2,7 +2,7 @@ package scenarios
 
 import com.obscura.kit.network.GatewayConnection
 import com.obscura.kit.network.GatewayState
-import com.obscura.kit.orm.SignalManager
+import com.obscura.kit.wire.SignalManager
 import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.first
 import org.junit.jupiter.api.Assertions.*

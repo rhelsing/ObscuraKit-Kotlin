@@ -72,7 +72,7 @@ internal class MessagingManager(
         val friendData = friends.getAccepted().find { it.username == friendUsername }
             ?: throw com.obscura.kit.ObscuraError.NotFriends(friendUsername)
 
-        val opEnum = com.obscura.kit.orm.WireCodec.encodeOp(com.obscura.kit.orm.ModelOp.fromApp(op))
+        val opEnum = com.obscura.kit.wire.WireCodec.encodeOp(com.obscura.kit.wire.ModelOp.fromApp(op))
 
         val msg = ClientMessage.newBuilder()
             .setTimestamp(System.currentTimeMillis())
@@ -125,7 +125,7 @@ internal class MessagingManager(
             .setModelSync(obscura.client.v1.modelSync {
                 this.model = modelKey
                 this.id = entryId
-                this.op = com.obscura.kit.orm.WireCodec.encodeOp(com.obscura.kit.orm.ModelOp.fromApp(op))
+                this.op = com.obscura.kit.wire.WireCodec.encodeOp(com.obscura.kit.wire.ModelOp.fromApp(op))
                 timestamp = sentAt
                 this.data = com.google.protobuf.ByteString.copyFrom(payload)
                 authorDeviceId = session.deviceId ?: ""

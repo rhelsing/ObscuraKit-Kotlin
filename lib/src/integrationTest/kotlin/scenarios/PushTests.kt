@@ -3,8 +3,6 @@ package scenarios
 import com.obscura.kit.ConnectionState
 import com.obscura.kit.ObscuraClient
 import com.obscura.kit.ObscuraConfig
-import com.obscura.kit.orm.ModelConfig
-import com.obscura.kit.orm.SyncStrategy
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.*
@@ -46,51 +44,41 @@ class PushTests {
         val bob = registerAndConnect("push_b")
         becomeFriends(alice, bob)
 
-        // Both must define the same ORM schema so sync decoding works
-        val schema = mapOf(
-            "pix" to ModelConfig(
-                fields = mapOf(
-                    "recipientUsername" to "string",
-                    "senderUsername" to "string",
-                    "mediaRef" to "string"
-                ),
-                sync = SyncStrategy.LWW
-            ),
-            "directMessage" to ModelConfig(
-                fields = mapOf(
-                    "conversationId" to "string",
-                    "content" to "string",
-                    "senderUsername" to "string"
-                ),
-                sync = SyncStrategy.GSET
-            )
-        )
-        alice.orm.define(schema)
-        bob.orm.define(schema)
+
+        // No schema is defined: `processPendingMessages` classifies off `ModelSync.model` straight
+        // from the proto, not through the ORM, so the push path never needed one.
 
         // Bob goes offline — simulates app being backgrounded/killed
         bob.disconnect()
         assertEquals(ConnectionState.DISCONNECTED, bob.connectionState.value)
         delay(300)
 
-        // Alice sends 2 pix + 1 direct message to Bob while he's offline
-        val pix = alice.orm.model("pix")
-        pix.create(mapOf(
-            "recipientUsername" to bob.username!!,
-            "senderUsername" to alice.username!!,
-            "mediaRef" to "fake-ref-1"
-        ))
-        pix.create(mapOf(
-            "recipientUsername" to bob.username!!,
-            "senderUsername" to alice.username!!,
-            "mediaRef" to "fake-ref-2"
-        ))
-        val dm = alice.orm.model("directMessage")
-        dm.create(mapOf(
-            "conversationId" to "conv1",
-            "content" to "hey there",
-            "senderUsername" to alice.username!!
-        ))
+        // Alice sends 2 pix + 1 direct message to Bob while he's offline. The APP names the
+        // recipients now (SPEC §0.4) — `send` resolves no audience of its own.
+        val convId = listOf(alice.userId!!, bob.userId!!).sorted().joinToString("_")
+        repeat(2) { i ->
+            alice.send(
+                recipientUserIds = listOf(bob.userId!!),
+                modelKey = "pix",
+                entryId = "pix_$i",
+                payload = org.json.JSONObject(mapOf(
+                    "conversationId" to convId,
+                    "recipientUsername" to bob.username!!,
+                    "senderUsername" to alice.username!!,
+                    "mediaRef" to "fake-ref-$i",
+                )).toString().toByteArray(),
+            )
+        }
+        alice.send(
+            recipientUserIds = listOf(bob.userId!!),
+            modelKey = "directMessage",
+            entryId = "dm_1",
+            payload = org.json.JSONObject(mapOf(
+                "conversationId" to convId,
+                "content" to "hey there",
+                "senderUsername" to alice.username!!,
+            )).toString().toByteArray(),
+        )
         delay(500)
 
         // Bob's push wake: drain queued envelopes and classify

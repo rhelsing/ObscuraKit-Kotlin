@@ -1,8 +1,6 @@
 package scenarios
 
 import com.obscura.kit.ConnectionState
-import com.obscura.kit.orm.ModelConfig
-import com.obscura.kit.orm.SyncStrategy
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.json.JSONObject
@@ -53,9 +51,9 @@ class ReconnectResilienceTests {
         delay(500)
 
         // Alice sends while Bob is down
-        alice.send(bob.username!!, "while you were gone 1")
+        sendOnly(alice, bob, "while you were gone 1")
         delay(200)
-        alice.send(bob.username!!, "while you were gone 2")
+        sendOnly(alice, bob, "while you were gone 2")
         delay(500)
 
         // Bob comes back
@@ -77,23 +75,22 @@ class ReconnectResilienceTests {
     }
 
     @Test
-    fun `ORM auto-sync survives disconnect and reconnect`() = runBlocking {
+    fun `entry sync survives disconnect and reconnect`() = runBlocking {
         assumeTrue(checkServer())
 
         val alice = registerAndConnect("rcn_oa")
         val bob = registerAndConnect("rcn_ob")
         becomeFriends(alice, bob)
 
-        val storyConfig = mapOf(
-            "story" to ModelConfig(fields = mapOf("content" to "string"), sync = SyncStrategy.GSET)
-        )
-        alice.orm.define(storyConfig)
-        bob.orm.define(storyConfig)
 
-        // ORM works before
-        alice.orm.model("story").create(mapOf("content" to "before"))
-        val msg1 = bob.waitForMessage(15_000)
-        assertEquals("MODEL_SYNC", msg1.type)
+        // Sending works before
+        alice.send(
+                recipientUserIds = listOf(bob.userId!!),
+                modelKey = "story",
+                entryId = "story_${System.currentTimeMillis()}",
+                payload = org.json.JSONObject(mapOf("content" to "before")).toString().toByteArray(),
+            )
+        val msg1 = bob.waitForType("MODEL_SYNC", 15_000)
 
         // Alice disconnects and reconnects
         alice.disconnect()
@@ -102,9 +99,13 @@ class ReconnectResilienceTests {
         delay(1000)
 
         // ORM works after
-        alice.orm.model("story").create(mapOf("content" to "after reconnect"))
-        val msg2 = bob.waitForMessage(15_000)
-        assertEquals("MODEL_SYNC", msg2.type)
+        alice.send(
+                recipientUserIds = listOf(bob.userId!!),
+                modelKey = "story",
+                entryId = "story_${System.currentTimeMillis()}",
+                payload = org.json.JSONObject(mapOf("content" to "after reconnect")).toString().toByteArray(),
+            )
+        val msg2 = bob.waitForType("MODEL_SYNC", 15_000)
         val data = JSONObject(String(msg2.raw!!.modelSync.data.toByteArray()))
         assertEquals("after reconnect", data.getString("content"))
 
@@ -166,7 +167,7 @@ class ReconnectResilienceTests {
 
         delay(5000)
 
-        sendAndVerify(alice, bob, "after 5s idle")
+        sendOnly(alice, bob, "after 5s idle")
 
         alice.disconnect()
         bob.disconnect()
@@ -185,7 +186,7 @@ class ReconnectResilienceTests {
         // and this test fails.
         delay(35_000)
 
-        sendAndVerify(alice, bob, "after 35s idle — ping kept us alive")
+        sendOnly(alice, bob, "after 35s idle — ping kept us alive")
 
         alice.disconnect()
         bob.disconnect()

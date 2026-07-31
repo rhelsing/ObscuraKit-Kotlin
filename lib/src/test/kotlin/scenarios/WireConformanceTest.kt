@@ -1,8 +1,8 @@
 package scenarios
 
 import com.google.protobuf.ByteString
-import com.obscura.kit.orm.ModelOp
-import com.obscura.kit.orm.WireCodec
+import com.obscura.kit.wire.ModelOp
+import com.obscura.kit.wire.WireCodec
 import obscura.client.v1.Client
 import org.json.JSONObject
 import org.junit.jupiter.api.Assertions.assertEquals

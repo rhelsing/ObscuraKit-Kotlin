@@ -1,7 +1,6 @@
 package scenarios
 
-import com.obscura.kit.orm.ModelConfig
-import com.obscura.kit.orm.SyncStrategy
+import com.obscura.kit.ObscuraClient
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 import org.junit.jupiter.api.Assertions.*
@@ -22,12 +21,17 @@ import org.junit.jupiter.api.Test
  */
 class InboxTests {
 
-    private fun schema() = mapOf(
-        "story" to ModelConfig(
-            fields = mapOf("content" to "string", "author" to "string"),
-            sync = SyncStrategy.GSET,
+    // No schema is defined anywhere in this file. The inbox does not need one — `modelKey` is an
+    // opaque namespace string — and after §10 step 4 there is nothing to define it with.
+
+    /** Send an entry the way obscura-pix does: the caller names the recipient (SPEC §0.4). */
+    private suspend fun sendStory(from: ObscuraClient, to: ObscuraClient, entryId: String, content: String) =
+        from.send(
+            recipientUserIds = listOf(to.userId!!),
+            modelKey = "story",
+            entryId = entryId,
+            payload = org.json.JSONObject(mapOf("content" to content)).toString().toByteArray(),
         )
-    )
 
     @Test
     fun `a received MODEL_SYNC lands in the inbox with authenticated identity`() = runBlocking {
@@ -36,14 +40,10 @@ class InboxTests {
         val alice = registerAndConnect("inbox_a")
         val bob = registerAndConnect("inbox_b")
         becomeFriends(alice, bob)
-        alice.orm.define(schema())
-        bob.orm.define(schema())
 
         assertEquals(0L, bob.inbox.depth(), "inbox starts empty")
 
-        alice.orm.model("story").create(
-            mapOf("content" to "hello from the wire", "author" to alice.username!!)
-        )
+        sendStory(alice, bob, "story_7557", "hello from the wire")
         delay(3000)
 
         val rows = bob.inbox.peek()
@@ -132,13 +132,10 @@ class InboxTests {
         val alice = registerAndConnect("inboxdrain_a")
         val bob = registerAndConnect("inboxdrain_b")
         becomeFriends(alice, bob)
-        alice.orm.define(schema())
-        bob.orm.define(schema())
 
-        val story = alice.orm.model("story")
-        story.create(mapOf("content" to "one", "author" to alice.username!!))
+        sendStory(alice, bob, "story_one", "one")
         delay(1500)
-        story.create(mapOf("content" to "two", "author" to alice.username!!))
+        sendStory(alice, bob, "story_two", "two")
         delay(3000)
 
         assertEquals(2L, bob.inbox.depth())

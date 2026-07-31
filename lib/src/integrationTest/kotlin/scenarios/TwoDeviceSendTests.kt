@@ -149,12 +149,25 @@ class TwoDeviceSendTests {
 
     /** Bob sends one message; BOTH of Alice's devices must receive and decrypt it. */
     private suspend fun sendAndBothMustDecrypt(text: String) {
-        bob!!.send(aliceUsername!!, text)
+        // The app names the recipient by userId now (SPEC §0.4); the kit fans out to every device
+        // of that user, which is exactly what this test is about.
+        bob!!.send(
+            recipientUserIds = listOf(alice1!!.userId!!),
+            modelKey = "directMessage",
+            entryId = "dm_${System.currentTimeMillis()}_${(0..99999).random()}",
+            payload = org.json.JSONObject(mapOf(
+                "conversationId" to listOf(bob!!.userId!!, alice1!!.userId!!).sorted().joinToString("_"),
+                "content" to text,
+            )).toString().toByteArray(),
+        )
 
         val onD1 = runCatching { alice1!!.waitForMessage(15_000) }
         val onD2 = runCatching { alice2!!.waitForMessage(15_000) }
-        val d1ok = onD1.getOrNull()?.text == text
-        val d2ok = onD2.getOrNull()?.text == text
+        // `.text` is the legacy TEXT arm's field and is EMPTY for a MODEL_SYNC — the content lives
+        // in the opaque payload. This test is about both devices decrypting, so it must read the
+        // content from wherever it actually is.
+        val d1ok = onD1.getOrNull()?.content() == text
+        val d2ok = onD2.getOrNull()?.content() == text
 
         println("  RESULT '$text': device1 decrypted=$d1ok  device2 decrypted=$d2ok")
         if (!d1ok || !d2ok) {
@@ -165,8 +178,8 @@ class TwoDeviceSendTests {
             alice2!!.debugLog.take(10).reversed().forEach { println("    $it") }
         }
 
-        assertTrue(d1ok, "Alice device 1 must receive and decrypt '$text' — got ${onD1.getOrNull()?.text}")
-        assertTrue(d2ok, "Alice device 2 must receive and decrypt '$text' — got ${onD2.getOrNull()?.text}")
+        assertTrue(d1ok, "Alice device 1 must receive and decrypt '$text' — got ${onD1.getOrNull()?.content()}")
+        assertTrue(d2ok, "Alice device 2 must receive and decrypt '$text' — got ${onD2.getOrNull()?.content()}")
     }
 
     @Test @Order(1)

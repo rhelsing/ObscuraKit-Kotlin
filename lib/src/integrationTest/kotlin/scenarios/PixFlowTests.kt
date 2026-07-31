@@ -38,8 +38,7 @@ class PixFlowTests {
         alice.sendAttachment(bob.username!!, attId, ByteArray(32), ByteArray(12), "image/jpeg", jpeg.size.toLong())
 
         // Bob receives CONTENT_REFERENCE
-        val msg = bob.waitForMessage()
-        assertEquals("CONTENT_REFERENCE", msg.type)
+        val msg = bob.waitForType("CONTENT_REFERENCE")
         assertEquals(alice.userId, msg.sourceUserId)
 
         // Bob downloads and verifies JPEG header bytes
@@ -66,8 +65,7 @@ class PixFlowTests {
         val (aliceAttId, _) = alice.uploadAttachment(aliceJpeg)
         alice.sendAttachment(bob.username!!, aliceAttId, ByteArray(32), ByteArray(12), "image/jpeg", aliceJpeg.size.toLong())
 
-        val bobMsg = bob.waitForMessage()
-        assertEquals("CONTENT_REFERENCE", bobMsg.type)
+        val bobMsg = bob.waitForType("CONTENT_REFERENCE")
         assertEquals(alice.userId, bobMsg.sourceUserId)
 
         // Bob downloads alice's image and verifies JPEG header
@@ -81,8 +79,7 @@ class PixFlowTests {
         val (bobAttId, _) = bob.uploadAttachment(bobJpeg)
         bob.sendAttachment(alice.username!!, bobAttId, ByteArray(32), ByteArray(12), "image/jpeg", bobJpeg.size.toLong())
 
-        val aliceMsg = alice.waitForMessage()
-        assertEquals("CONTENT_REFERENCE", aliceMsg.type)
+        val aliceMsg = alice.waitForType("CONTENT_REFERENCE")
         assertEquals(bob.userId, aliceMsg.sourceUserId)
 
         // Alice downloads bob's image and verifies JPEG header

@@ -43,10 +43,10 @@ class AuthorDeviceIdTests {
         val bobUserId = bob.userId!!
         assertNotEquals(bobDeviceId, bobUserId, "device UUID and user UUID must differ for this test to mean anything")
 
-        bob.send(alice.username!!, "attribute me correctly")
+        sendAndVerify(bob, alice, "attribute me correctly")
 
         val received = alice.waitForMessage(15_000)
-        assertEquals("attribute me correctly", received.text)
+        assertEquals("attribute me correctly", received.content())
         assertEquals(bobUserId, received.sourceUserId, "sourceUserId is Bob's USER id")
 
         // The wake-up carries the sender's real DEVICE UUID (from Envelope.sender_device_id,
@@ -58,16 +58,23 @@ class AuthorDeviceIdTests {
 
         delay(500)
 
-        // The DURABLY PERSISTED message records the honest device id too.
-        val persisted = alice.getMessages(bobUserId)
-        val msg = persisted.find { it.content == "attribute me correctly" }
-        assertNotNull(msg, "message must be persisted in Alice's conversation with Bob")
-        assertEquals(bobDeviceId, msg!!.authorDeviceId,
-            "persisted authorDeviceId must be Bob's REAL device UUID")
-        assertNotEquals(bobUserId, msg.authorDeviceId,
-            "persisted authorDeviceId must NOT be the user id")
+        // The DURABLY PERSISTED record carries the honest device id too — and THIS is the assertion
+        // that matters, because the wake-up above is droppable while the row is the delivery path.
+        //
+        // It reads the INBOX rather than `getMessages`: a MODEL_SYNC never reaches `MessageDomain`
+        // (only the legacy TEXT arm and SENT_SYNC do), and `senderDeviceId` on the row is the
+        // address of the Signal session that decrypted it — cryptographic attribution, SPEC §0.10
+        // rule 4. That is precisely the field F4 got wrong.
+        val row = alice.inbox.peek(200).find {
+            org.json.JSONObject(String(it.payload)).optString("content", "") == "attribute me correctly"
+        }
+        assertNotNull(row, "message must be persisted in Alice's inbox")
+        assertEquals(bobDeviceId, row!!.senderDeviceId,
+            "persisted senderDeviceId must be Bob's REAL device UUID")
+        assertNotEquals(bobUserId, row.senderDeviceId,
+            "persisted senderDeviceId must NOT be the user id (that was the F4 lie)")
 
-        println("PROVEN: authorDeviceId=${msg.authorDeviceId} == bob.deviceId=$bobDeviceId " +
+        println("PROVEN: senderDeviceId=${row.senderDeviceId} == bob.deviceId=$bobDeviceId " +
             "(bob.userId=$bobUserId)")
 
         alice.disconnect(); bob.disconnect()
