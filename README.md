@@ -112,8 +112,8 @@ greps, which over-count by also matching `@TestFactory` and `@TestMethodOrder`.
 - **Transport** — REST + gateway WebSocket with auto-reconnect and token refresh; the offline queue
   is the server's, not ours.
 - **Attachment crypto** — upload/download with an AES key shipped over Signal.
-- **Push-wake drain** — `processPendingMessages(timeoutMs)` returns counts so the bridge can post a
-  generic local notification. The kit never posts an OS notification itself.
+- **Push-wake drain** — `processPendingMessages(timeoutMs)` returns one opaque total without
+  consuming the app's event stream. Notification policy stays in the app; the kit never posts one.
 - **Ephemeral signals** — typing indicators, in memory only, throttled to 2s and expiring after 3s.
   Audience is the canonical two-party conversation id, resolved fail-closed on both send and receive.
 

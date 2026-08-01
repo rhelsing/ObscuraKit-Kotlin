@@ -76,7 +76,8 @@ then an index abstraction, then observation, and the deleted engine is back unde
 - **Confined coroutines:** Each domain class uses `Dispatchers.Default.limitedParallelism(1)` — Kotlin equivalent of Swift Actors
 - **Auto-session building:** `MessengerDomain.queueMessage()` fetches prekey bundles and builds Signal sessions on demand
 - **StateFlow for UI:** `connectionState`, `authState`, `friendList`, `pendingRequests`, `conversations`; plus the `typedEvents` SharedFlow for bridges. (`events`, a second deprecated `ReceivedMessage` stream, is deleted — it had no consumer anywhere and its `tryEmit` sat in the hot receive loop.)
-- **Channel for tests:** `incomingMessages` channel + `waitForMessage()` for synchronous test flow
+- **Inbound wake stream:** `incomingMessages` has exactly one app consumer; push draining observes
+  receive activity without consuming it.
 
 ## Server API Endpoints Used
 
