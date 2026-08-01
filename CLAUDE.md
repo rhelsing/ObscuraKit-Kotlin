@@ -5,8 +5,8 @@
 **The reset has landed. Do not re-add what it removed.**
 
 Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md),
-[`obscura-proto/PLAN.md`](../obscura-proto/PLAN.md) (order of operations + current phase status) and
-[`obscura-proto/RESET.md`](../obscura-proto/RESET.md) **first**. They are the brief.
+[`obscura-proto/HISTORY.md`](../obscura-proto/HISTORY.md) (order of operations + current phase status) and
+[`obscura-proto/HISTORY.md`](../obscura-proto/HISTORY.md) **first**. They are the brief.
 
 **Where this kit is (2026-07-31): Phase 3 — the reset — has LANDED here (PR #56).** The `orm/`
 package is gone: Model, ModelConfig, ModelStore, MonotonicClock, OrmEntry, Query, QueryBuilder,
@@ -17,7 +17,7 @@ receive path, and `EntryStore` for storage. Merge and audience resolution live i
 once. `WireCodec.kt` and `SignalManager.kt` moved to `wire/` rather than dying — they were
 keep-forever code that happened to live in `orm/`.
 
-**Phase 2 acceptance is SIGNED OFF on both kits** — see `obscura-proto/PLAN.md` for the evidence and
+**Phase 2 acceptance is SIGNED OFF on both kits** — see `obscura-proto/HISTORY.md` for the evidence and
 the four gaps recorded at sign-off. Phases 1 and 2 landed here before it. The receive loop is
 persist-then-ack (`SPEC` §0.9): never ack a decrypt failure, a rate-limited skip, or anything not
 yet durably written. Signal sessions are addressed by **device UUID** (`SPEC` §0.10) — the inbound
@@ -57,7 +57,7 @@ then an index abstraction, then observation, and the deleted engine is back unde
 > target and **not** a normative implementation. Earlier versions of this file pointed agents at
 > it. That was a significant source of the mess.
 - **Build:** `JAVA_HOME=/path/to/jdk-21 ./gradlew :lib:test`
-- **Tests:** two source sets — `src/test` (223 unit tests, no network) and `src/integrationTest` (96 tests against a containerized/live `obscura-server`, all driving the `ObscuraClient` public API). Both counts dropped with the ORM deletion. Those are the counts **JUnit reports**, not `@Test` greps: `grep -o "@Test"` also matches `@TestFactory` and `@TestMethodOrder` and overcounts. Verify a suspicious count against `lib/build/test-results/*/TEST-*.xml` — that is how a test that had never executed was found. **A non-void `@Test` is silently ignored by JUnit 5** — this has now bitten twice, most recently on an `assertThrows(...)` whose returned `Throwable` made the method non-`Unit`; add a trailing `Unit`. The integration suite needs a *correctly configured* server: seed the MinIO `test-bucket` and raise the auth rate limit, or you get ~63 environmental failures (HTTP 429/500) that are not code failures — see `PLAN.md` 0.3.
+- **Tests:** two source sets — `src/test` (223 unit tests, no network) and `src/integrationTest` (96 tests against a containerized/live `obscura-server`, all driving the `ObscuraClient` public API). Both counts dropped with the ORM deletion. Those are the counts **JUnit reports**, not `@Test` greps: `grep -o "@Test"` also matches `@TestFactory` and `@TestMethodOrder` and overcounts. Verify a suspicious count against `lib/build/test-results/*/TEST-*.xml` — that is how a test that had never executed was found. **A non-void `@Test` is silently ignored by JUnit 5** — this has now bitten twice, most recently on an `assertThrows(...)` whose returned `Throwable` made the method non-`Unit`; add a trailing `Unit`. The integration suite needs a *correctly configured* server: seed the MinIO `test-bucket` and raise the auth rate limit, or you get ~63 environmental failures (HTTP 429/500) that are not code failures — see `HISTORY.md` 0.3.
 
 ## Three-Level Architecture
 

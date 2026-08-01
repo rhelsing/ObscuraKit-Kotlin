@@ -22,7 +22,7 @@ internal class MessagingManager(
     //
     // `MessageDomain` / the `conversations` StateFlow are now reachable only if a FOREIGN client
     // (an old Swift kit, obscura-client-web) sends a TEXT or SENT_SYNC arm. obscura-pix reads
-    // neither. RESET.md lists them for deletion; doing it here would also remove `getMessages`,
+    // neither. HISTORY.md lists them for deletion; doing it here would also remove `getMessages`,
     // which several integration tests still call, so it is a follow-up rather than a silent
     // half-removal.
 

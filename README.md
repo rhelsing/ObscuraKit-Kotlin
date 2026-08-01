@@ -128,7 +128,7 @@ greps, which over-count by also matching `@TestFactory` and `@TestMethodOrder`.
 ## Cross-kit status
 
 `ObscuraKit-swift` must agree with this kit on the **wire** (`conformance/wire.json`) and nothing
-more. Known divergences live in `obscura-proto/PLAN.md`; the ones this kit knows about today:
+more. Known divergences live in `obscura-proto/HISTORY.md`; the ones this kit knows about today:
 
 - Swift stores `recovery_public_key` on its friend rows but never writes it, so its DEVICE_ANNOUNCE
   check is still dead. This kit pins and enforces it.

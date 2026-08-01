@@ -8,7 +8,7 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 
 /**
- * PLAN.md Phase 2 acceptance — `authorDeviceId` is HONEST.
+ * Phase 2 acceptance (`git show bb9259c:PLAN.md`) — `authorDeviceId` is HONEST.
  *
  * F4/F1 background: pre-Phase-2, the Envelope carried no sender device, so decrypt brute-forced
  * candidate registrationIds and `authorDeviceId` fell back to `sourceUserId` — a USER id in a

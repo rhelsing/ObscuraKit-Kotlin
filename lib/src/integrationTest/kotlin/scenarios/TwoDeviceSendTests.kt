@@ -16,7 +16,7 @@ import org.signal.libsignal.protocol.SignalProtocolAddress
 import obscura.client.v1.Client.ClientMessage
 
 /**
- * PLAN.md Phase 0, task 0.1 — the two-device test. Targets finding F1.
+ * Phase 0 task 0.1 (`git show bb9259c:PLAN.md`) — the two-device test. Targets finding F1.
  *
  * Fixture: Alice registers with TWO devices; Bob registers (one device); friendship both ways;
  * Bob sends; assert BOTH of Alice's devices receive AND decrypt.
@@ -51,7 +51,7 @@ import obscura.client.v1.Client.ClientMessage
  *   Order 2 — the happy path: both devices decrypt on a fresh befriend, and again after the sender
  *     reconnects. Necessary but NOT sufficient — see Order 3.
  *
- *   Order 3 — PLAN.md 0.1's actual acceptance criterion. Drives the REAL announceDevices() API (no
+ *   Order 3 — `git show bb9259c:PLAN.md` §0.1's actual acceptance criterion. Drives the REAL announceDevices() API (no
  *     fabricated protobuf: a test that builds the message it means to verify proves only that the
  *     builder works), asserts Bob genuinely learns BOTH device UUIDs, then forces the
  *     sender-reconnect-after-friendship sequence that is F1's exact precondition, and requires both
@@ -124,7 +124,7 @@ class TwoDeviceSendTests {
         val aliceId = alice1!!.userId!!
         println("── $tag ──")
         // The rebuildDeviceMap input: the friend store's per-device list. registrationId is printed
-        // only to show it is now inert — it addresses nothing (PLAN.md F1 status, 2026-07-24).
+        // only to show it is now inert — it addresses nothing (HISTORY.md F1 status, 2026-07-24).
         val storeDevices = b.friendList.value.find { it.userId == aliceId }?.devices ?: emptyList()
         println("  bob's accepted-friends store lists ${storeDevices.size} device(s) for Alice " +
             "(this is what rebuildDeviceMap reads):")
@@ -278,7 +278,7 @@ class TwoDeviceSendTests {
         // the non-empty map made sendToAllDevices SKIP the corrective prekey fetch, and both devices
         // got one ciphertext encrypted at a single (userId, 1) address — only one could read it.
         // Post-Phase-2 the address is the device UUID, so the rebuild cannot collapse two devices
-        // onto one session. PLAN.md 0.1 is explicit that a test WITHOUT this reconnect passes
+        // onto one session. `git show bb9259c:PLAN.md` §0.1 is explicit that a test WITHOUT this reconnect passes
         // vacuously; the reconnect is the load-bearing step.
         bob!!.disconnect(); delay(500); bob!!.connect(); delay(500)
         senderState("(c) friend store populated by the real announce + sender reconnect — F1's precondition")

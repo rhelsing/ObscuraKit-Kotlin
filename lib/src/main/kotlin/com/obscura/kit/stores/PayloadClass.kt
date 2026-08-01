@@ -74,7 +74,7 @@ internal fun classify(arm: PayloadCase): PayloadClass = when (arm) {
     // persistence — the ONLY class for which that is allowed.
     PayloadCase.MODEL_SIGNAL -> PayloadClass.DROPPABLE
 
-    // Legacy. Deleted by RESET.md; still routed while it exists.
+    // Legacy. Deleted by HISTORY.md; still routed while it exists.
     PayloadCase.TEXT -> PayloadClass.KIT_INTERNAL
 
     // Attachment references. §4 classifies these INBOXED and §4.3 resolves them as Phase 3

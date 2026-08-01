@@ -30,7 +30,7 @@ data class StoredEntry(
  * ## Why it exists separately from `ModelStore`
  *
  * **The table is being kept; the engine above it is being deleted.** `orm/ModelStore` reads and
- * writes the same `ModelEntry` table, but it lives inside the package `RESET.md` removes, and it is
+ * writes the same `ModelEntry` table, but it lives inside the package `HISTORY.md` removes, and it is
  * the bottom of a stack — CRDT merge, TTL manager, query DSL, schema parser — that goes with it. So
  * the store the app keeps cannot be that one; it has to be a class that survives the deletion, over
  * the same rows.
