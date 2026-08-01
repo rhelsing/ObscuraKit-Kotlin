@@ -83,7 +83,7 @@ class DeviceDomain internal constructor(private val db: ObscuraDatabase) {
                 d.deviceId.ifBlank { d.deviceUuid }, // deviceId is the primary key
                 d.deviceName,
                 null, // user_id — own devices, not friend devices
-                d.signalIdentityKey,
+                null, // signal_identity_key — never carried on the wire for a device list
                 1, // is_own
                 System.currentTimeMillis()
             )

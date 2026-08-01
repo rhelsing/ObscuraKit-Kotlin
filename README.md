@@ -3,30 +3,29 @@
 The **native Android/JVM platform layer** for the Obscura app (`obscura-pix`). It is not a
 general-purpose framework, it has exactly one consumer, and it owes API stability to no one.
 
-> ### ⚠️ Mid-reset — much of what is documented below is being deleted
->
-> The normative brief is [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md),
-> with the deletion inventory in [`obscura-proto/RESET.md`](../obscura-proto/RESET.md).
->
-> This kit grew an ORM, a CRDT engine, a query DSL, and an audience-routing system — duplicated
-> in Swift — to serve five flat models that use none of it. The app's entire ORM usage is four
-> calls (`defineModels`, `createEntry`, `upsertEntry`, `allEntries`). That layer is being removed
-> and its logic moved into the app, where it will exist once.
->
-> **This README still describes the old design.** Trust `SPEC.md` over it.
+Read [`CLAUDE.md`](CLAUDE.md) before changing anything. The normative brief is
+[`obscura-proto/SPEC.md` §0 — the kit boundary](../obscura-proto/SPEC.md), with the app-facing
+contract in [`obscura-proto/KIT_API.md`](../obscura-proto/KIT_API.md).
 
-**Why a native kit exists at all:** libsignal ships only as `libsignal-java` / `libsignal-swift`
-— there is no supported shared core, so the Signal protocol must be implemented per platform.
-And the push path must decrypt a message with the app closed (on iOS, inside a Notification
-Service Extension, which cannot run a React Native runtime). Those two facts, and nothing else,
-are what justify native code. Everything else belongs in the app.
+**Why a native kit exists at all:** libsignal ships only as `libsignal-java` / `libsignal-swift` —
+there is no supported shared core, so the Signal protocol must be implemented per platform. And the
+push path must decrypt a message with the app closed (on iOS, inside a Notification Service
+Extension, which cannot run a React Native runtime). Those two facts, and nothing else, are what
+justify native code. Everything else belongs in the app.
 
-**What survives the reset:** Signal sessions/identity/prekeys, device provisioning + linking +
-revocation, transport (REST + gateway WebSocket, offline queue), the friend graph, attachment
-crypto, the message store, and the push-wake path.
+> **The reset has landed.** This kit used to carry an ORM, a CRDT engine, a query DSL, a schema
+> parser and an audience-routing system — implemented twice, here and in Swift — to serve five flat
+> models in one app, none of it reachable from that app. All of it is deleted. Merge and audience
+> resolution live in `obscura-pix` now, once. Do not re-add them; `CLAUDE.md` says why, and
+> `KIT_API.md` §9 names the shape the regression takes.
 
-*(`obscura-client-web` is a throwaway proof-of-concept. It is **not** a reference implementation
-and must not be treated as a porting target.)*
+*(`obscura-client-web` is a throwaway proof-of-concept. It is **not** a reference implementation and
+must not be treated as a porting target.)*
+
+## The rule that governs this repo
+
+> **If the kit reads it, it is a field in `client.proto`.
+> If it is not in `client.proto`, the kit MUST NOT read it.**
 
 ## Quick Start
 
@@ -35,117 +34,132 @@ val client = ObscuraClient(ObscuraConfig(apiUrl = "https://obscura.barrelmaker.d
 client.register("alice", "mypassword123!")
 client.connect()
 
-// Define models
-client.orm.define(mapOf(
-    "directMessage" to ModelConfig(
-        fields = mapOf("conversationId" to "string", "content" to "string", "senderUsername" to "string"),
-        sync = "gset"
-    ),
-    "story" to ModelConfig(
-        fields = mapOf("content" to "string", "authorUsername" to "string"),
-        sync = "gset", ttl = "24h"
-    ),
-    "settings" to ModelConfig(
-        fields = mapOf("theme" to "string", "notificationsEnabled" to "boolean"),
-        sync = "lww", private = true
-    )
-))
+// Befriend someone (the code is base64 JSON, QR-friendly — see FriendCode.kt)
+client.addFriendByCode(theirCode)
 
-// Typed models (compile-safe)
-@Serializable
-data class Story(val content: String, val authorUsername: String)
+// SEND: the caller names the recipients. The kit fans out to every device of every
+// listed userId plus this user's own other devices, and resolves no audience of its
+// own (SPEC §0.4). `payload` is opaque bytes the kit never parses.
+client.send(
+    recipientUserIds = listOf(friendUserId),
+    modelKey = "pix",
+    entryId = java.util.UUID.randomUUID().toString(),
+    op = "CREATE",
+    payload = """{"caption":"hello"}""".toByteArray(),
+)
 
-val stories = TypedModel.wrap<Story>(client.orm.model("story"))
-stories.create(Story(content = "Hello!", authorUsername = "alice"))
-val feed by stories.observe().collectAsState(emptyList())
+// RECEIVE: a durable inbox, drained by the app. peek / consume / discard / depth,
+// and there is no insert — the kit is the only writer.
+for (row in client.inbox.peek(limit = 50)) {
+    // row.senderUserId is authenticated; row.senderDisplayName comes from OUR friend
+    // graph, never from the payload (SPEC §0.5). row.payload is the bytes we sent above.
+    handle(row)
+}
+client.inbox.consume(processedIds)
+
+// STORE: a blind key/value table for whatever the app made of them. No merge, no
+// CRDT, no TTL, no query API — the app decides who wins.
+client.entries.put("pix", StoredEntry(id = entryId, data = json, sentAt = t, authorDeviceId = d))
+client.entries.all("pix")
+
+// Ephemeral typing indicators (not persisted, auto-expire after 3s)
+client.sendTyping("directMessage", conversationId)
+client.observeTyping("directMessage", conversationId)  // Flow<List<String>>
 ```
 
-See [docs/ORM.md](docs/ORM.md) for the full guide. See [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md) for auth and device linking.
+See [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md) for auth and device linking, and
+[docs/FRIEND_CODE.md](docs/FRIEND_CODE.md) for the friend-code format.
 
 ## Architecture
 
 ```
 ┌──────────────────────────────────────────────────────┐
-│  YOUR APP (Compose views, typed models)              │
+│  obscura-pix (merge, audience, all app semantics)    │
 ├──────────────────────────────────────────────────────┤
 │  ObscuraClient facade                                │
 ╞══════════════════════════════════════════════════════╡
-│  Layer 3: ORM + Friends + Devices                    │
-│  GSet/LWWMap CRDTs, auto-sync, TTL, signals          │
+│  Level 3: InboxDomain + EntryStore + friends/devices │
+│           payload bytes are opaque, never parsed     │
 ╞══════════════════════════════════════════════════════╡
-│  Layer 2: Signal Protocol encrypt/decrypt            │
+│  Level 2: Signal Protocol encrypt/decrypt            │
+│           18 client-to-client arms in client.proto   │
 ╞══════════════════════════════════════════════════════╡
-│  Layer 1: WebSocket + REST (server is a dumb relay)  │
+│  Level 1: WebSocket + REST (server is a dumb relay)  │
 ╞══════════════════════════════════════════════════════╡
-│  SQLDelight (Signal keys, friends, ORM entries)      │
+│  SQLDelight (Signal keys, friends, inbox, entries)   │
 └──────────────────────────────────────────────────────┘
 ```
 
-Your app only touches the top. Everything below is invisible.
+## What this kit does
 
-## What Works
+Tested with **223 unit** tests (no network) + **96 integration** tests (against a containerized
+`obscura-server`) — the counts JUnit reports, parsed from `lib/build/test-results/`, not `@Test`
+greps, which over-count by also matching `@TestFactory` and `@TestMethodOrder`.
 
-Tested with **339 unit** (no network) + **103 integration** (against a containerized
-`obscura-server`) — the counts JUnit actually reports, measured 2026-07-24, not `@Test` greps. The
-unit figure includes the four `@TestFactory` conformance suites, which expand at runtime:
+- **Signal Protocol** — identity, prekeys, sessions, encrypt/decrypt. Sessions are addressed by
+  **device UUID** (SPEC §0.10): the inbound session comes from `Envelope.sender_device_id`, prekey
+  bundles are selected by device UUID with no fallback, and `registrationId` addresses nothing.
+- **Persist-then-ack receive loop** (SPEC §0.9) — an ack is a DELETE on the server, so the kit acks
+  only what it has durably written. A decrypt failure, a rate-limited sender, or a failed write all
+  leave the message on the server to redeliver.
+- **The durable inbox** (`KIT_API.md` §3) — `peek` / `consume` / `discard` / `depth`, deduped on
+  `envelope_id` because persist-then-ack guarantees redelivery.
+- **The entry store** (§8.1) — `put` / `all` / `delete` over opaque JSON. Three methods, no fourth.
+- **Friend graph** — request/response/accept, device lists learned from DEVICE_ANNOUNCE, with the
+  peer's recovery key pinned trust-on-first-use.
+- **Device provisioning, linking and revocation** — `loginAndProvision()` → `PENDING_APPROVAL` →
+  QR/link-code approval, which carries the p2p keys, own-device list and friends export.
+- **Transport** — REST + gateway WebSocket with auto-reconnect and token refresh; the offline queue
+  is the server's, not ours.
+- **Attachment crypto** — upload/download with an AES key shipped over Signal.
+- **Push-wake drain** — `processPendingMessages(timeoutMs)` returns counts so the bridge can post a
+  generic local notification. The kit never posts an OS notification itself.
+- **Ephemeral signals** — typing indicators, in memory only, throttled to 2s and expiring after 3s.
+  Audience is the canonical two-party conversation id, resolved fail-closed on both send and receive.
 
-- **ORM auto-sync** — `model.create()` encrypts and delivers to friends automatically
-- **Typed models** — `@Serializable` data classes with `TypedModel.wrap<T>()`
-- **Query DSL** — `story.where { "author" eq "alice" }.orderBy("likes").limit(10).exec()`
-- **Reactive observation** — `model.observe()` returns `Flow<List<OrmEntry>>` for Compose
-- **Offline resilience** — create while friend is offline, they get it on reconnect
-- **Conflict resolution** — LWWMap: newer timestamp wins. GSet: merge = union.
-- **TTL** — entries with `ttl = "24h"` expire automatically
-- **Private models** — `private = true` syncs only to your own devices
-- **Relationships** — `hasMany`/`belongsTo` with `include()` eager loading
-- **Device linking** — `loginAndProvision()` → `PENDING_APPROVAL` → QR/code approval required
-- **ECS signals** — `model.typing(convId)` / `model.observeTyping(convId)` for ephemeral indicators
-- ~~**Cross-platform** — iOS ↔ Android proven with shared ORM wire format.~~ **Not true as
-  written.** The two kits have diverged: Swift still hard-codes application field names, narrows
-  a `friends` broadcast when an entry happens to carry a `conversationId`, has no schema
-  migration mechanism at all, and cannot *receive* a `DEVICE_LINK_APPROVAL` (it sends them, but
-  `routeMessage` has no case for one, so a newly-linked Swift device discards the p2p keys, friends
-  export and device list this kit would store). The kits agree on the *wire*; they do not agree on
-  *behavior*. They now **do** agree on Signal session addressing — both key on the device UUID as of
-  Phase 2, each with a two-device test that reconnects the sender.
-- ~~**Chat via ORM** — `client.send()` falls back to TEXT if the model is not defined.~~ That
-  fallback is a **silent-delivery bug**, not a feature: only MODEL_SYNC contributes to push
-  counts, so a TEXT message arrives with no notification. Being removed.
-- ~~**`authorDeviceId` is currently a lie.** `senderDeviceId` is null over the wire, so signals
-  report the sender's *userId* in a field documented as a device id.~~ **Fixed in this kit**
-  (Phase 2, PR #40). `Envelope` now carries `sender_device_id`; the inbound Signal session is
-  selected by that device UUID and `authorDeviceId` is the address of the session that decrypted,
-  so a valid MAC is what proves the attribution. `AuthorDeviceIdTests` asserts it against the
-  sender's real device. The rule is normative in `obscura-proto/SPEC.md` §0.10. **Fixed in
-  ObscuraKit-swift too** (its PRs #6/#8/#9, merged 2026-07-25), so both kits now report an honest
-  device id and both pin it with a test.
+## What this kit deliberately does not do
 
-## What Doesn't Work Yet
+- **No merge, no CRDT, no TTL, no query DSL, no schema, no audience resolution.** All of it moved to
+  `obscura-pix`. `EntryStore.all(model)` returns everything and the app filters.
+- **No OS notifications**, no UI, no application field names. `modelKey` is opaque throughout.
+- **No eviction policy on the inbox.** Rows leave only by an explicit `consume`/`discard` from the
+  app, or by the security carve-out in a device wipe (§3.3 rule 2).
 
-- `observe()` on queries with `include()` — observation works, eager loading works, not together yet
-- Counter CRDT (only GSet and LWWMap)
+## Cross-kit status
+
+`ObscuraKit-swift` must agree with this kit on the **wire** (`conformance/wire.json`) and nothing
+more. Known divergences live in `obscura-proto/PLAN.md`; the ones this kit knows about today:
+
+- Swift stores `recovery_public_key` on its friend rows but never writes it, so its DEVICE_ANNOUNCE
+  check is still dead. This kit pins and enforces it.
+- `ObscuraError.InvalidSchema` and `DirectRoutingUnresolved` were deleted here; the Swift twin and
+  `obscura-pix/src/native/ObscuraModule.ts`'s error union still carry them.
 
 ## Build & Test
 
 ```bash
 export JAVA_HOME=/path/to/jdk-21
 
-./gradlew :lib:test                              # 339 unit tests (fast, no network)
-./gradlew :lib:integrationTest                   # 103 server-dependent tests
+./gradlew :lib:test                              # 223 unit tests (fast, no network)
+./gradlew :lib:integrationTest                   # 96 server-dependent tests
 ./gradlew :lib:koverHtmlReport                   # coverage report
 ```
 
-The integration suite targets `https://obscura.barrelmaker.dev` by default but
-honors `OBSCURA_TEST_API` — CI points it at a containerized `obscura-server`
-(rate limits disabled) so the suite runs on every PR without touching prod.
-Each integration test is gated on `assumeTrue(checkServer())`, so it
-skips-not-fails when no server is reachable.
+The integration suite targets `https://obscura.barrelmaker.dev` by default but honors
+`OBSCURA_TEST_API` — CI points it at a containerized `obscura-server` (rate limits disabled) so the
+suite runs on every PR without touching prod. Each integration test is gated on
+`assumeTrue(checkServer())`, so it skips-not-fails when no server is reachable. It also needs the
+server *correctly configured*: seed the MinIO `test-bucket` and raise the auth rate limit, or you
+get ~63 environmental failures (HTTP 429/500) that are not code failures.
+
+**A non-void `@Test` is silently ignored by JUnit 5.** This has bitten twice. If a test body ends in
+`assertThrows(...)`, add a trailing `Unit`.
 
 ## Docs
 
-- [ORM Guide](docs/ORM.md) — models, queries, typed models, observation, sync, signals, interop
 - [Authentication](docs/AUTHENTICATION.md) — register, login, device linking, session restore
-- [Test Tiers](docs/plans/test_tiers.md) — unit / integration / scenario test plan
+- [Friend codes](docs/FRIEND_CODE.md) — the QR/paste format
+- [`docs/knowledge/`](docs/knowledge) — hard-won lessons; read before touching the codebase
 
 ## Dependencies
 
@@ -154,7 +168,7 @@ skips-not-fails when no server is reachable.
 - `app.cash.sqldelight:sqlite-driver` — persistence
 - `com.squareup.okhttp3:okhttp` — HTTP + WebSocket
 - `org.jetbrains.kotlinx:kotlinx-coroutines-core` — async
-- `org.jetbrains.kotlinx:kotlinx-serialization-json` — typed models
+- `org.jetbrains.kotlinx:kotlinx-serialization-json` — JSON in the crypto/backup helpers
 - `org.json:json` — JSON parsing
 
 ## Server

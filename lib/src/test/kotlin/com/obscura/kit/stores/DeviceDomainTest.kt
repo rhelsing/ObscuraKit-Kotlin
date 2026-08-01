@@ -76,7 +76,7 @@ class DeviceDomainTest {
 
         d.setOwnDevices(listOf(
             FriendDeviceInfo("uuid-1", "new-dev-1", "Phone A", 100),
-            FriendDeviceInfo("uuid-2", "new-dev-2", "Phone B", 200)
+            FriendDeviceInfo("uuid-2", "new-dev-2", "Phone B", 200),
         ))
 
         val after = d.getOwnDevices()

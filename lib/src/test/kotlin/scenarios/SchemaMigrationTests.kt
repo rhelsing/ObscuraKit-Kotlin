@@ -51,8 +51,9 @@ class SchemaMigrationTests {
         // A tripwire, not a fact worth asserting for its own sake: if you add or remove a table,
         // this number MUST move, because moving it is what makes existing installs run migrate().
         // If this fails, do not just update the constant — add the matching .sqm.
-        // 4 as of 3.sqm, which drops `ModelAssociation` with the ORM (RESET.md §10 step 4).
-        assertEquals(4L, ObscuraDatabase.Schema.version,
+        // 5 as of 4.sqm, which adds Friend.recovery_public_key so a peer's recovery key can be
+        // pinned trust-on-first-use instead of read out of the message being verified.
+        assertEquals(5L, ObscuraDatabase.Schema.version,
             "schema version = (highest .sqm number) + 1; a schema change without a new .sqm never " +
                 "reaches an existing install")
     }
@@ -93,16 +94,31 @@ class SchemaMigrationTests {
             "expected the migration's index in the fresh schema too — that is the double-entry")
     }
 
+    /**
+     * Every subsequent app launch calls `migrate(current, current)`, and it must apply nothing.
+     *
+     * **This replaces a test that asserted something stronger and untrue** (2026-08-01): it created
+     * a fresh database and then ran `migrate(1, current)` over it, i.e. re-applied the entire
+     * migration history to a schema that already had every change. That passes only while every
+     * statement in every `.sqm` is individually idempotent, and it held only by accident — the two
+     * migrations that existed were `CREATE ... IF NOT EXISTS` and `DROP TABLE IF EXISTS`. SQLite has
+     * no `ADD COLUMN IF NOT EXISTS`, so `4.sqm` cannot satisfy it, and neither can most real DDL.
+     *
+     * It also asserted a scenario SQLDelight does not produce. Migrations are applied from the
+     * STORED version, never from 1, and the stored-version write happens in the same transaction as
+     * the statements (on Android, `SQLiteOpenHelper` wraps `onUpgrade` and `setVersion` together),
+     * so "the DDL landed but the version did not" is not a state a crash can leave behind. What
+     * genuinely happens every launch after an upgrade is the range below, and this pins that a
+     * `.sqm` numbered outside its version range cannot re-fire.
+     */
     @Test
-    fun `migrating an already-current database is a no-op, not an error`() {
-        // Re-running migrations must be safe: SQLDelight calls migrate() whenever the stored version
-        // is behind, and a crash mid-upgrade can leave that ambiguous.
+    fun `migrating from the current version applies nothing`() {
         val driver = JdbcSqliteDriver(JdbcSqliteDriver.IN_MEMORY)
         ObscuraDatabase.Schema.create(driver)
         val before = schemaOf(driver)
 
-        ObscuraDatabase.Schema.migrate(driver, 1L, ObscuraDatabase.Schema.version)
+        ObscuraDatabase.Schema.migrate(driver, ObscuraDatabase.Schema.version, ObscuraDatabase.Schema.version)
 
-        assertEquals(before, schemaOf(driver), "re-applying a migration must not change the schema")
+        assertEquals(before, schemaOf(driver), "an up-to-date database must not be migrated again")
     }
 }

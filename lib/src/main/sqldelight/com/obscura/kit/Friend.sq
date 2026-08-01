@@ -1,3 +1,10 @@
+-- `recovery_public_key` is pinned trust-on-first-use, and its placement is not a style choice.
+-- `4.sqm` adds it with `ALTER TABLE ... ADD COLUMN`, and SQLite implements that by rewriting the
+-- stored `sqlite_master` text: it replaces the closing `)` with `, <column-def>)` on the line where
+-- the old one sat. `SchemaMigrationTests.migrated schema is identical to a freshly created one`
+-- compares that text, so a fresh install only matches a migrated one if this file declares the
+-- column in exactly that position and spelling. Reformatting it onto its own indented line breaks
+-- the test, and the test is what stops a schema change from reaching new installs only.
 CREATE TABLE IF NOT EXISTS Friend (
     user_id TEXT NOT NULL PRIMARY KEY,
     username TEXT NOT NULL,
@@ -5,7 +12,7 @@ CREATE TABLE IF NOT EXISTS Friend (
     devices TEXT NOT NULL DEFAULT '[]',
     created_at INTEGER NOT NULL,
     updated_at INTEGER NOT NULL
-);
+, recovery_public_key BLOB);
 
 -- getAccepted() runs on every connect (rebuildDeviceMap), and selectByStatus was a full scan.
 -- NOTE: this index is declared in TWO places on purpose — here, for fresh installs created by
@@ -25,6 +32,24 @@ SELECT * FROM Friend WHERE user_id = ?;
 insert:
 INSERT OR REPLACE INTO Friend(user_id, username, status, devices, created_at, updated_at)
 VALUES (?, ?, ?, ?, ?, ?);
+
+-- updateStatus and updateDevices are UPDATEs, not the INSERT OR REPLACE they used to route through,
+-- because REPLACE deletes the row and re-inserts it — which resets every column the caller did not
+-- name, including the TOFU-pinned `recovery_public_key`. A peer that could clear its own pin by
+-- sending a FriendRequest could re-pin a fresh key, which is the whole of the guarantee gone.
+-- (This is also what ObscuraKit-swift's FriendStore does: INSERT OR REPLACE in `add`, UPDATE in
+-- `updateStatus`/`updateDevices`.)
+updateStatus:
+UPDATE Friend SET status = ?, updated_at = ? WHERE user_id = ?;
+
+updateDevices:
+UPDATE Friend SET devices = ?, updated_at = ? WHERE user_id = ?;
+
+-- Trust-on-first-use pin for DEVICE_ANNOUNCE (client.proto's `recovery_public_key`: the key "for
+-- friend to verify FUTURE revocation signatures"). Written once, on the first announce that carries
+-- one, and thereafter only read.
+updateRecoveryPublicKey:
+UPDATE Friend SET recovery_public_key = ?, updated_at = ? WHERE user_id = ?;
 
 deleteById:
 DELETE FROM Friend WHERE user_id = ?;

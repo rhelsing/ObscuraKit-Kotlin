@@ -65,20 +65,6 @@ class MessageDomainTest {
     }
 
     @Test
-    fun `migrateMessages moves messages from old conversationId to new`() = runTest {
-        // Used when a friend's deviceId changes — their old per-device
-        // conversation rolls into the new one.
-        val d = newDomain()
-        d.add("old-conv", msg("m1"))
-        d.add("old-conv", msg("m2"))
-
-        d.migrateMessages(from = "old-conv", to = "new-conv")
-
-        assertEquals(0, d.getMessages("old-conv").size, "Old conversation must be empty after migration")
-        assertEquals(2, d.getMessages("new-conv").size, "New conversation must hold the migrated messages")
-    }
-
-    @Test
     fun `deleteByAuthorDevice removes only that authors messages`() = runTest {
         // Device revocation: when device-A is revoked, blow away anything
         // authored from device-A across all conversations.

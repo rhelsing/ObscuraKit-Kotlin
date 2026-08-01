@@ -47,10 +47,6 @@ class MessageDomain internal constructor(private val db: ObscuraDatabase) {
                 }
         }
 
-    suspend fun migrateMessages(from: String, to: String) = withContext(dispatcher) {
-        db.messageQueries.migrateConversation(to, from)
-    }
-
     suspend fun deleteByAuthorDevice(deviceId: String) = withContext(dispatcher) {
         db.messageQueries.deleteByAuthorDevice(deviceId)
     }

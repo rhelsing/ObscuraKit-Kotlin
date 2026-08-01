@@ -1,0 +1,18 @@
+-- Migration 4 -> 5: pin a friend's recovery public key (trust-on-first-use).
+--
+-- Until now `handleDeviceAnnounce` verified `DeviceAnnounce.signature` against
+-- `DeviceAnnounce.recovery_public_key` — field 5 of the SAME peer-supplied message. That
+-- authenticates nothing: anyone can generate a keypair, sign whatever they like with it, and ship
+-- both halves. `client.proto` describes that field as the key "for friend to verify FUTURE
+-- revocation signatures", i.e. a value the receiver LEARNS once and then holds the sender to. This
+-- column is where it is held. ObscuraKit-swift's `friends` table already has it.
+--
+-- ALTER TABLE ADD COLUMN, deliberately, not a table rebuild: `SchemaMigrationTests.migrated schema
+-- is identical to a freshly created one` compares the CREATE text SQLite stores in `sqlite_master`,
+-- and a rebuild changes it (`ALTER TABLE ... RENAME TO` writes `CREATE TABLE "Friend"`, with
+-- quotes). ADD COLUMN instead appends `, recovery_public_key BLOB` before the closing paren, which
+-- is exactly what `Friend.sq` now declares — see the note there before reformatting either.
+--
+-- Nullable with no default on purpose: NULL means "nothing pinned yet", which is the state the
+-- TOFU branch keys on. A default would make every existing friend look already-pinned.
+ALTER TABLE Friend ADD COLUMN recovery_public_key BLOB;

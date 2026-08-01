@@ -4,6 +4,9 @@ import kotlinx.coroutines.*
 import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.update
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 
 /**
  * ECS Signal Manager — ephemeral signals attached to models.
@@ -37,16 +40,26 @@ class SignalManager {
      * was sent within the last 2 seconds.
      */
     private val lastSent = mutableMapOf<String, Long>()
+
+    /**
+     * Guards [lastSent]. The throttle is a read-modify-write ("last send was long enough ago, so
+     * record now and send"), and `emit` is called from whatever coroutine the UI happens to be on —
+     * so a plain `mutableMapOf` was both a data race on a HashMap and a check that two callers could
+     * pass simultaneously, defeating the throttle it exists to enforce.
+     */
+    private val throttleMutex = Mutex()
     private val THROTTLE_MS = 2000L
 
     suspend fun emit(model: String, signal: String, data: Map<String, Any?>, authorDeviceId: String) {
         val contextKey = data["conversationId"] as? String ?: "global"
         val throttleKey = "$model:$signal:$contextKey:$authorDeviceId"
         val now = System.currentTimeMillis()
-        val last = lastSent[throttleKey] ?: 0L
-        if (now - last < THROTTLE_MS) return
+        val allowed = throttleMutex.withLock {
+            val last = lastSent[throttleKey] ?: 0L
+            if (now - last < THROTTLE_MS) false else { lastSent[throttleKey] = now; true }
+        }
+        if (!allowed) return
 
-        lastSent[throttleKey] = now
         sendSignal(model, signal, data)
     }
 
@@ -62,12 +75,12 @@ class SignalManager {
 
         val active = ActiveSignal(authorDeviceId, senderUsername, expiresAt)
 
-        val current = activeSignals.value.toMutableMap()
-        val existing = current[key]?.toMutableSet() ?: mutableSetOf()
-        existing.removeAll { it.authorDeviceId == authorDeviceId }
-        existing.add(active)
-        current[key] = existing
-        activeSignals.value = current
+        // `update {}`, not read-then-assign: two envelopes for the same conversation are routed
+        // concurrently, and `value = value.toMutableMap().also { ... }` loses one of them outright.
+        activeSignals.update { current ->
+            val existing = current[key].orEmpty().filterNot { it.authorDeviceId == authorDeviceId }
+            current + (key to (existing + active).toSet())
+        }
 
         // Schedule expiry — only remove if the signal hasn't been renewed
         scope.launch {
@@ -105,11 +118,22 @@ class SignalManager {
     }
 
     private fun expire(key: String, authorDeviceId: String) {
-        val current = activeSignals.value.toMutableMap()
-        val existing = current[key]?.toMutableSet() ?: return
-        existing.removeAll { it.authorDeviceId == authorDeviceId }
-        if (existing.isEmpty()) current.remove(key) else current[key] = existing
-        activeSignals.value = current
+        activeSignals.update { current ->
+            val existing = current[key]?.filterNot { it.authorDeviceId == authorDeviceId } ?: return@update current
+            if (existing.isEmpty()) current - key else current + (key to existing.toSet())
+        }
+    }
+
+    /**
+     * Stop the expiry coroutines and forget everything. Called from `ObscuraClient.fullLogout`.
+     *
+     * Without it this scope is never cancelled: every [receive] launches a 3.1s timer, and after a
+     * logout those keep running against state belonging to a user who is gone. Terminal — a
+     * shut-down manager stays empty, which is what a logged-out client should show.
+     */
+    fun shutdown() {
+        scope.cancel()
+        activeSignals.value = emptyMap()
     }
 
     companion object {

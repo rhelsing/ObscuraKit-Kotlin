@@ -3,8 +3,8 @@ package com.obscura.kit
 import com.obscura.kit.stores.FriendData
 
 /**
- * Typed event stream — bridges subscribe to `client.events` and relay to JS.
- * Replaces raw incomingMessages channel + separate StateFlow observations.
+ * Typed event stream — bridges subscribe to `ObscuraClient.typedEvents` and relay to JS.
+ * Replaces separate StateFlow observations.
  */
 sealed class ObscuraEvent {
     data class FriendsUpdated(val friends: List<FriendData>) : ObscuraEvent()
@@ -16,5 +16,6 @@ sealed class ObscuraEvent {
      * second delivery path competing with the store — exactly what §2 rejects.
      */
     data class MessageReceived(val model: String) : ObscuraEvent()
-    data class TypingChanged(val conversationId: String, val typers: List<String>) : ObscuraEvent()
+    // `TypingChanged` was here and was never emitted — nothing in the kit constructed one. Typing
+    // reaches consumers through `ObscuraClient.observeTyping`, a Flow off SignalManager.
 }

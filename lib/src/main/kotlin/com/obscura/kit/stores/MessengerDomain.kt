@@ -91,16 +91,26 @@ class MessengerDomain internal constructor(
         }
     }
 
-    suspend fun queueMessage(targetDeviceId: String, message: ClientMessage, userId: String? = null) =
-        withContext(dispatcher) {
-            // targetDeviceId IS the peer's device UUID — the address name slot (see addressFor).
-            // The owning userId is needed only to fetch that device's prekey bundle on first
-            // contact; it is NOT part of the session address.
-            val ownerUserId = userId ?: deviceMap[targetDeviceId]?.first
-                ?: throw IllegalStateException("No owning userId known for device $targetDeviceId")
+    /**
+     * ## Why the dispatcher is entered twice instead of wrapping the whole body
+     *
+     * [dispatcher] is a `limitedParallelism(1)` confining the Signal ratchet — the Kotlin stand-in
+     * for a Swift actor, and correct for that. What it must NOT confine is HTTP. Everything on this
+     * dispatcher is serialised, receive path included, so a prekey fetch that hits a rate limit and
+     * retries used to park decrypt/persist/ack behind it for the whole backoff. Only the libsignal
+     * work is held here now; the network happens outside.
+     */
+    suspend fun queueMessage(targetDeviceId: String, message: ClientMessage, userId: String? = null) {
+        // targetDeviceId IS the peer's device UUID — the address name slot (see addressFor).
+        // The owning userId is needed only to fetch that device's prekey bundle on first
+        // contact; it is NOT part of the session address.
+        val ownerUserId = userId ?: withContext(dispatcher) { deviceMap[targetDeviceId]?.first }
+            ?: throw IllegalStateException("No owning userId known for device $targetDeviceId")
 
-            val clientMsgBytes = message.toByteArray()
-            ensureSession(ownerUserId, targetDeviceId)
+        val clientMsgBytes = message.toByteArray()
+        ensureSession(ownerUserId, targetDeviceId)
+
+        withContext(dispatcher) {
             val encrypted = encrypt(targetDeviceId, clientMsgBytes)
 
             val encMsg = EncryptedMessage.newBuilder()
@@ -119,51 +129,52 @@ class MessengerDomain internal constructor(
 
             queue.add(submission)
         }
+    }
 
-    suspend fun flushMessages(): Triple<Int, Int, List<SendMessageResponse.FailedSubmission>> =
-        withContext(dispatcher) {
-            if (queue.isEmpty()) return@withContext Triple(0, 0, emptyList())
-
-            val submissions = queue.toList()
-            queue.clear()
-
-            val request = SendMessageRequest.newBuilder()
-                .addAllMessages(submissions)
-                .build()
-
-            val responseBytes = try {
-                api.sendMessage(request.toByteArray())
-            } catch (e: Exception) {
-                // Network failure — re-queue for retry
-                queue.addAll(submissions)
-                throw e
-            }
-
-            val failedSubmissions = if (responseBytes.isNotEmpty()) {
-                try {
-                    SendMessageResponse.parseFrom(responseBytes).failedSubmissionsList
-                } catch (e: Exception) {
-                    // Can't parse response — treat as all failed, re-queue
-                    queue.addAll(submissions)
-                    return@withContext Triple(0, submissions.size, emptyList<SendMessageResponse.FailedSubmission>())
-                }
-            } else {
-                emptyList()
-            }
-
-            Triple(
-                submissions.size - failedSubmissions.size,
-                failedSubmissions.size,
-                failedSubmissions
-            )
+    suspend fun flushMessages(): Triple<Int, Int, List<SendMessageResponse.FailedSubmission>> {
+        // Take the batch under the dispatcher; POST it outside. Only the queue needs confining.
+        val submissions = withContext(dispatcher) {
+            queue.toList().also { queue.clear() }
         }
+        if (submissions.isEmpty()) return Triple(0, 0, emptyList())
+
+        val request = SendMessageRequest.newBuilder()
+            .addAllMessages(submissions)
+            .build()
+
+        val responseBytes = try {
+            api.sendMessage(request.toByteArray())
+        } catch (e: Exception) {
+            // Network failure — re-queue for retry
+            withContext(dispatcher) { queue.addAll(submissions) }
+            throw e
+        }
+
+        val failedSubmissions = if (responseBytes.isNotEmpty()) {
+            try {
+                SendMessageResponse.parseFrom(responseBytes).failedSubmissionsList
+            } catch (e: Exception) {
+                // Can't parse response — treat as all failed, re-queue
+                withContext(dispatcher) { queue.addAll(submissions) }
+                return Triple(0, submissions.size, emptyList())
+            }
+        } else {
+            emptyList()
+        }
+
+        return Triple(
+            submissions.size - failedSubmissions.size,
+            failedSubmissions.size,
+            failedSubmissions
+        )
+    }
 
     // Fetches and processes a user's prekey bundles as a side effect: populates deviceMap so
     // getDeviceIdsForUser can enumerate the user's devices for fan-out. Callers use it for that
     // side effect, not the return value.
-    suspend fun fetchPreKeyBundles(userId: String): List<PreKeyBundle> = withContext(dispatcher) {
+    suspend fun fetchPreKeyBundles(userId: String): List<PreKeyBundle> {
         val bundlesJson = api.fetchPreKeyBundles(userId)
-        parsePreKeyBundles(bundlesJson, userId).map { it.second }
+        return withContext(dispatcher) { parsePreKeyBundles(bundlesJson, userId).map { it.second } }
     }
 
     suspend fun decrypt(envelope: Envelope): DecryptedMessage = withContext(dispatcher) {
@@ -212,8 +223,12 @@ class MessengerDomain internal constructor(
 
     private suspend fun ensureSession(targetUserId: String, targetDeviceUuid: String) {
         val address = addressFor(targetDeviceUuid)
-        if (!signalStore.containsSession(address)) {
-            val bundlesJson = api.fetchPreKeyBundles(targetUserId)
+        if (withContext(dispatcher) { signalStore.containsSession(address) }) return
+
+        // The HTTP fetch is deliberately outside the dispatcher — see [queueMessage].
+        val bundlesJson = api.fetchPreKeyBundles(targetUserId)
+
+        withContext(dispatcher) {
             val bundles = parsePreKeyBundles(bundlesJson, targetUserId)
             // Select the bundle by DEVICE UUID. No firstOrNull() fallback: sending under an
             // arbitrary device's keys is exactly the F1 bug.
@@ -221,7 +236,12 @@ class MessengerDomain internal constructor(
                 ?: throw IllegalStateException(
                     "No prekey bundle for device $targetDeviceUuid of user $targetUserId"
                 )
-            SessionBuilder(signalStore, address).process(bundle)
+            // Re-checked inside the confined section: two concurrent sends to the same device both
+            // saw "no session" above and both fetched. Building twice would process a second bundle
+            // over an established session and reset the ratchet, so the loser must no-op.
+            if (!signalStore.containsSession(address)) {
+                SessionBuilder(signalStore, address).process(bundle)
+            }
         }
     }
 

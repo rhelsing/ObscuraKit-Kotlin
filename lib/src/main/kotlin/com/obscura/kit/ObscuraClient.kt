@@ -55,7 +55,7 @@ enum class ConnectionState { DISCONNECTED, CONNECTING, RECONNECTING, CONNECTED }
 enum class AuthState { LOGGED_OUT, PENDING_APPROVAL, AUTHENTICATED }
 
 /**
- * Result of [ObscuraClient.processPendingMessages] — counts of envelopes drained, by ORM model.
+ * Result of [ObscuraClient.processPendingMessages] — counts of envelopes drained, by model key.
  *
  * The bridge uses these to pick generic notification text ("New pix" / "New message").
  * [otherCount] is debug-only; the bridge ignores it. Shape matches Swift's ProcessedCounts
@@ -101,9 +101,9 @@ class ObscuraClient(
     private val _conversations = MutableStateFlow<Map<String, List<MessageData>>>(emptyMap())
     val conversations: StateFlow<Map<String, List<MessageData>>> = _conversations
 
-    private val _events = MutableSharedFlow<ReceivedMessage>(extraBufferCapacity = 64)
-    @Deprecated("Use typedEvents instead — single typed event stream for bridges")
-    val events: SharedFlow<ReceivedMessage> = _events
+    // `events` / `_events` were here: a deprecated second ReceivedMessage stream with no consumer
+    // in either the kit, the bridge or obscura-pix, whose `tryEmit` sat in the hot receive loop.
+    // `typedEvents` below and the `incomingMessages` channel are the two that are actually read.
 
     // Typed event stream — bridges subscribe to this instead of observing 5 separate flows
     private val _typedEvents = MutableSharedFlow<ObscuraEvent>(extraBufferCapacity = 64)
@@ -128,15 +128,8 @@ class ObscuraClient(
     /**
      * The durable inbox (`obscura-proto/KIT_API.md` §3) — the thin kit's receive API.
      *
-     * **Runs ALONGSIDE `orm` on purpose, and that is a migration step, not a design.** `KIT_API.md`
-     * §10 orders the reset so the deletion comes last: both kits gain `inbox` before obscura-pix
-     * switches to it, and only then is the old surface removed. Deleting first would break pix on
-     * both platforms — the kits are consumed from source with no published-version buffer — for the
-     * whole duration of the port, with no way to tell a real regression from expected breakage.
-     *
-     * The cost of that ordering is that a MODEL_SYNC is currently persisted **twice**: once as a
-     * model entry by the ORM, and once as an inbox row here. That is deliberate and temporary. It
-     * ends at §10 step 4, when the ORM comes out.
+     * Four methods: peek / consume / discard / depth. The kit writes rows before it acks; the app
+     * drains them. There is no insert, because the kit is the only writer.
      */
     val inbox: InboxDomain
 
@@ -144,8 +137,6 @@ class ObscuraClient(
      * Raw storage for application entries (`obscura-proto/KIT_API.md` §8.1) — the other half of the
      * thin kit's app-facing surface. `inbox` is how messages arrive; this is where the app keeps
      * what it made of them.
-     *
-     * Deliberately NOT `orm`: that is the engine being deleted. This is the table being kept.
      */
     val entries: EntryStore
 
@@ -201,21 +192,6 @@ class ObscuraClient(
         val ts = java.text.SimpleDateFormat("HH:mm:ss.SSS", java.util.Locale.US).format(java.util.Date())
         debugLog.addFirst("[$ts] $msg")
         while (debugLog.size > 200) debugLog.removeLast()
-    }
-
-    /** Dump debug log + current status as a single string for clipboard/paste. */
-    fun dumpDebugLog(): String {
-        val status = buildString {
-            appendLine("=== ObscuraKit Debug Dump ===")
-            appendLine("user: $username ($userId)")
-            appendLine("device: $deviceId")
-            appendLine("auth: ${_authState.value}")
-            appendLine("connection: ${_connectionState.value}")
-            appendLine("friends: ${friendList.value.size} (${friendList.value.count { it.status == com.obscura.kit.stores.FriendStatus.ACCEPTED }} accepted)")
-            appendLine("prekeys: ${try { signalStore.getPreKeyCount() } catch (_: Exception) { "?" }}")
-            appendLine("---")
-        }
-        return status + debugLog.joinToString("\n")
     }
 
     private var envelopeJob: Job? = null
@@ -309,7 +285,11 @@ class ObscuraClient(
                 // readable with no key at all. Note this destroys the whole table rather than
                 // selecting rows: that is what keeps it a security operation and not the eviction
                 // policy §3.4 refuses to add.
-                db.inboxQueries.deleteAll()
+                //
+                // Routed through inbox.wipe() rather than the query directly so that the test which
+                // pins this carve-out exercises the shipping path. It previously tested a method
+                // production never called.
+                inbox.wipe()
             },
             onSessionChanged = { persistSession() }
         )
@@ -462,7 +442,7 @@ class ObscuraClient(
     /**
      * Log out: tears down the connection and forgets the session, INCLUDING the
      * persisted [sessionStorage] blob, so the app won't try to restore it next
-     * launch. Local data (friends, messages, ORM) is kept — see [wipeDevice] /
+     * launch. Local data (friends, messages, entries, inbox) is kept — see [wipeDevice] /
      * [fullLogout] to also erase that. Symmetric with [persistSession].
      */
     suspend fun logout() {
@@ -476,9 +456,9 @@ class ObscuraClient(
 
     /** Persist current session to storage. Auto-called on auth/connect. */
     fun persistSession() {
-        // Merge onto existing storage so non-session metadata (e.g. cachedSchema,
-        // written by defineModelsFromJson) survives a session-only save regardless
-        // of whether the SessionStorage impl patches keys or replaces the blob.
+        // Merge onto existing storage rather than replacing it, so any non-session key the host app
+        // keeps in the same blob survives a session-only save regardless of whether the
+        // SessionStorage impl patches keys or overwrites wholesale.
         val data = (sessionStorage.load()?.toMutableMap() ?: mutableMapOf()).apply {
             put("token", token)
             put("refreshToken", refreshToken)
@@ -492,7 +472,7 @@ class ObscuraClient(
     }
 
     /**
-     * Restore session from storage, define cached models, connect.
+     * Restore session from storage and connect.
      * Returns true if session was restored and connected.
      */
     suspend fun restorePersistedSession(): Boolean {
@@ -533,29 +513,31 @@ class ObscuraClient(
     // ─── Facade Methods (bridges call these 1:1) ────────────
 
     /**
-     * Decode a friend code (base64 JSON) and befriend the user.
-     * Code format: Base64({"n":"username","u":"userId"}) — matches iOS FriendCode.swift
+     * Decode a friend code and befriend the user. See [FriendCode] for the format.
+     *
+     * Both this and [friendCode] used to inline their own copy of the codec, and the copies had
+     * DIVERGED from the tested one: the inline decode did not map URL-safe base64 (`-`/`_`), which
+     * some QR scanners hand back, and it accepted empty `u`/`n` fields, so a code decoding to `{}`
+     * befriended the empty-string user. `FriendCodeTest`'s seven tests covered only the object
+     * nobody called. Delegating makes the tested code the shipping code.
+     *
+     * The soft-hyphen and whitespace strip is kept here — it is about text that survived a copy out
+     * of an iOS share sheet, not about the encoding.
      */
     suspend fun addFriendByCode(code: String) {
-        val cleaned = code.trim()
+        val cleaned = code
             .replace("\u00AD", "") // strip soft hyphens from iOS copy
             .replace("\\s".toRegex(), "")
-        val decoded = String(Base64.getDecoder().decode(cleaned))
-        val json = JSONObject(decoded)
-        val friendUserId = json.getString("u")
-        val friendUsername = json.getString("n")
-        log("ADD_FRIEND_BY_CODE $friendUsername ($friendUserId)")
-        befriend(friendUserId, friendUsername)
+        val decoded = FriendCode.decode(cleaned)
+        log("ADD_FRIEND_BY_CODE ${decoded.username} (${decoded.userId})")
+        befriend(decoded.userId, decoded.username)
     }
 
-    /**
-     * Generate a friend code for sharing. Returns base64-encoded JSON.
-     */
+    /** Generate a friend code for sharing. See [FriendCode]. */
     fun friendCode(): String {
         val uid = userId ?: throw com.obscura.kit.ObscuraError.NotAuthenticated()
         val uname = username ?: throw com.obscura.kit.ObscuraError.NotAuthenticated()
-        val json = JSONObject().apply { put("n", uname); put("u", uid) }
-        return Base64.getEncoder().encodeToString(json.toString().toByteArray())
+        return FriendCode.encode(uid, uname)
     }
 
     /**
@@ -567,6 +549,11 @@ class ObscuraClient(
         envelopeJob?.cancel()
         eventForwardingJob?.cancel()
         authManager.tokenRefreshJob?.cancel()
+        preKeyStatusJob?.cancel()
+        // SignalManager's own scope outlives this object otherwise: every `receive` launches a
+        // 3.1s expiry coroutine, and after a logout those keep running (and keep mutating typing
+        // state) for a user who is gone.
+        signalManager.shutdown()
         gateway.disconnect() // fires onStateChanged → _connectionState = DISCONNECTED
         try { authManager.logout() } catch (e: Exception) { log("logout during fullLogout failed: ${e.message}") }
         _authState.value = AuthState.LOGGED_OUT
@@ -650,6 +637,9 @@ class ObscuraClient(
         authManager.tokenRefreshJob?.cancel()
         envelopeJob?.cancel()
         eventForwardingJob?.cancel()
+        // Without this it keeps consuming gateway.preKeyStatus and calling replenishPreKeys() —
+        // which POSTs /v1/devices/keys with whatever token is left, i.e. a null one after a logout.
+        preKeyStatusJob?.cancel()
         gateway.disconnect() // fires onStateChanged → _connectionState = DISCONNECTED
     }
 
@@ -666,7 +656,7 @@ class ObscuraClient(
     /**
      * Drain queued envelopes after a silent push wake. Connects if needed, waits up to
      * [timeoutMs] ms (returning early when the queue stays empty for 500ms), categorizes
-     * by ORM model, and returns counts. Does NOT disconnect afterwards — the OS will
+     * by model key, and returns counts. Does NOT disconnect afterwards — the OS will
      * freeze the app when done.
      *
      * The bridge layer uses the returned counts to post a generic local notification
@@ -734,7 +724,7 @@ class ObscuraClient(
 
     /** Classify a single envelope into (pix, message, other) buckets. */
     private fun classifyForPushCounts(msg: ReceivedMessage): Triple<Int, Int, Int> {
-        // MODEL_SYNC carries the ORM model name — the authoritative categorization.
+        // MODEL_SYNC carries the app's model key — the authoritative categorization.
         if (msg.type == "MODEL_SYNC" && msg.raw != null) {
             val modelName = msg.raw.modelSync.model
             when (modelName) {
@@ -761,13 +751,24 @@ class ObscuraClient(
         }
     }
 
+    /**
+     * At most one replenishment in flight at a time.
+     *
+     * [checkAndReplenishPreKeys] fires once per received envelope, so draining a backlog of N
+     * messages launched N coroutines that all observed a count below the threshold, all computed
+     * the same `highestId + 1` range, and all POSTed 50 keys — N uploads of the same key ids.
+     */
+    private val replenishInFlight = java.util.concurrent.atomic.AtomicBoolean(false)
+
     private fun checkAndReplenishPreKeys() {
+        if (!replenishInFlight.compareAndSet(false, true)) return
         scope.launch {
             try {
                 if (signalStore.getPreKeyCount() < PREKEY_MIN_COUNT) {
                     replenishPreKeys()
                 }
             } catch (e: Exception) { /* non-fatal */ }
+            finally { replenishInFlight.set(false) }
         }
     }
 
@@ -855,11 +856,11 @@ class ObscuraClient(
 
                     // 2. PERSIST (durable). routeMessage's handlers write to the SQLDelight store
                     // (e.g. handleTextMessage -> messagesDomain.add -> messageQueries.insert;
-                    // friends.add; orm.handleSync). This is the source of truth. If it throws, we
+                    // friends.add; inbox.put). This is the source of truth. If it throws, we
                     // fall to catch and do NOT ack, so the message survives on the server.
                     // `envelopeId` is the canonical text form of the 16 validated bytes above —
                     // one encoding, so two spellings of one envelope can never produce two rows.
-                    routeMessage(msg, sourceUserId, decrypted.senderDeviceId, envelopeId)
+                    val isNew = routeMessage(msg, sourceUserId, decrypted.senderDeviceId, envelopeId)
 
                     decryptFailures.remove(senderId)
 
@@ -891,18 +892,31 @@ class ObscuraClient(
                     // a 1000-capacity channel the app does not always drain, and a blocking send
                     // would stall the whole receive loop (and thus all acking) behind a full buffer.
                     // We log a drop so it is observable and never silent.
-                    if (!incomingMessages.trySend(received).isSuccess) {
+                    //
+                    // Skipped entirely for a redelivery (`isNew == false`). The app already has that
+                    // message; announcing it again inflates processPendingMessages' counts and makes
+                    // the bridge post a second "New pix" for it.
+                    if (isNew && !incomingMessages.trySend(received).isSuccess) {
                         log("RECV NOTE incomingMessages full; dropped a wake-up (data already persisted)")
-                    }
-                    if (!_events.tryEmit(received)) {
-                        log("RECV NOTE events buffer full; dropped a wake-up (data already persisted)")
                     }
 
                     checkAndReplenishPreKeys()
 
-                    // 4. ACK. Reached only when decrypt AND persist both succeeded. This is the sole
-                    // ack in the loop; the rate-limit early-return and the catch below both skip it.
-                    try { gateway.ack(listOf(envelope.id)) } catch (e: Exception) { log("envelope ack failed: ${e.message}") }
+                    // 4. ACK. Reached only when decrypt AND persist both succeeded — including the
+                    // redelivery case, where "persisted" means the row was already there. This is
+                    // the sole ack in the loop; the rate-limit early-return and the catch below both
+                    // skip it.
+                    //
+                    // An ack failure is the event the whole persist-then-ack design pivots on: the
+                    // server keeps its copy and redelivers, which is safe but is also the first
+                    // symptom of a wedged queue. It goes to the structured logger, not only to the
+                    // 200-entry in-memory ring buffer where nobody will ever see it.
+                    try {
+                        gateway.ack(listOf(envelope.id))
+                    } catch (e: Exception) {
+                        log("envelope ack failed: ${e.message}")
+                        logger.ackFailed(envelopeId, e.message ?: "unknown")
+                    }
                 } catch (e: Exception) {
                     // Decrypt failed OR persistence (routeMessage) threw. The message is NOT durably
                     // stored -> do NOT ack (F2). It stays on the server and redelivers on reconnect.
@@ -943,15 +957,18 @@ class ObscuraClient(
      * The `when` below is no longer the whole story: [classify] decides what each arm is *allowed*
      * to do, and this routes accordingly. The old `else -> { }` swallowed seven arms and then let
      * the caller ack them, which destroyed them silently.
+     *
+     * Returns false when this envelope was a REDELIVERY the inbox absorbed, so the caller can skip
+     * the wake-up emits. It still gets acked — see [inboxMessage].
      */
-    private suspend fun routeMessage(
+    internal suspend fun routeMessage(
         msg: ClientMessage,
         sourceUserId: String,
         senderDeviceId: String?,
         envelopeId: String,
-    ) {
+    ): Boolean {
         when (classify(msg.payloadCase)) {
-            PayloadClass.INBOXED -> inboxMessage(msg, sourceUserId, senderDeviceId, envelopeId)
+            PayloadClass.INBOXED -> return inboxMessage(msg, sourceUserId, senderDeviceId, envelopeId)
 
             PayloadClass.UNIMPLEMENTED ->
                 // Classified in §4 but implemented by neither kit. Today's behaviour (drop, then
@@ -969,36 +986,38 @@ class ObscuraClient(
                 ClientMessage.PayloadCase.TEXT -> handleTextMessage(msg, sourceUserId, senderDeviceId)
                 ClientMessage.PayloadCase.DEVICE_ANNOUNCE -> handleDeviceAnnounce(msg, sourceUserId)
                 ClientMessage.PayloadCase.SYNC_BLOB -> handleSyncBlob(msg, sourceUserId)
-                ClientMessage.PayloadCase.SENT_SYNC -> handleSentSync(msg)
+                ClientMessage.PayloadCase.SENT_SYNC -> handleSentSync(msg, sourceUserId)
                 ClientMessage.PayloadCase.SESSION_RESET ->
                     // Sessions are keyed on the DEVICE UUID (Phase 2), so reset every session we
                     // hold with any of this user's devices.
                     messenger.getDeviceIdsForUser(sourceUserId).forEach { signalStore.deleteAllSessions(it) }
-                ClientMessage.PayloadCase.FRIEND_SYNC -> handleFriendSync(msg, sourceUserId)
                 ClientMessage.PayloadCase.DEVICE_LINK_APPROVAL -> handleLinkApproval(msg, sourceUserId)
                 ClientMessage.PayloadCase.MODEL_SIGNAL -> handleModelSignal(msg, sourceUserId, senderDeviceId)
                 else -> error("classified ${msg.payloadCase.name} as kit-internal with no handler")
             }
         }
+        return true
     }
 
     /**
-     * Write an inboxed payload to the durable inbox, then hand it to the ORM as well.
+     * Write an inboxed payload to the durable inbox.
      *
-     * **Both, during §10 steps 2–3.** The ORM still owns what obscura-pix reads, so removing that
-     * call here would break the app long before it has anywhere else to read from. The duplication
-     * ends when the ORM is deleted in step 4.
+     * If the write throws, nothing is acked and the message stays on the server — that is the whole
+     * point of persist-then-ack and the reason this is not an event stream.
      *
-     * Order matters: the inbox row commits first. If it throws, nothing is acked and the message
-     * stays on the server — which is the whole point of persist-then-ack and the reason this is not
-     * an event stream.
+     * Returns **false when the row was already there**, i.e. this envelope is a redelivery the
+     * `envelope_id UNIQUE` key absorbed. The caller still acks (acking is what stops a third copy
+     * arriving) but must not notify: `Inbox.sq` says in as many words that the dedupe exists so a
+     * duplicate cannot "inflate the app's processing counts, and post a second notification for a
+     * message the user already has" — and until now the emits below fired unconditionally, so it
+     * did both. Persist-then-ack GUARANTEES redelivery, so this is a normal path, not an edge case.
      */
-    private suspend fun inboxMessage(
+    internal suspend fun inboxMessage(
         msg: ClientMessage,
         sourceUserId: String,
         senderDeviceId: String?,
         envelopeId: String,
-    ) {
+    ): Boolean {
         val isModelSync = msg.payloadCase == ClientMessage.PayloadCase.MODEL_SYNC
         val sync = msg.modelSync
 
@@ -1026,7 +1045,7 @@ class ObscuraClient(
                 entryId = if (isModelSync) sync.id else null,
                 // `WireCodec.decodeOp`, not the raw enum name: the inbox is read by the app
                 // across a bridge, so this must be the app-facing CREATE/UPDATE/DELETE that
-                // KIT_API.md §3.1 specifies and that the ORM path already emits. `sync.op.name`
+                // KIT_API.md §3.1 specifies. `sync.op.name`
                 // gives the PROTO spelling `OP_CREATE`, which no other surface uses.
                 op = if (isModelSync) WireCodec.decodeOp(sync.op).name else null,
                 sentAt = if (isModelSync) clampFutureTimestamp(sync.timestamp) else null,
@@ -1036,6 +1055,14 @@ class ObscuraClient(
             )
         )
 
+        if (!inserted) {
+            // A redelivered envelope. Not an error: persist-then-ack guarantees this happens, and
+            // absorbing it here is what keeps depth() and the app's counts honest. Still acked by
+            // the caller; just not announced a second time.
+            log("RECV DUPLICATE envelope=${envelopeId.take(12)} kind=${msg.payloadCase.name} (already inboxed)")
+            return false
+        }
+
         // The typed event stream's only app-data event. It deliberately carries NO payload: the
         // bytes are in the inbox and the app drains them, so an event carrying data would be a
         // second delivery path competing with the store (KIT_API §2). Emitting it here — after the
@@ -1043,34 +1070,7 @@ class ObscuraClient(
         if (isModelSync) {
             _typedEvents.tryEmit(ObscuraEvent.MessageReceived(sync.model))
         }
-
-        if (!inserted) {
-            // A redelivered envelope. Not an error: persist-then-ack guarantees this happens, and
-            // absorbing it here is what keeps depth() and the app's counts honest. Still ack.
-            log("RECV DUPLICATE envelope=${envelopeId.take(12)} kind=${msg.payloadCase.name} (already inboxed)")
-        }
-
-        // THE ORM PARALLEL WRITE IS GONE, and removing it FIXED a live data-integrity bug rather
-        // than merely tidying up.
-        //
-        // Until now this called `handleModelSync`, so every inbound MODEL_SYNC was written twice:
-        // once as an inbox row (with the AUTHENTICATED `senderDeviceId` and a §2.4-clamped `sentAt`)
-        // and once by the ORM — which passed `sync.authorDeviceId`, wire field 7, **peer-asserted**,
-        // and an unclamped timestamp. `KIT_API.md` §8.2 names that field as the one that contradicts
-        // SPEC §0.10 rule 4.
-        //
-        // The app then read the ORM's row as existing state, and for APPEND models
-        // (`directMessage`, `story`) first-write-wins meant the authenticated row LOST. So the row
-        // obscura-pix kept carried a peer-chosen `author_device_id` — and a peer choosing a high
-        // string wins every future REPLACE tie-break for that entry. The authenticated tie-break the
-        // whole new path was built around was not in effect while both paths ran.
-        //
-        // That inverts the framing this migration was sequenced under: the side-by-side state was
-        // LESS safe than either end state, not a safety net. The dual write was worth having only
-        // while pix still READ through the ORM, and pix stopped doing that in §10 step 3.
-        //
-        // The ORM itself is still present and now genuinely inert on the receive path. It goes in
-        // step 4.
+        return true
     }
 
     /**
@@ -1079,7 +1079,7 @@ class ObscuraClient(
      * Without this a peer can set `sentAt` far in the future and win every REPLACE conflict forever
      * — the tie-break can only order writes it can compare honestly.
      */
-    private fun clampFutureTimestamp(sentAt: Long): Long {
+    internal fun clampFutureTimestamp(sentAt: Long): Long {
         val cap = System.currentTimeMillis() + 60_000L
         // `ModelSync.timestamp` is proto3 `uint64`, which protobuf-java surfaces as a SIGNED Long —
         // so a peer sending >= 2^63 arrives here NEGATIVE and sails under any `minOf` cap. Swift
@@ -1152,35 +1152,99 @@ class ObscuraClient(
         refreshConversation(sourceUserId)
     }
 
-    private suspend fun handleDeviceAnnounce(msg: ClientMessage, sourceUserId: String) {
+    /**
+     * DEVICE_ANNOUNCE — learn a peer's device list, and hold them to a pinned recovery key.
+     *
+     * **This used to verify `announce.signature` against `announce.recoveryPublicKey`** — field 5 of
+     * the same peer-supplied message. That authenticated nothing whatsoever: generate a keypair,
+     * sign anything, ship both halves, pass. And the `&&` made it skippable, so omitting the key ran
+     * no verification at all.
+     *
+     * `client.proto` calls field 5 the key "for friend to verify FUTURE revocation signatures",
+     * which is the whole design: it is LEARNED once (trust-on-first-use) and used to check later
+     * announces. So the key is pinned in `Friend.recovery_public_key` on the first announce that
+     * carries one, and every signature after that is checked against the STORED key, never the
+     * offered one.
+     */
+    internal suspend fun handleDeviceAnnounce(msg: ClientMessage, sourceUserId: String) {
         val announce = msg.deviceAnnounce
-        if (announce.signature.size() > 0 && announce.recoveryPublicKey.size() > 0) {
+        val offered = announce.recoveryPublicKey.toByteArray()
+        val pinned = friends.get(sourceUserId)?.recoveryPublicKey
+
+        val trusted = when {
+            pinned != null -> {
+                if (offered.isNotEmpty() && !offered.contentEquals(pinned)) {
+                    // A peer rotating its recovery key mid-stream is indistinguishable from an
+                    // attacker replacing it, so this is refused rather than resolved. Re-pinning is
+                    // a re-friend, not a message.
+                    logger.signatureVerificationFailed(sourceUserId, "DEVICE_ANNOUNCE")
+                    log("DEVICE_ANNOUNCE rejected: offered recovery key differs from the pinned one")
+                    return
+                }
+                pinned
+            }
+            offered.isNotEmpty() -> {
+                friends.pinRecoveryPublicKey(sourceUserId, offered)
+                offered
+            }
+            else -> null
+        }
+
+        // A revocation is the announce that needs the key — it is how a peer says "these devices of
+        // mine are gone", and it is exactly what a compromised device would forge. So it must carry
+        // a signature verified against the pin. An ordinary (non-revocation) announce is just a
+        // device-list refresh from an already-Signal-authenticated user and stays unsigned, which is
+        // what `DeviceManager.announceDevices` sends.
+        if (announce.isRevocation || announce.signature.size() > 0) {
+            if (trusted == null || announce.signature.size() == 0) {
+                logger.signatureVerificationFailed(sourceUserId, "DEVICE_ANNOUNCE")
+                log("DEVICE_ANNOUNCE rejected: revocation/signed announce with no key pinned to check it against")
+                return
+            }
             val payload = com.obscura.kit.crypto.RecoveryKeys.serializeAnnounceForSigning(
                 announce.devicesList.map { it.deviceId }, announce.timestamp, announce.isRevocation
             )
-            try {
-                val pubKey = Curve.decodePoint(announce.recoveryPublicKey.toByteArray(), 0)
-                if (!Curve.verifySignature(pubKey, payload, announce.signature.toByteArray())) {
-                    logger.decryptFailed(sourceUserId, "device announce signature invalid")
-                    return
-                }
+            val ok = try {
+                Curve.verifySignature(Curve.decodePoint(trusted, 0), payload, announce.signature.toByteArray())
             } catch (e: Exception) {
-                logger.decryptFailed(sourceUserId, "device announce signature verify error: ${e.message}")
+                log("DEVICE_ANNOUNCE signature verify error: ${e.message}")
+                false
+            }
+            if (!ok) {
+                logger.signatureVerificationFailed(sourceUserId, "DEVICE_ANNOUNCE")
+                log("DEVICE_ANNOUNCE rejected: signature does not verify under the pinned recovery key")
                 return
             }
         }
+
         friends.updateDevices(sourceUserId, announce.devicesList.map { d ->
             FriendDeviceInfo(d.deviceUuid, d.deviceId, d.deviceName)
         })
     }
 
-    private suspend fun handleModelSignal(msg: ClientMessage, sourceUserId: String, senderDeviceId: String?) {
+    internal suspend fun handleModelSignal(msg: ClientMessage, sourceUserId: String, senderDeviceId: String?) {
         try {
             val sig = msg.modelSignal
             if (sig.model.isBlank()) return
 
             val signalName = WireCodec.decodeSignalKind(sig.kind)
                 ?: return // unknown/unspecified — ignore
+
+            // The SEND side already fails CLOSED on a contextId that does not name exactly two
+            // participants (see `signalManager.sendSignal`), for the leak fixed on 2026-07-25. The
+            // RECEIVE side applied no check at all, so a peer could put any string here — including
+            // a conversation id it is not part of — and have a typing indicator appear in it.
+            // `observeTyping` keys on the contextId verbatim, so that is a real UI write.
+            //
+            // The audience of a two-party signal is derivable, so derive it: the id must split into
+            // exactly two non-empty participants, and the AUTHENTICATED sender must be one of them.
+            val participants = sig.contextId.split("_").filter { it.isNotBlank() }
+            if (participants.size != 2 || sourceUserId !in participants) {
+                log("SIGNAL DROPPED (inbound): contextId=\"${sig.contextId}\" is not a two-party id " +
+                    "containing the sender ${sourceUserId.take(8)}")
+                logger.log("inbound model signal dropped: contextId does not name the authenticated sender")
+                return
+            }
 
             // Identity comes from the authenticated envelope, never the payload:
             // the device from the decrypted session, the display name from the friend graph.
@@ -1209,7 +1273,19 @@ class ObscuraClient(
         clientSyncManager.processSyncBlob(msg)
     }
 
-    private suspend fun handleSentSync(msg: ClientMessage) {
+    /**
+     * SENT_SYNC — an echo of a message THIS user sent from another of their own devices.
+     *
+     * The `sourceUserId != userId` guard is the whole point and it was missing. Friendship is not
+     * required to deliver a message, so without it ANY account could send a SentSync and have this
+     * write a row with an attacker-chosen conversationId, content, timestamp and messageId, stamped
+     * with OUR device id — rendering as a message we sent. `Message.sq`'s INSERT OR REPLACE keys on
+     * `messageId`, so a chosen id also overwrites a real message. Both siblings
+     * ([handleSyncBlob], and the deleted friend-sync arm) opened with this line; this one did not.
+     * ObscuraKit-swift has always had it (`case .sentSync?: guard sourceUserId == self.userId`).
+     */
+    internal suspend fun handleSentSync(msg: ClientMessage, sourceUserId: String) {
+        if (sourceUserId != userId) return
         val ss = msg.sentSync
         messagesDomain.add(ss.recipientUsername, MessageData(
             id = ss.messageId, conversationId = ss.recipientUsername,
@@ -1219,17 +1295,22 @@ class ObscuraClient(
         refreshConversation(ss.recipientUsername)
     }
 
-    private suspend fun handleFriendSync(msg: ClientMessage, sourceUserId: String) {
-        if (sourceUserId != userId) return
-        val fs = msg.friendSync
-        val status = if (fs.status == FriendStatus.ACCEPTED.value) FriendStatus.ACCEPTED else FriendStatus.PENDING_RECEIVED
-        if (fs.action == FriendSyncAction.ADD.value) {
-            friends.add(sourceUserId, fs.username, status,
-                fs.devicesList.map { FriendDeviceInfo(it.deviceUuid, it.deviceId, it.deviceName) })
-        } else if (fs.action == FriendSyncAction.REMOVE.value) {
-            friends.remove(sourceUserId)
-        }
-    }
+    // THE FRIEND_SYNC ARM IS DELETED, sender and receiver, and it was writing corrupt rows.
+    //
+    // `FriendSync` in client.proto has no `user_id` field, so `handleFriendSync` had nothing to key
+    // the friend record on but `sourceUserId` — which its own `sourceUserId != userId` guard had
+    // just proven is OUR OWN user id. Every befriend/acceptFriend on a multi-device account
+    // therefore wrote, on the user's OTHER device, a Friend row with `user_id = <own userId>`: the
+    // user in their own friends list, in `getAccepted()`, and so in every fan-out.
+    //
+    // FUNCTIONAL CONSEQUENCE, recorded because it is a real loss and not merely a deletion: a second
+    // device no longer learns about friends added after it was linked. DEVICE_LINK_APPROVAL still
+    // carries the full friends export at link time (`handleLinkApproval` -> `friends.importAll`), so
+    // a freshly linked device starts correct; it just does not stay in step. obscura-pix never
+    // referenced FRIEND_SYNC, so nothing observable to the app changes today.
+    //
+    // The proto field is NOT removed — the arm stays declared and is now classified UNIMPLEMENTED,
+    // so an inbound FriendSync is dropped and acked loudly rather than acted on.
 
     private suspend fun handleLinkApproval(msg: ClientMessage, sourceUserId: String) {
         // Only accept approval from our own account
@@ -1312,7 +1393,7 @@ class ObscuraClient(
      * sender receives no inbox row, so the app writes its own outgoing entry to [entries].
      *
      * Prefer this over `sendModelSync`, which takes a `friendUsername` and looks it up — that is the
-     * kit deciding an audience from an application concept, and it goes with the ORM in §10 step 4.
+     * kit deciding an audience from an application concept, which SPEC §0.4 forbids.
      */
     suspend fun send(
         recipientUserIds: List<String>,
@@ -1325,14 +1406,12 @@ class ObscuraClient(
 
     // ── Ephemeral signals (typing, read receipts) ────────────────────────────────────────────
     //
-    // These reach the app through `orm.model(name).typing(...)` today, which is the only reason the
-    // app still touches the ORM at all — and `RESET.md` KEEPS signals while deleting the ORM around
-    // them. `SignalManager` was already keep-forever code that happened to live in `orm/`; this is
-    // the door that lets it stay after the package goes.
+    // `RESET.md` KEEPS ephemeral signals while deleting the ORM around them, and `SignalManager` was
+    // always keep-forever code that merely happened to live in `orm/` (it is in `wire/` now). These
+    // three methods are the door that let it stay after the package went.
     //
     // `modelKey` is opaque, exactly as it is on the inbox and the entry store: it names the app's
-    // conversation namespace and the kit neither parses nor validates it. That is what makes this a
-    // relocation rather than the ORM growing a new entrance.
+    // conversation namespace and the kit neither parses nor validates it.
 
     /**
      * Announce that this user is typing in a conversation.
@@ -1438,6 +1517,5 @@ class ObscuraClient(
     suspend fun resetSessionWith(targetUserId: String, reason: String = "manual") =
         clientSyncManager.resetSessionWith(targetUserId, reason)
     suspend fun resetAllSessions(reason: String = "manual") = clientSyncManager.resetAllSessions(reason)
-    suspend fun requestSync() = clientSyncManager.requestSync()
     suspend fun pushHistoryToDevice(targetDeviceId: String) = clientSyncManager.pushHistoryToDevice(targetDeviceId)
 }

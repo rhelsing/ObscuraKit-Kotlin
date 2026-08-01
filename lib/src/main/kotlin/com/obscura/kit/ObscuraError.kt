@@ -31,19 +31,8 @@ sealed class ObscuraError(val code: String, message: String, cause: Throwable? =
     class SendFailed(message: String) :
         ObscuraError("SEND_FAILED", message)
 
-    /**
-     * A 1:1 (direct) model write could not resolve its declared recipient, so the
-     * kit refused to send it rather than broadcast a private payload.
-     */
-    class DirectRoutingUnresolved(message: String) :
-        ObscuraError("DIRECT_ROUTING_UNRESOLVED", message)
-
-    /**
-     * A model definition in the schema is invalid — unknown `sync` strategy,
-     * unknown field type, or malformed/underspecified `audience`. Fail loud at
-     * define time rather than silently mis-parsing (which is how a 1:1 model could
-     * lose its private audience and leak). Mirrors Swift `ObscuraError.invalidSchema`.
-     */
-    class InvalidSchema(message: String) :
-        ObscuraError("INVALID_SCHEMA", message)
+    // `DirectRoutingUnresolved` and `InvalidSchema` were here. Both belonged to the deleted ORM —
+    // one to the audience-routing engine, one to the schema parser — and neither was thrown or
+    // caught anywhere after it went. They are also live in the RN bridge's error union
+    // (`obscura-pix/src/native/ObscuraModule.ts`) and in ObscuraKit-swift, which must follow.
 }

@@ -13,22 +13,17 @@ enum class FriendStatus(val value: String) {
     ACCEPTED("accepted")
 }
 
-enum class FriendSyncAction(val value: String) {
-    ADD("add"),
-    REMOVE("remove")
-}
-
-data class DeviceTarget(
-    val deviceId: String,
-    val userId: String,
-    val registrationId: Int = 1
-)
-
 data class FriendData(
     val userId: String,
     val username: String,
     val status: FriendStatus,
-    val devices: List<FriendDeviceInfo> = emptyList()
+    val devices: List<FriendDeviceInfo> = emptyList(),
+    /**
+     * The peer's recovery public key, pinned on the first DEVICE_ANNOUNCE that carried one and
+     * never rewritten (`ObscuraClient.handleDeviceAnnounce`). Null until then. Mirrors
+     * ObscuraKit-swift's `Friend.recoveryPublicKey`.
+     */
+    val recoveryPublicKey: ByteArray? = null,
 )
 
 data class FriendDeviceInfo(
@@ -36,7 +31,6 @@ data class FriendDeviceInfo(
     val deviceId: String,
     val deviceName: String,
     val registrationId: Int = 1,
-    val signalIdentityKey: ByteArray? = null
 )
 
 /**
@@ -73,43 +67,18 @@ class FriendDomain internal constructor(private val db: ObscuraDatabase) {
      * driven by an inbound message must never be able to carry a name with it.
      */
     suspend fun updateStatus(userId: String, status: FriendStatus) = withContext(dispatcher) {
-        val friend = db.friendQueries.selectById(userId).executeAsOneOrNull() ?: return@withContext
-        db.friendQueries.insert(
-            userId, friend.username, status.value, friend.devices, friend.created_at,
-            System.currentTimeMillis()
-        )
+        db.friendQueries.updateStatus(status.value, System.currentTimeMillis(), userId)
     }
 
     suspend fun getAccepted(): List<FriendData> = withContext(dispatcher) {
         db.friendQueries.selectByStatus(FriendStatus.ACCEPTED.value).executeAsList().map { it.toFriendData() }
     }
 
-    suspend fun getPending(): List<FriendData> = withContext(dispatcher) {
-        val sent = db.friendQueries.selectByStatus(FriendStatus.PENDING_SENT.value).executeAsList()
-        val received = db.friendQueries.selectByStatus(FriendStatus.PENDING_RECEIVED.value).executeAsList()
-        (sent + received).map { it.toFriendData() }
-    }
-
-    suspend fun getAll(): List<FriendData> = withContext(dispatcher) {
-        db.friendQueries.selectAll().executeAsList().map { it.toFriendData() }
-    }
-
-    suspend fun getFanOutTargets(userId: String): List<DeviceTarget> = withContext(dispatcher) {
-        val friend = db.friendQueries.selectById(userId).executeAsOneOrNull() ?: return@withContext emptyList()
-        parseDevices(friend.devices).map { d ->
-            DeviceTarget(deviceId = d.deviceId, userId = userId)
-        }
-    }
-
-    suspend fun getAllFriendDeviceTargets(): List<String> = withContext(dispatcher) {
-        val accepted = db.friendQueries.selectByStatus(FriendStatus.ACCEPTED.value).executeAsList()
-        accepted.flatMap { friend ->
-            parseDevices(friend.devices).map { it.deviceId }
-        }
-    }
-
     suspend fun updateDevices(userId: String, devices: List<FriendDeviceInfo>) = withContext(dispatcher) {
-        val friend = db.friendQueries.selectById(userId).executeAsOneOrNull() ?: return@withContext
+        // Still gated on the row existing: an UPDATE against an absent user_id is a silent no-op,
+        // and that is the intended behaviour (a stranger's DEVICE_ANNOUNCE must not create a friend).
+        // The explicit read keeps that fact readable instead of implied by SQL semantics.
+        db.friendQueries.selectById(userId).executeAsOneOrNull() ?: return@withContext
         val devicesJson = JSONArray(devices.map { d ->
             JSONObject().apply {
                 put("deviceUuid", d.deviceUuid)
@@ -118,7 +87,19 @@ class FriendDomain internal constructor(private val db: ObscuraDatabase) {
                 put("registrationId", d.registrationId)
             }
         }).toString()
-        db.friendQueries.insert(userId, friend.username, friend.status, devicesJson, friend.created_at, System.currentTimeMillis())
+        db.friendQueries.updateDevices(devicesJson, System.currentTimeMillis(), userId)
+    }
+
+    /**
+     * Pin [key] as this peer's recovery public key. Trust-on-first-use: the caller only reaches here
+     * when nothing is pinned yet, and nothing in the kit overwrites a pin afterwards.
+     *
+     * A no-op for a user who is not in the friend graph — there is no row to pin it to, and
+     * inventing one would let any stranger write to the friend table.
+     */
+    suspend fun pinRecoveryPublicKey(userId: String, key: ByteArray) = withContext(dispatcher) {
+        db.friendQueries.selectById(userId).executeAsOneOrNull() ?: return@withContext
+        db.friendQueries.updateRecoveryPublicKey(key, System.currentTimeMillis(), userId)
     }
 
     suspend fun remove(userId: String) = withContext(dispatcher) {
@@ -158,7 +139,8 @@ class FriendDomain internal constructor(private val db: ObscuraDatabase) {
             userId = user_id,
             username = username,
             status = FriendStatus.entries.find { it.value == status } ?: FriendStatus.PENDING_SENT,
-            devices = parseDevices(devices)
+            devices = parseDevices(devices),
+            recoveryPublicKey = recovery_public_key,
         )
     }
 

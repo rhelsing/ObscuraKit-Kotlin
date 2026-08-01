@@ -10,6 +10,15 @@ If you find yourself writing `ClientMessage.newBuilder().setType(...)` in a test
 
 **Why:** The tests are the proof that the library API is complete. If tests need raw proto, views would too — and views should never touch protobuf.
 
-**How to verify:** `grep -c "obscura.v2\.\|ClientMessage.newBuilder\|com.google.protobuf" scenarios/*.kt` — should be 0 for every file.
+**How to verify:**
+
+```bash
+grep -rn "obscura\.v1\.\|obscura\.client\.v1\.\|ClientMessage\.newBuilder\|com\.google\.protobuf" \
+  lib/src/integrationTest/kotlin/scenarios/
+```
+
+Should be empty for every file. (This used to grep for `obscura.v2.`, a package that has never
+existed in this repo — the generated packages are `obscura.v1` and `obscura.client.v1` — so the
+check reported a clean result no matter what the files contained.)
 
 **The refactor pattern:** Working test with raw proto → extract the proto building into an ObscuraClient method → test calls the clean method → verify tests still pass.
