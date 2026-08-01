@@ -110,17 +110,10 @@ class ConnectionUnitTests {
         scope.cancel()
     }
 
-    @Test
-    fun `Disconnect sets shouldReconnect false`() = runBlocking {
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val api = com.obscura.kit.network.APIClient("https://obscura.barrelmaker.dev")
-        val gw = GatewayConnection(api, scope)
-
-        // disconnect without ever connecting — should not crash
-        gw.disconnect()
-        assertEquals(GatewayState.DISCONNECTED, gw.state.value)
-        scope.cancel()
-    }
+    // `Disconnect sets shouldReconnect false` was here. It asserted only
+    // `state == DISCONNECTED` on a gateway that had never connected — i.e. exactly what
+    // `Gateway starts disconnected` above already asserts, and nothing at all about
+    // shouldReconnect, which the name promised and which is private.
 
     @Test
     fun `onStateChanged fires on every transition`() = runBlocking {
@@ -139,20 +132,8 @@ class ConnectionUnitTests {
         scope.cancel()
     }
 
-    @Test
-    fun `Token refresh callback is invoked`() = runBlocking {
-        var refreshCalled = false
-        val scope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
-        val api = com.obscura.kit.network.APIClient("https://obscura.barrelmaker.dev")
-        val gw = GatewayConnection(api, scope)
-
-        gw.ensureFreshToken = { refreshCalled = true; true }
-
-        // We can't trigger a real reconnect without a server, but we can verify
-        // the callback is wired correctly by checking it's set
-        assertNotNull(gw.ensureFreshToken)
-        gw.ensureFreshToken()
-        assertTrue(refreshCalled, "Token refresh callback should be invocable")
-        scope.cancel()
-    }
+    // `Token refresh callback is invoked` was here and was a tautology: it assigned a lambda that
+    // set a flag, called that same lambda itself, and asserted the flag. The gateway was never
+    // involved. Verifying the gateway actually calls `ensureFreshToken` before a reconnect needs a
+    // socket, which is the integration suite's job.
 }

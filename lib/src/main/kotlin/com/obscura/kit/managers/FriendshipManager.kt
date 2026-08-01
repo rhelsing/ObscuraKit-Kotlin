@@ -1,11 +1,10 @@
 package com.obscura.kit.managers
 
 import com.obscura.kit.stores.FriendStatus
-import com.obscura.kit.stores.FriendSyncAction
 import obscura.client.v1.Client.ClientMessage
 
 /**
- * Befriend, acceptFriend, and syncFriendToOwnDevices.
+ * Befriend and acceptFriend.
  */
 internal class FriendshipManager(
     private val ctx: ClientContext
@@ -13,7 +12,6 @@ internal class FriendshipManager(
     private val session get() = ctx.session
     private val messenger get() = ctx.messenger
     private val friends get() = ctx.friends
-    private val devices get() = ctx.devices
     private val messageSender get() = ctx.messageSender
     suspend fun befriend(targetUserId: String, targetUsername: String) {
         require(targetUserId != session.userId) { "Cannot befriend yourself" }
@@ -33,8 +31,6 @@ internal class FriendshipManager(
         // Persist the friend's devices (learned by the prekey fetch above) so the device->user
         // mapping survives a restart: rebuildDeviceMap(getAccepted()) restores it from here.
         friends.add(targetUserId, targetUsername, FriendStatus.PENDING_SENT, messenger.knownDevicesFor(targetUserId))
-
-        syncFriendToOwnDevices(targetUsername, FriendSyncAction.ADD.value, FriendStatus.PENDING_SENT.value)
     }
 
     suspend fun acceptFriend(targetUserId: String, targetUsername: String) {
@@ -49,26 +45,14 @@ internal class FriendshipManager(
 
         messageSender.sendToAllDevices(targetUserId, msg)
         friends.add(targetUserId, targetUsername, FriendStatus.ACCEPTED, messenger.knownDevicesFor(targetUserId))
-
-        syncFriendToOwnDevices(targetUsername, FriendSyncAction.ADD.value, FriendStatus.ACCEPTED.value)
     }
 
-    suspend fun syncFriendToOwnDevices(friendUsername: String, action: String, status: String) {
-        val selfTargets = devices.getSelfSyncTargets().filter { it != session.deviceId }
-        if (selfTargets.isEmpty()) return
-
-        val msg = ClientMessage.newBuilder()
-            .setTimestamp(System.currentTimeMillis())
-            .setFriendSync(obscura.client.v1.friendSync {
-                username = friendUsername
-                this.action = action
-                this.status = status
-                timestamp = System.currentTimeMillis()
-            }).build()
-
-        for (devId in selfTargets) {
-            messenger.queueMessage(devId, msg, session.userId)
-        }
-        messenger.flushMessages()
-    }
+    // `syncFriendToOwnDevices` was here and is deleted along with the whole FRIEND_SYNC arm — see
+    // the note at the deleted `handleFriendSync` in ObscuraClient.kt. In short: `FriendSync` has no
+    // `user_id` field, so the receiver could only key the record on `sourceUserId`, which its own
+    // guard proves is the RECEIVER's own id — every call here wrote a Friend row on the other
+    // device naming the user as their own friend.
+    //
+    // Consequence: a second device no longer learns about friends added after it was linked.
+    // DEVICE_LINK_APPROVAL still ships the whole friends export at link time.
 }

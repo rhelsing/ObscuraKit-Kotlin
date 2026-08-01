@@ -22,9 +22,6 @@ CREATE TABLE IF NOT EXISTS DeviceIdentity (
 selectOwnDevices:
 SELECT * FROM Device WHERE is_own = 1;
 
-selectDeviceById:
-SELECT * FROM Device WHERE device_id = ?;
-
 insertDevice:
 INSERT OR REPLACE INTO Device(device_id, device_name, user_id, signal_identity_key, is_own, created_at)
 VALUES (?, ?, ?, ?, ?, ?);

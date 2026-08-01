@@ -7,7 +7,11 @@ import org.json.JSONObject
 import java.util.*
 
 /**
- * Request sync, push history, reset sessions, process sync blobs.
+ * Push history, reset sessions, process sync blobs.
+ *
+ * `requestSync` was here. It shipped a SYNC_REQUEST to every one of the user's other devices — a
+ * Signal encrypt and an HTTP round trip each — and BOTH kits classify that arm UNIMPLEMENTED and
+ * drop it on arrival. It was a no-op with a cost.
  */
 internal class ClientSyncManager(
     private val ctx: ClientContext
@@ -19,18 +23,6 @@ internal class ClientSyncManager(
     private val devices get() = ctx.devices
     private val messages get() = ctx.messages
     private val messageSender get() = ctx.messageSender
-    suspend fun requestSync() {
-        val selfTargets = devices.getSelfSyncTargets().filter { it != session.deviceId }
-        val msg = ClientMessage.newBuilder()
-            .setSyncRequest(obscura.client.v1.syncRequest {})
-            .setTimestamp(System.currentTimeMillis()).build()
-
-        for (devId in selfTargets) {
-            messenger.queueMessage(devId, msg, session.userId)
-        }
-        messenger.flushMessages()
-    }
-
     suspend fun pushHistoryToDevice(targetDeviceId: String) {
         val friendList = friends.getAccepted()
         val compressed = com.obscura.kit.crypto.SyncBlob.export(friendList)

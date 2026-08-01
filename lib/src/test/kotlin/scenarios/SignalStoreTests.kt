@@ -256,25 +256,9 @@ class SignalStoreTests {
             "Alice's session should be untouched")
     }
 
-    @Test
-    fun `getSubDeviceSessions returns non-primary devices`() {
-        store.generateIdentity()
-        store.storeSession(SignalProtocolAddress("bob", 1), SessionRecord())
-        store.storeSession(SignalProtocolAddress("bob", 2), SessionRecord())
-        store.storeSession(SignalProtocolAddress("bob", 3), SessionRecord())
-
-        val subDevices = store.getSubDeviceSessions("bob")
-        assertEquals(listOf(2, 3), subDevices.sorted(),
-            "Sub-devices should exclude primary device (1)")
-    }
-
-    @Test
-    fun `getAllSessionRegistrationIds returns all devices`() {
-        store.generateIdentity()
-        store.storeSession(SignalProtocolAddress("bob", 1), SessionRecord())
-        store.storeSession(SignalProtocolAddress("bob", 7), SessionRecord())
-
-        val all = store.getAllSessionRegistrationIds("bob")
-        assertEquals(listOf(1, 7), all.sorted())
-    }
+    // `getSubDeviceSessions returns non-primary devices` and `getAllSessionRegistrationIds returns
+    // all devices` were here. Both stored sessions at `bob.2`, `bob.3`, `bob.7` — addresses this kit
+    // can no longer produce: Phase 2 addressing pins every ProtocolAddress to `<deviceUuid>.1`
+    // (MessengerDomain.addressFor). They tested a shape the code cannot reach, which is why deleting
+    // the methods they covered was safe.
 }

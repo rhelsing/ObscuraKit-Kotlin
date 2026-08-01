@@ -2,7 +2,8 @@ package com.obscura.kit
 
 data class ObscuraConfig(
     val apiUrl: String,
-    val gatewayUrl: String? = null,
+    // `gatewayUrl` was here and nothing read it: the websocket URL is derived from `apiUrl` by
+    // `APIClient.getGatewayUrl`, which is also what keeps the two from disagreeing.
     val deviceName: String = "Kotlin Client",
     val databasePath: String? = null, // null = in-memory (tests), path = file-backed (production)
     // Client-side pacing for prod auth rate limits; env-overridable so CI can

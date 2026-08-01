@@ -32,6 +32,11 @@ internal enum class PayloadClass {
      * resolution in §4.2: four are Phase 3 deletions, and `DEVICE_RECOVERY_ANNOUNCE` is a
      * deliberate deferral (it cannot fire — `enableRecoveryPhrase` defaults to false and obscura-pix
      * ships no recovery UI).
+     *
+     * `FRIEND_SYNC` joined them when its handler was deleted: it was classified KIT_INTERNAL and had
+     * a live handler, but `FriendSync` carries no `user_id`, so the handler keyed the friend record
+     * on `sourceUserId` — which its own guard had just proven was the RECEIVER's own id. It put the
+     * user in their own friends list. Sender and receiver are both gone; the proto arm is not.
      */
     UNIMPLEMENTED,
 }
@@ -59,7 +64,6 @@ internal fun classify(arm: PayloadCase): PayloadClass = when (arm) {
     // Kit-owned state, all with live handlers in ObscuraClient.routeMessage.
     PayloadCase.FRIEND_REQUEST,
     PayloadCase.FRIEND_RESPONSE,
-    PayloadCase.FRIEND_SYNC,
     PayloadCase.DEVICE_ANNOUNCE,
     PayloadCase.DEVICE_LINK_APPROVAL,
     PayloadCase.SESSION_RESET,
@@ -83,12 +87,18 @@ internal fun classify(arm: PayloadCase): PayloadClass = when (arm) {
     PayloadCase.CONTENT_REFERENCE,
     PayloadCase.CHUNKED_CONTENT_REFERENCE -> PayloadClass.INBOXED
 
-    // Classified, unimplemented — see the enum. Not inbox fodder. None of these has a live sender:
-    // DEVICE_RECOVERY_ANNOUNCE is gated behind a default-off flag, and the other three have no
-    // sender anywhere (§4.3).
+    // Classified, unimplemented — see the enum. Not inbox fodder. None of these has a live sender
+    // in this kit: DEVICE_RECOVERY_ANNOUNCE is gated behind a default-off flag, and the rest have no
+    // sender at all (§4.3).
+    //
+    // SYNC_REQUEST and FRIEND_SYNC only became senderless when their senders were deleted. The
+    // earlier wording — "the other three have no sender anywhere" — was already false for
+    // SYNC_REQUEST: `ClientSyncManager.requestSync` was public on the facade and shipped one to every
+    // own device, costing a Signal encrypt and an HTTP round trip so the receiver could drop it here.
     PayloadCase.DEVICE_RECOVERY_ANNOUNCE,
     PayloadCase.HISTORY_CHUNK,
     PayloadCase.SYNC_REQUEST,
+    PayloadCase.FRIEND_SYNC,
     PayloadCase.SETTINGS_SYNC,
     PayloadCase.READ_SYNC -> PayloadClass.UNIMPLEMENTED
 

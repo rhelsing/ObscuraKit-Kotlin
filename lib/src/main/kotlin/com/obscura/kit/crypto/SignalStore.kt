@@ -158,20 +158,12 @@ class SignalStore(
         }
     }
 
-    override fun getSubDeviceSessions(name: String): List<Int> {
-        val allSessions = db.signalKeyQueries.selectAllSessions().executeAsList()
-        return allSessions
-            .filter { it.address.startsWith("$name.") }
-            .mapNotNull { it.address.substringAfterLast(".").toIntOrNull() }
-            .filter { it != 1 }
-    }
-
-    fun getAllSessionRegistrationIds(name: String): List<Int> {
-        val allSessions = db.signalKeyQueries.selectAllSessions().executeAsList()
-        return allSessions
-            .filter { it.address.startsWith("$name.") }
-            .mapNotNull { it.address.substringAfterLast(".").toIntOrNull() }
-    }
+    // Phase 2 addressing makes both of these dead BY CONSTRUCTION, not merely uncalled: every
+    // address this kit can now produce is `<deviceUuid>.1` (MessengerDomain.addressFor pins the
+    // deviceId slot to the constant 1), so "sub-device sessions" — sessions whose trailing int is
+    // anything but 1 — is an empty set no matter what is stored. libsignal's interface requires
+    // getSubDeviceSessions, so it stays as the shortest honest implementation.
+    override fun getSubDeviceSessions(name: String): List<Int> = emptyList()
 
     override fun storeSession(address: SignalProtocolAddress, record: SessionRecord) {
         val addressStr = "${address.name}.${address.deviceId}"

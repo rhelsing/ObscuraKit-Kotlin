@@ -26,7 +26,6 @@ class PayloadClassTest {
         PayloadCase.CHUNKED_CONTENT_REFERENCE to PayloadClass.INBOXED,
         PayloadCase.FRIEND_REQUEST to PayloadClass.KIT_INTERNAL,
         PayloadCase.FRIEND_RESPONSE to PayloadClass.KIT_INTERNAL,
-        PayloadCase.FRIEND_SYNC to PayloadClass.KIT_INTERNAL,
         PayloadCase.DEVICE_ANNOUNCE to PayloadClass.KIT_INTERNAL,
         PayloadCase.DEVICE_LINK_APPROVAL to PayloadClass.KIT_INTERNAL,
         PayloadCase.SESSION_RESET to PayloadClass.KIT_INTERNAL,
@@ -37,6 +36,7 @@ class PayloadClassTest {
         PayloadCase.DEVICE_RECOVERY_ANNOUNCE to PayloadClass.UNIMPLEMENTED,
         PayloadCase.HISTORY_CHUNK to PayloadClass.UNIMPLEMENTED,
         PayloadCase.SYNC_REQUEST to PayloadClass.UNIMPLEMENTED,
+        PayloadCase.FRIEND_SYNC to PayloadClass.UNIMPLEMENTED,
         PayloadCase.SETTINGS_SYNC to PayloadClass.UNIMPLEMENTED,
         PayloadCase.READ_SYNC to PayloadClass.UNIMPLEMENTED,
     )
@@ -125,6 +125,11 @@ class PayloadClassTest {
             PayloadCase.DEVICE_RECOVERY_ANNOUNCE,
             PayloadCase.HISTORY_CHUNK,
             PayloadCase.SYNC_REQUEST,
+            // FRIEND_SYNC joined this list when its handler was deleted: the message carries no
+            // `user_id`, so the handler could only key the friend record on `sourceUserId` — which
+            // its own guard had proven was the RECEIVER's own id, putting the user in their own
+            // friends list and therefore in every fan-out.
+            PayloadCase.FRIEND_SYNC,
             PayloadCase.SETTINGS_SYNC,
             PayloadCase.READ_SYNC,
         )
@@ -139,7 +144,7 @@ class PayloadClassTest {
     @Test
     fun `friend and device arms are kit-internal`() {
         listOf(
-            PayloadCase.FRIEND_REQUEST, PayloadCase.FRIEND_RESPONSE, PayloadCase.FRIEND_SYNC,
+            PayloadCase.FRIEND_REQUEST, PayloadCase.FRIEND_RESPONSE,
             PayloadCase.DEVICE_ANNOUNCE, PayloadCase.DEVICE_LINK_APPROVAL,
             PayloadCase.SESSION_RESET, PayloadCase.SYNC_BLOB, PayloadCase.SENT_SYNC,
         ).forEach {
