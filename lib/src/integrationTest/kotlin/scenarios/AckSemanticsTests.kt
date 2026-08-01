@@ -19,7 +19,7 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * PLAN.md Phase 0, task 0.2 — the ack-semantics test. Proves finding F2.
+ * Phase 0 task 0.2 (`git show bb9259c:PLAN.md`) — the ack-semantics test. Proves finding F2.
  *
  * On the server an ACK is a DELETE: gateway AckBatcher -> message_service.delete_batch ->
  * `DELETE FROM messages WHERE id = ANY($1) AND device_id = $2` (message_repo.rs:155). No

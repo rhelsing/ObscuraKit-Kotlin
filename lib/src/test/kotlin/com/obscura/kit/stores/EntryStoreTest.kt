@@ -48,7 +48,7 @@ class EntryStoreTest {
      * because by the time a write reaches this class the app has already decided who wins.
      *
      * If someone re-adds last-writer-wins here, this test fails — which is the point. Merge living
-     * in two places is exactly the duplication `RESET.md` exists to remove, and a kit that silently
+     * in two places is exactly the duplication `HISTORY.md` exists to remove, and a kit that silently
      * overrules the app's decision is worse than one that has no opinion.
      */
     @Test

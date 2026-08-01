@@ -143,7 +143,7 @@ suspend fun becomeFriends(a: ObscuraClient, b: ObscuraClient) {
  *
  * Replaces `getMessages(...).any { it.content == ... }`. `MessageDomain` is populated only by the
  * legacy TEXT arm and SENT_SYNC, so a MODEL_SYNC never reaches it — received app data lives in the
- * INBOX now, and `MessageDomain` is itself on RESET.md's deletion list.
+ * INBOX now, and `MessageDomain` is itself on HISTORY.md's deletion list.
  */
 suspend fun ObscuraClient.hasReceived(content: String, timeoutMs: Long = 10_000): Boolean {
     val deadline = System.currentTimeMillis() + timeoutMs

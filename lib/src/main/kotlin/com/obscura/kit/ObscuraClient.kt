@@ -321,7 +321,7 @@ class ObscuraClient(
         // caller, and obscura-pix now does it (`src/domain/audience.ts`) with the five
         // `routing.json` leak guards vendored alongside it.
         //
-        // The signal wiring below is NOT part of that and stays: ephemeral signals are on RESET.md's
+        // The signal wiring below is NOT part of that and stays: ephemeral signals are on HISTORY.md's
         // Keep list, and their audience is the two-party conversation id, resolved fail-CLOSED.
         signalManager.sendSignal = { modelName, signalName, signalData ->
             val kind = WireCodec.encodeSignalKind(signalName)
@@ -670,7 +670,7 @@ class ObscuraClient(
      */
     suspend fun processPendingMessages(timeoutMs: Long): ProcessedCounts {
         if (_connectionState.value != ConnectionState.CONNECTED) {
-            // F10 (PLAN.md). This used to be `try { connect() } catch (_: Exception) { return
+            // F10 (HISTORY.md). This used to be `try { connect() } catch (_: Exception) { return
             // ProcessedCounts() }` — a failed connect returned all-zero counts, which is
             // indistinguishable from "connected fine, nothing waiting". On the PUSH-WAKE path that
             // means: woken by a push, silently report no messages, leave them on the server, no
@@ -1373,7 +1373,7 @@ class ObscuraClient(
         return msgs
     }
 
-    // `send(friendUsername, text)` is gone (RESET.md: "legacy TEXT path", "sendText"). It resolved
+    // `send(friendUsername, text)` is gone (HISTORY.md: "legacy TEXT path", "sendText"). It resolved
     // a friend from a USERNAME and created an ORM entry — the kit deciding an audience from an
     // application concept, which SPEC §0.4 forbids. The replacement is `send(recipientUserIds, ...)`
     // above, with obscura-pix naming the recipients.
@@ -1406,7 +1406,7 @@ class ObscuraClient(
 
     // ── Ephemeral signals (typing, read receipts) ────────────────────────────────────────────
     //
-    // `RESET.md` KEEPS ephemeral signals while deleting the ORM around them, and `SignalManager` was
+    // `HISTORY.md` KEEPS ephemeral signals while deleting the ORM around them, and `SignalManager` was
     // always keep-forever code that merely happened to live in `orm/` (it is in `wire/` now). These
     // three methods are the door that let it stay after the package went.
     //

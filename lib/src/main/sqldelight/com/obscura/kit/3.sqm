@@ -7,7 +7,7 @@
 --
 -- `ModelAssociation` held parent/child relationships. They were never bridged to obscura-pix, the
 -- two queries that touched them (`selectAssociations`, `insertAssociation`) had zero callers, and
--- `RESET.md` lists the table for deletion in full.
+-- `HISTORY.md` lists the table for deletion in full.
 --
 -- `IF EXISTS` is load-bearing exactly once: on a database created before `1.sqm` existed, where
 -- SQLDelight's version never moved and the migration history is not what the stored version claims.
