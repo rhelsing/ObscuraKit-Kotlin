@@ -51,8 +51,8 @@ class SchemaMigrationTests {
         // A tripwire, not a fact worth asserting for its own sake: if you add or remove a table,
         // this number MUST move, because moving it is what makes existing installs run migrate().
         // If this fails, do not just update the constant — add the matching .sqm.
-        // 3 as of 2.sqm, which adds the durable inbox (KIT_API.md §3).
-        assertEquals(3L, ObscuraDatabase.Schema.version,
+        // 4 as of 3.sqm, which drops `ModelAssociation` with the ORM (RESET.md §10 step 4).
+        assertEquals(4L, ObscuraDatabase.Schema.version,
             "schema version = (highest .sqm number) + 1; a schema change without a new .sqm never " +
                 "reaches an existing install")
     }

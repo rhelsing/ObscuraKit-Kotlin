@@ -302,7 +302,6 @@ class ObscuraClient(
                 db.signalKeyQueries.deleteAllSessions()
                 db.signalKeyQueries.deleteAllSenderKeys()
                 db.modelEntryQueries.deleteAllEntries()
-                db.modelEntryQueries.deleteAllAssociations()
                 // The §3.3 rule 2 carve-out, and the reason it is worded as a MUST: the inbox holds
                 // DECRYPTED plaintext — full payloads, the resolved sender name, the model key. A
                 // wipe that spared it would leave exactly the content a revocation is meant to

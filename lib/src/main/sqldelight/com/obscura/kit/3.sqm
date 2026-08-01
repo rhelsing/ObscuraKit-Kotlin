@@ -1,0 +1,20 @@
+-- Migration 3 -> 4: the ORM's storage residue (`obscura-proto/RESET.md` §10 step 4).
+--
+-- PR #56 deleted the engine — Model, ModelStore, the CRDT layer, the query DSL, the schema parser,
+-- TTLManager — but left its tables standing, because deleting a table needs a migration and the
+-- engine deletion was already large. This is that migration, and it is the Kotlin half of what
+-- ObscuraKit-swift's `ObscuraSchema` v2 does.
+--
+-- `ModelAssociation` held parent/child relationships. They were never bridged to obscura-pix, the
+-- two queries that touched them (`selectAssociations`, `insertAssociation`) had zero callers, and
+-- `RESET.md` lists the table for deletion in full.
+--
+-- `IF EXISTS` is load-bearing exactly once: on a database created before `1.sqm` existed, where
+-- SQLDelight's version never moved and the migration history is not what the stored version claims.
+-- Without it that is a crash on launch rather than a no-op.
+--
+-- What this migration deliberately does NOT do: drop `ModelEntry.ttl_expires_at`, which is equally
+-- dead. `ModelEntry.sq` records the two reasons at length — Android's system SQLite predates
+-- `DROP COLUMN` at this `minSdk`, and the portable table-rebuild changes the text `sqlite_master`
+-- stores, which `SchemaMigrationTests` compares. Read that before adding it here.
+DROP TABLE IF EXISTS ModelAssociation;
