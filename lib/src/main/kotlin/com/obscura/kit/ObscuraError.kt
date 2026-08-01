@@ -31,8 +31,4 @@ sealed class ObscuraError(val code: String, message: String, cause: Throwable? =
     class SendFailed(message: String) :
         ObscuraError("SEND_FAILED", message)
 
-    // `DirectRoutingUnresolved` and `InvalidSchema` were here. Both belonged to the deleted ORM —
-    // one to the audience-routing engine, one to the schema parser — and neither was thrown or
-    // caught anywhere after it went. They are also live in the RN bridge's error union
-    // (`obscura-pix/src/native/ObscuraModule.ts`) and in ObscuraKit-swift, which must follow.
 }

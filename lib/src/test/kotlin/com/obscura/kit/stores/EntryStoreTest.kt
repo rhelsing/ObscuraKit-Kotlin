@@ -44,12 +44,10 @@ class EntryStoreTest {
     }
 
     /**
-     * **The load-bearing test.** `put` is a blind upsert: an OLDER write replaces a newer one,
+     * `put` is a blind upsert: an older write replaces a newer one,
      * because by the time a write reaches this class the app has already decided who wins.
      *
-     * If someone re-adds last-writer-wins here, this test fails — which is the point. Merge living
-     * in two places is exactly the duplication `HISTORY.md` exists to remove, and a kit that silently
-     * overrules the app's decision is worse than one that has no opinion.
+     * Merge policy must not be duplicated here or overrule the app's decision.
      */
     @Test
     fun `put is blind — an older write overwrites a newer one`() = runBlocking {

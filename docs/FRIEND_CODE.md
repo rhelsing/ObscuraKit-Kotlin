@@ -28,11 +28,6 @@ out of an iOS share sheet.
 alphabet, and rejects a payload with an empty `u` or `n`. Both behaviours are pinned by
 `FriendCodeTest`.
 
-> Until 2026-08-01 `ObscuraClient.friendCode()` and `addFriendByCode()` each inlined their own copy
-> of this codec, and the copies had drifted from the tested one: the inline decode did neither the
-> URL-safe mapping nor the empty-field check, so a code decoding to `{}` befriended the
-> empty-string user. The seven tests in `FriendCodeTest` covered only the object nobody called.
-
 ## Cross-client compatibility
 
 All clients use the same encoding: `{"u": userId, "n": username}`, standard base64 on the way out,

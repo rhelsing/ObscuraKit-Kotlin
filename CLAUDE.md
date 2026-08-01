@@ -1,63 +1,47 @@
 # ObscuraKit-Kotlin
 
-## ⚠️ Read this before changing anything
+## Read this before changing anything
 
-**The reset has landed. Do not re-add what it removed.**
+Read [`obscura-proto/SPEC.md`](../obscura-proto/SPEC.md) and
+[`obscura-proto/KIT_API.md`](../obscura-proto/KIT_API.md) first.
 
-Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md),
-[`obscura-proto/HISTORY.md`](../obscura-proto/HISTORY.md) (order of operations + current phase status) and
-[`obscura-proto/HISTORY.md`](../obscura-proto/HISTORY.md) **first**. They are the brief.
+This kit exposes an explicit-audience send path, a durable
+`peek`/`consume`/`discard`/`depth` inbox, and opaque `EntryStore` storage.
+Application merge, audience resolution, schemas, queries, expiry, and
+notification policy live in `obscura-pix`.
 
-**Where this kit is (2026-07-31): Phase 3 — the reset — has LANDED here (PR #56).** The `orm/`
-package is gone: Model, ModelConfig, ModelStore, MonotonicClock, OrmEntry, Query, QueryBuilder,
-Schema, SyncManager, TTLManager, TypedModel, crdt/GSet, crdt/LWWMap, plus `SchemaDomain`. What
-replaced them: `ObscuraClient.send(recipientUserIds, modelKey, entryId, op, sentAt, payload)` for the
-outbox (`sendEntry` is MessagingManager's internal name for it), `inbox` (peek/consume/discard/depth) for the
-receive path, and `EntryStore` for storage. Merge and audience resolution live in obscura-pix now,
-once. `WireCodec.kt` and `SignalManager.kt` moved to `wire/` rather than dying — they were
-keep-forever code that happened to live in `orm/`.
-
-**Phase 2 acceptance is SIGNED OFF on both kits** — see `obscura-proto/HISTORY.md` for the evidence and
-the four gaps recorded at sign-off. Phases 1 and 2 landed here before it. The receive loop is
-persist-then-ack (`SPEC` §0.9): never ack a decrypt failure, a rate-limited skip, or anything not
-yet durably written. Signal sessions are addressed by **device UUID** (`SPEC` §0.10) — the inbound
-session comes from `Envelope.sender_device_id`, prekey bundles are selected by device UUID with no
-fallback, and `registrationId` addresses **nothing**. `FriendDeviceInfo.registrationId` still exists
-as a vestigial diagnostic slot; do not build on it, and do not "restore" registration-id
-addressing — that is finding F1, and it silently breaks multi-device delivery.
-
-An audit found that this kit grew a schema-driven ORM, CRDT engine, query DSL, and
-audience-routing system — implemented *twice*, here and in Swift — to serve five flat models
-in one app, none of it reachable from that app. It was deleted, not improved.
+The receive loop is persist-then-ack (`SPEC` §0.9): never acknowledge a decrypt
+failure, a deferred sender, or data that was not durably handled. Signal
+sessions are addressed by device UUID (`SPEC` §0.10);
+`FriendDeviceInfo.registrationId` is diagnostic metadata, not an address.
 
 The rule that governs this repo:
 
 > **If the kit reads it, it is a field in `client.proto`.
 > If it is not in `client.proto`, the kit MUST NOT read it.**
 
-**Do not re-add an ORM, a CRDT layer, a query builder, an audience/routing engine, or a schema
-parser.** If a task seems to require one, that is the signal to stop and re-read §0. An agent
-working only inside this repo cannot see why they are unnecessary, because the evidence lives in
-`obscura-pix`. `KIT_API.md` §9 names the shape the regression takes: `EntryStore` grows a filter,
-then an index abstraction, then observation, and the deleted engine is back under a new name.
+**Do not add an ORM, CRDT layer, query builder, audience/routing engine, or
+schema parser.** If a task seems to require one, re-check the boundary in
+`SPEC.md` §0 and the application implementation in `obscura-pix`.
 
 ## Quick Context
 
 - **What:** the **native platform layer** for the Obscura app. Not a general-purpose framework;
   it has exactly one consumer (`obscura-pix`) and no API-stability obligation to anyone else.
 - **Why it exists natively at all:** libsignal ships only as `libsignal-java` / `libsignal-swift`
-  (no shared core), and the push path must decrypt with the app closed (iOS NSE — no RN runtime).
-  Everything *else* belongs in the app.
+  (no shared core), and background push processing cannot depend on a React
+  Native runtime. Everything *else* belongs in the app.
 - **Server:** `obscura.barrelmaker.dev` (OpenAPI spec at `/openapi.yaml`)
 - **Contract:** `obscura-proto` (submodule at `proto/`) — `SPEC.md` is normative.
 - **Sibling kit:** `ObscuraKit-swift`. It must agree with this one on the **wire**
   (`conformance/wire.json`) and nothing more.
 
 > **Not a reference:** `obscura-client-web` is a throwaway proof-of-concept, **not** a porting
-> target and **not** a normative implementation. Earlier versions of this file pointed agents at
-> it. That was a significant source of the mess.
+> target and **not** a normative implementation.
 - **Build:** `JAVA_HOME=/path/to/jdk-21 ./gradlew :lib:test`
-- **Tests:** two source sets — `src/test` (223 unit tests, no network) and `src/integrationTest` (96 tests against a containerized/live `obscura-server`, all driving the `ObscuraClient` public API). Both counts dropped with the ORM deletion. Those are the counts **JUnit reports**, not `@Test` greps: `grep -o "@Test"` also matches `@TestFactory` and `@TestMethodOrder` and overcounts. Verify a suspicious count against `lib/build/test-results/*/TEST-*.xml` — that is how a test that had never executed was found. **A non-void `@Test` is silently ignored by JUnit 5** — this has now bitten twice, most recently on an `assertThrows(...)` whose returned `Throwable` made the method non-`Unit`; add a trailing `Unit`. The integration suite needs a *correctly configured* server: seed the MinIO `test-bucket` and raise the auth rate limit, or you get ~63 environmental failures (HTTP 429/500) that are not code failures — see `HISTORY.md` 0.3.
+- **Tests:** `src/test` runs without a network; `src/integrationTest` drives the
+  public facade against a configured server. JUnit 5 ignores non-void `@Test`
+  methods, so a body ending in `assertThrows(...)` needs a trailing `Unit`.
 
 ## Three-Level Architecture
 
@@ -66,8 +50,7 @@ then an index abstraction, then observation, and the deleted engine is back unde
 3. **Level 3 (app data):** `stores/InboxDomain.kt` + `stores/EntryStore.kt` — a durable inbox of
    decrypted rows and a blind key/value store of application entries, both keyed on an **opaque**
    model name. Payload bytes are never parsed. `wire/WireCodec.kt` owns the wire↔app-facing
-   mappings pinned by `conformance/wire.json`. This level used to be `orm/`, a CRDT engine and query
-   DSL; that is deleted (`KIT_API.md` §10 step 4).
+   mappings pinned by `conformance/wire.json`.
 
 `ObscuraClient.kt` is the facade that wires all three levels together and exposes StateFlows for Compose views.
 
@@ -75,7 +58,10 @@ then an index abstraction, then observation, and the deleted engine is back unde
 
 - **Confined coroutines:** Each domain class uses `Dispatchers.Default.limitedParallelism(1)` — Kotlin equivalent of Swift Actors
 - **Auto-session building:** `MessengerDomain.queueMessage()` fetches prekey bundles and builds Signal sessions on demand
-- **StateFlow for UI:** `connectionState`, `authState`, `friendList`, `pendingRequests`, `conversations`; plus the `typedEvents` SharedFlow for bridges. (`events`, a second deprecated `ReceivedMessage` stream, is deleted — it had no consumer anywhere and its `tryEmit` sat in the hot receive loop.)
+- **StateFlow for UI:** `connectionState`, `authState`, `friendList`,
+  `pendingRequests`, and `conversations`. The current Android bridge observes
+  `connectionState`, `authState`, `friendList`, and `incomingMessages`; it reads
+  pending requests on demand. `typedEvents` is an optional aggregate stream.
 - **Inbound wake stream:** `incomingMessages` has exactly one app consumer; push draining observes
   receive activity without consuming it.
 
@@ -114,4 +100,4 @@ Hard-won lessons in `docs/knowledge/`. Read these before touching the codebase:
 - [Signal session building](docs/knowledge/critical_signal_session_building.md) — encrypt() fails without session, ensureSession() pattern is critical
 - [Multi-device queue draining](docs/knowledge/critical_multidevice_queue_draining.md) — befriend() fans out to ALL devices, tests must drain every queue
 - [Protobuf naming](docs/knowledge/critical_protobuf_naming.md) — p2p_public_key → p2PPublicKey, data → data_, ByteString ambiguity
-- [Facade completeness](docs/knowledge/critical_facade_completeness.md) — raw proto in test = missing facade method
+- [Facade completeness](docs/knowledge/critical_facade_completeness.md) — supported user flows use the facade; adversarial wire tests are explicit exceptions

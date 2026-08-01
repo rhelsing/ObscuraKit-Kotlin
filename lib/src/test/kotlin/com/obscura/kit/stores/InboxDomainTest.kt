@@ -53,10 +53,7 @@ class InboxDomainTest {
      * The rule the whole design leans on. Persist-then-ack **guarantees** redelivery: the ack is
      * best-effort and its failure is swallowed, so the server's per-connection cursor re-sends on
      * the next connection. That is correct behaviour — losing the message would be worse.
-     *
-     * Today that redelivery is harmless only because of the engine being deleted: `ModelStore.put`
-     * is `INSERT OR REPLACE`, so a re-delivered entry overwrites itself. Put a monotonic id in front
-     * of it without a dedupe key and the same redelivery inserts a SECOND row.
+     * The envelope id is therefore the inbox deduplication key.
      */
     @Test
     fun `a redelivered envelope does not create a second row`() = runBlocking {

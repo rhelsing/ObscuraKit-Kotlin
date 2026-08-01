@@ -12,8 +12,7 @@
 -- ⚠️ The CREATE statements below are duplicated verbatim in `2.sqm`, and they must stay that way.
 -- `sqlite_master` stores CREATE TABLE text LITERALLY — including comments — so an inline comment
 -- here that is absent there makes a migrated database differ from a fresh one, and
--- `SchemaMigrationTests` fails. That is why the column notes live in this header rather than in the
--- statement. (Found the honest way: the test caught it.)
+-- `SchemaMigrationTests` fails. That is why the column notes live in this header.
 --
 -- Column notes, in declaration order:
 --
@@ -25,12 +24,9 @@
 --                       ack is best-effort and its failure is swallowed, so the server's
 --                       per-connection cursor re-sends on reconnect. Correct — losing the message
 --                       would be worse — but it means the same envelope arrives more than once.
---                       Without UNIQUE + INSERT OR IGNORE this design would be strictly LESS
---                       idempotent than the ORM it replaces, whose INSERT OR REPLACE absorbed
---                       duplicates by accident.
+--                       UNIQUE + INSERT OR IGNORE absorbs pending redeliveries.
 --   kind                The payload oneof arm, e.g. 'MODEL_SYNC'. Present because the record must
---                       describe all 18 arms, not just a ModelSync — the omission that made "the
---                       inbox closes the ack-before-persist hole by construction" false in rev 1.
+--                       describe all declared arms, not just ModelSync.
 --   received_at         Kit clock, not a peer-supplied time.
 --   sender_user_id      Authenticated (SPEC §0.10).
 --   sender_device_id    The address of the Signal session that decrypted this — cryptographic

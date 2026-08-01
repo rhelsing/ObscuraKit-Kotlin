@@ -12,25 +12,13 @@ import org.junit.jupiter.api.Test
 /**
  * Who receives an ephemeral signal.
  *
- * `SignalECSTests` proves a typing indicator *arrives*. Nothing proved it did not arrive
- * somewhere it shouldn't, and it did: the send path fanned every MODEL_SIGNAL out to
- * `friends.getAccepted()` while `contextId` carried the canonical two-party
- * `"userIdA_userIdB"` conversation id. Every accepted friend therefore learned, in real
- * time, that you were typing to a *named* third party.
- *
- * These tests need three participants to see it — a two-party test cannot distinguish
- * "sent to the conversation" from "sent to everyone", which is why the existing suite
- * passed throughout.
- *
- * The rule under test is the one `SyncManager`'s `Audience.Conversation` already applied
- * to entries (`SPEC.md` §0.4 — the kit does not invent an audience): resolve the two
- * participants, send to the peer, and **fail closed** if the id does not resolve.
+ * A three-participant fixture distinguishes conversation-only delivery from a
+ * broadcast. The kit resolves exactly the canonical two-party conversation and
+ * fails closed when it cannot resolve that audience.
  */
 class SignalAudienceTests {
 
-    // Signals need no schema — `modelKey` is an opaque namespace string, exactly as it is on the
-    // inbox and the entry store. This file proved that before §10 step 4 and is why signals survived
-    // the ORM and its schema going.
+    // Signals need no schema: `modelKey` is an opaque namespace string.
 
     @Test
     fun `typing reaches the conversation peer and NOT an uninvolved friend`() = runBlocking {
@@ -40,8 +28,7 @@ class SignalAudienceTests {
         val bob = registerAndConnect("sig_aud_b")
         val carol = registerAndConnect("sig_aud_c")
 
-        // Carol is Alice's friend but is NOT in the Alice↔Bob conversation. That is the
-        // whole point: before the fix she received the signal, contextId included.
+        // Carol is Alice's friend but is not in the Alice↔Bob conversation.
         becomeFriends(alice, bob)
         becomeFriends(alice, carol)
 
@@ -86,8 +73,8 @@ class SignalAudienceTests {
         becomeFriends(alice, bob)
 
 
-        // Not a canonical two-party id. The old code shrugged and broadcast; `SPEC.md` §1.2
-        // says fail loud rather than guess an audience, and for an ephemeral signal the
+        // Not a canonical two-party id. `SPEC.md` §1.2 says fail loud rather
+        // than guess an audience, and for an ephemeral signal the
         // correct failure is to send nothing — dropping a typing indicator costs nothing,
         // guessing its audience leaks the conversation.
         alice.sendTyping("directMessage", "not-a-conversation-id")

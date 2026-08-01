@@ -8,14 +8,8 @@ import org.junit.jupiter.api.BeforeAll
 import org.junit.jupiter.api.Test
 
 /**
- * Phase 2 acceptance (`git show bb9259c:PLAN.md`) — `authorDeviceId` is HONEST.
- *
- * F4/F1 background: pre-Phase-2, the Envelope carried no sender device, so decrypt brute-forced
- * candidate registrationIds and `authorDeviceId` fell back to `sourceUserId` — a USER id in a
- * DEVICE field, a false security claim. Phase 2 stamps `Envelope.sender_device_id` (server-side,
- * from the sender's device-scoped JWT) and derives attribution from the address of the session
- * that decrypted: a valid MAC proves possession of that session's chain key, which only the
- * sender's device holds.
+ * `authorDeviceId` comes from `Envelope.sender_device_id`, stamped from the
+ * sender's device-scoped token and verified by the Signal session that decrypts.
  *
  * This test asserts that a message Alice receives from Bob is attributed to Bob's REAL DEVICE
  * UUID — both on the wake-up (`ReceivedMessage.senderDeviceId`) and on the durably persisted
@@ -54,7 +48,7 @@ class AuthorDeviceIdTests {
         assertEquals(bobDeviceId, received.senderDeviceId,
             "senderDeviceId must be Bob's REAL device UUID")
         assertNotEquals(bobUserId, received.senderDeviceId,
-            "senderDeviceId must NOT be the user id (that was the F4 lie)")
+            "senderDeviceId must not be the user id")
 
         delay(500)
 
@@ -62,9 +56,9 @@ class AuthorDeviceIdTests {
         // that matters, because the wake-up above is droppable while the row is the delivery path.
         //
         // It reads the INBOX rather than `getMessages`: a MODEL_SYNC never reaches `MessageDomain`
-        // (only the legacy TEXT arm and SENT_SYNC do), and `senderDeviceId` on the row is the
+        // (only the compatibility TEXT arm and SENT_SYNC do), and `senderDeviceId` on the row is the
         // address of the Signal session that decrypted it — cryptographic attribution, SPEC §0.10
-        // rule 4. That is precisely the field F4 got wrong.
+        // rule 4.
         val row = alice.inbox.peek(200).find {
             org.json.JSONObject(String(it.payload)).optString("content", "") == "attribute me correctly"
         }
@@ -72,7 +66,7 @@ class AuthorDeviceIdTests {
         assertEquals(bobDeviceId, row!!.senderDeviceId,
             "persisted senderDeviceId must be Bob's REAL device UUID")
         assertNotEquals(bobUserId, row.senderDeviceId,
-            "persisted senderDeviceId must NOT be the user id (that was the F4 lie)")
+            "persisted senderDeviceId must not be the user id")
 
         println("PROVEN: senderDeviceId=${row.senderDeviceId} == bob.deviceId=$bobDeviceId " +
             "(bob.userId=$bobUserId)")

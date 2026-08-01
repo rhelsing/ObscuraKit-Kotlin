@@ -6,8 +6,8 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 
 /**
- * Phase 2 / Option B acceptance: the message's USER comes from the ENVELOPE (sender_id), and the
- * DISPLAY NAME comes from the client's OWN FRIEND GRAPH — never from the payload (SPEC §0.5).
+ * The message's user comes from the envelope (`sender_id`), and its display
+ * name comes from the recipient's friend graph, never the payload (SPEC §0.5).
  *
  * Signal-aligned: the Envelope carries BOTH the sending user (source_service_id -> sender_id, a
  * routing/attribution HINT) and the sending device (source_device -> sender_device_id, which selects

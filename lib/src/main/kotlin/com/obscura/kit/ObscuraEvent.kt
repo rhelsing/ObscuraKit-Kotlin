@@ -3,19 +3,16 @@ package com.obscura.kit
 import com.obscura.kit.stores.FriendData
 
 /**
- * Typed event stream — bridges subscribe to `ObscuraClient.typedEvents` and relay to JS.
- * Replaces separate StateFlow observations.
+ * Optional aggregate event stream for consumers that prefer one subscription.
+ * The current Android bridge observes StateFlows and incomingMessages directly.
  */
 sealed class ObscuraEvent {
     data class FriendsUpdated(val friends: List<FriendData>) : ObscuraEvent()
     data class ConnectionChanged(val state: ConnectionState) : ObscuraEvent()
     data class AuthChanged(val state: AuthState) : ObscuraEvent()
     /**
-     * A MODEL_SYNC arrived for [model]. Carries no entry: the payload is in the kit's inbox, and the
-     * app drains it (`KIT_API.md` §3). This used to carry an `OrmEntry`, which made the event a
-     * second delivery path competing with the store — exactly what §2 rejects.
+     * A MODEL_SYNC arrived for [model]. The payload is in the durable inbox; this event is only a
+     * wake-up (`KIT_API.md` §3).
      */
     data class MessageReceived(val model: String) : ObscuraEvent()
-    // `TypingChanged` was here and was never emitted — nothing in the kit constructed one. Typing
-    // reaches consumers through `ObscuraClient.observeTyping`, a Flow off SignalManager.
 }

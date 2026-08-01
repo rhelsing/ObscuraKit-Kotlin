@@ -8,16 +8,14 @@ Read [`CLAUDE.md`](CLAUDE.md) before changing anything. The normative brief is
 contract in [`obscura-proto/KIT_API.md`](../obscura-proto/KIT_API.md).
 
 **Why a native kit exists at all:** libsignal ships only as `libsignal-java` / `libsignal-swift` —
-there is no supported shared core, so the Signal protocol must be implemented per platform. And the
-push path must decrypt a message with the app closed (on iOS, inside a Notification Service
-Extension, which cannot run a React Native runtime). Those two facts, and nothing else, are what
-justify native code. Everything else belongs in the app.
+there is no supported shared core, so the Signal protocol must be implemented
+per platform. Background push processing also cannot depend on a React Native
+runtime. Those constraints justify native code; everything else belongs in the
+app.
 
-> **The reset has landed.** This kit used to carry an ORM, a CRDT engine, a query DSL, a schema
-> parser and an audience-routing system — implemented twice, here and in Swift — to serve five flat
-> models in one app, none of it reachable from that app. All of it is deleted. Merge and audience
-> resolution live in `obscura-pix` now, once. Do not re-add them; `CLAUDE.md` says why, and
-> `KIT_API.md` §9 names the shape the regression takes.
+Merge, audience resolution, schemas, queries, expiry, and notification policy
+belong in `obscura-pix`. Do not add ORM, CRDT, query, schema, or routing layers
+to this kit; `KIT_API.md` §9 defines the boundary.
 
 *(`obscura-client-web` is a throwaway proof-of-concept. It is **not** a reference implementation and
 must not be treated as a porting target.)*
@@ -92,9 +90,8 @@ See [docs/AUTHENTICATION.md](docs/AUTHENTICATION.md) for auth and device linking
 
 ## What this kit does
 
-Tested with **223 unit** tests (no network) + **96 integration** tests (against a containerized
-`obscura-server`) — the counts JUnit reports, parsed from `lib/build/test-results/`, not `@Test`
-greps, which over-count by also matching `@TestFactory` and `@TestMethodOrder`.
+The unit suite runs without a network. The integration suite exercises the
+public facade against a configured `obscura-server`.
 
 - **Signal Protocol** — identity, prekeys, sessions, encrypt/decrypt. Sessions are addressed by
   **device UUID** (SPEC §0.10): the inbound session comes from `Envelope.sender_device_id`, prekey
@@ -103,7 +100,7 @@ greps, which over-count by also matching `@TestFactory` and `@TestMethodOrder`.
   only what it has durably written. A decrypt failure, a rate-limited sender, or a failed write all
   leave the message on the server to redeliver.
 - **The durable inbox** (`KIT_API.md` §3) — `peek` / `consume` / `discard` / `depth`, deduped on
-  `envelope_id` because persist-then-ack guarantees redelivery.
+  `envelope_id` while a row remains pending.
 - **The entry store** (§8.1) — `put` / `all` / `delete` over opaque JSON. Three methods, no fourth.
 - **Friend graph** — request/response/accept, device lists learned from DEVICE_ANNOUNCE, with the
   peer's recovery key pinned trust-on-first-use.
@@ -113,35 +110,32 @@ greps, which over-count by also matching `@TestFactory` and `@TestMethodOrder`.
   is the server's, not ours.
 - **Attachment crypto** — upload/download with an AES key shipped over Signal.
 - **Push-wake drain** — `processPendingMessages(timeoutMs)` returns one opaque total without
-  consuming the app's event stream. Notification policy stays in the app; the kit never posts one.
+  consuming the app's event stream. Zero also represents failure to connect after the bounded
+  retries, so it is not proof that the server queue is empty. Notification policy stays in the app;
+  the kit never posts one.
 - **Ephemeral signals** — typing indicators, in memory only, throttled to 2s and expiring after 3s.
   Audience is the canonical two-party conversation id, resolved fail-closed on both send and receive.
 
 ## What this kit deliberately does not do
 
-- **No merge, no CRDT, no TTL, no query DSL, no schema, no audience resolution.** All of it moved to
-  `obscura-pix`. `EntryStore.all(model)` returns everything and the app filters.
+- **No merge, no CRDT, no TTL, no query DSL, no schema, no audience resolution.** These are
+  `obscura-pix` responsibilities. `EntryStore.all(model)` returns everything and the app filters.
 - **No OS notifications**, no UI, no application field names. `modelKey` is opaque throughout.
 - **No eviction policy on the inbox.** Rows leave only by an explicit `consume`/`discard` from the
   app, or by the security carve-out in a device wipe (§3.3 rule 2).
 
-## Cross-kit status
+## Cross-kit contract
 
-`ObscuraKit-swift` must agree with this kit on the **wire** (`conformance/wire.json`) and nothing
-more. Known divergences live in `obscura-proto/HISTORY.md`; the ones this kit knows about today:
-
-- Swift stores `recovery_public_key` on its friend rows but never writes it, so its DEVICE_ANNOUNCE
-  check is still dead. This kit pins and enforces it.
-- `ObscuraError.InvalidSchema` and `DirectRoutingUnresolved` were deleted here; the Swift twin and
-  `obscura-pix/src/native/ObscuraModule.ts`'s error union still carry them.
+`ObscuraKit-swift` must agree with this kit on the **wire**
+(`conformance/wire.json`). Broader implementation parity is not implied.
 
 ## Build & Test
 
 ```bash
 export JAVA_HOME=/path/to/jdk-21
 
-./gradlew :lib:test                              # 223 unit tests (fast, no network)
-./gradlew :lib:integrationTest                   # 96 server-dependent tests
+./gradlew :lib:test                              # fast, no network
+./gradlew :lib:integrationTest                   # server-dependent
 ./gradlew :lib:koverHtmlReport                   # coverage report
 ```
 

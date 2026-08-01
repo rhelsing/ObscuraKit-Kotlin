@@ -26,9 +26,8 @@ data class DecryptedMessage(
     // name and never reads a user from the payload (SPEC §0.5). The Signal session (selected by the
     // sending device below) is the actual authentication.
     val sourceUserId: String,
-    // The sending device's UUID. Phase 2: this is the address of the session that
-    // decrypted (== envelope.sender_device_id, PROVEN by the successful MAC), never a
-    // guess and never a user id. Always non-null on a successful decrypt.
+    // The sending device UUID is the address of the session that authenticated this message,
+    // never a guessed registration id or user id.
     val senderDeviceId: String
 )
 
@@ -36,11 +35,9 @@ data class DecryptedMessage(
  * MessengerDomain - Confined coroutines. Encrypt/decrypt/queue/flush.
  * Single-threaded dispatcher protects Signal ratchet state.
  *
- * Phase 2 addressing: every Signal session is keyed on the peer's DEVICE UUID, not on a
- * registrationId. A [SignalProtocolAddress] is a purely LOCAL store key that is never
- * transmitted, and its name slot is a String, so we put the device UUID there and pin the
- * deviceId slot to the constant [ADDR_DEVICE_ID]. Send and receive MUST build the identical
- * address for the same peer device — see [addressFor] — or the bidirectional session splits.
+ * Every Signal session is keyed on the peer's device UUID, not registrationId. A
+ * [SignalProtocolAddress] is a local store key; [addressFor] puts the UUID in its name and pins
+ * the integer slot to [ADDR_DEVICE_ID]. Send and receive must build the same address.
  */
 class MessengerDomain internal constructor(
     private val signalStore: SignalStore,
@@ -50,7 +47,7 @@ class MessengerDomain internal constructor(
 
     // deviceUuid -> { userId, registrationId }. Used ONLY to enumerate a user's devices for
     // fan-out (getDeviceIdsForUser) and to resolve a device's owning user. The registrationId
-    // slot is retained for diagnostics/back-compat but is NO LONGER an addressing identifier.
+    // slot is retained for diagnostics and compatibility, not addressing.
     private val deviceMap = mutableMapOf<String, Pair<String, Int>>()
 
     // Pending submissions for batch sending
@@ -96,9 +93,8 @@ class MessengerDomain internal constructor(
      *
      * [dispatcher] is a `limitedParallelism(1)` confining the Signal ratchet — the Kotlin stand-in
      * for a Swift actor, and correct for that. What it must NOT confine is HTTP. Everything on this
-     * dispatcher is serialised, receive path included, so a prekey fetch that hits a rate limit and
-     * retries used to park decrypt/persist/ack behind it for the whole backoff. Only the libsignal
-     * work is held here now; the network happens outside.
+     * dispatcher is serialised, receive path included, so HTTP retries inside it would block
+     * decrypt/persist/ack. Only libsignal work is confined; network calls happen outside.
      */
     suspend fun queueMessage(targetDeviceId: String, message: ClientMessage, userId: String? = null) {
         // targetDeviceId IS the peer's device UUID — the address name slot (see addressFor).
@@ -184,11 +180,8 @@ class MessengerDomain internal constructor(
         // NOT the trust root: the Signal session (selected by the device below) authenticates.
         val senderId = UuidCodec.bytesToUuid(envelope.senderId.toByteArray()).toString()
 
-        // Phase 2 receive-side addressing. The envelope also carries the SENDER'S DEVICE UUID
-        // (sender_device_id, stamped by the server from the device-scoped JWT — unforgeable by
-        // the sender). Signal sessions are pairwise device-to-device and a SignalMessage carries
-        // no sender identity, so this is how we select the inbound session. Missing/empty is an
-        // ERROR path — never a guess. There is no candidate-registrationId loop anymore.
+        // The server-stamped sender device UUID selects the pairwise inbound Signal session.
+        // A SignalMessage carries no sender identity, so a missing UUID is an error, never a guess.
         val senderDeviceBytes = envelope.senderDeviceId.toByteArray()
         if (senderDeviceBytes.size != 16) {
             throw IllegalStateException(
@@ -211,8 +204,8 @@ class MessengerDomain internal constructor(
         }
         val clientMsg = ClientMessage.parseFrom(decryptedBytes)
 
-        // Learn the sender's device so later fan-out to this user includes it (F6). The mapping
-        // is (deviceUuid -> user); the regId slot is diagnostic only.
+        // Learn the sender's device for later fan-out. The mapping is
+        // (deviceUuid -> user); the registration-id slot is diagnostic only.
         deviceMap.putIfAbsent(senderDeviceUuid, Pair(senderId, 1))
 
         // authorDeviceId is the address of the session that decrypted. A valid MAC proves
@@ -230,8 +223,7 @@ class MessengerDomain internal constructor(
 
         withContext(dispatcher) {
             val bundles = parsePreKeyBundles(bundlesJson, targetUserId)
-            // Select the bundle by DEVICE UUID. No firstOrNull() fallback: sending under an
-            // arbitrary device's keys is exactly the F1 bug.
+            // Select by device UUID. Never fall back to another device's keys.
             val bundle = bundles.firstOrNull { it.first == targetDeviceUuid }?.second
                 ?: throw IllegalStateException(
                     "No prekey bundle for device $targetDeviceUuid of user $targetUserId"

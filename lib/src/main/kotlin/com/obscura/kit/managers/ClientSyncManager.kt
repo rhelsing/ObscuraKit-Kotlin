@@ -6,13 +6,7 @@ import org.json.JSONArray
 import org.json.JSONObject
 import java.util.*
 
-/**
- * Push history, reset sessions, process sync blobs.
- *
- * `requestSync` was here. It shipped a SYNC_REQUEST to every one of the user's other devices — a
- * Signal encrypt and an HTTP round trip each — and BOTH kits classify that arm UNIMPLEMENTED and
- * drop it on arrival. It was a no-op with a cost.
- */
+/** Push history, reset sessions, and process sync blobs. */
 internal class ClientSyncManager(
     private val ctx: ClientContext
 ) {
@@ -60,8 +54,7 @@ internal class ClientSyncManager(
     }
 
     suspend fun resetSessionWith(targetUserId: String, reason: String = "manual") {
-        // Sessions are keyed on the DEVICE UUID (Phase 2), so clear every session with each of
-        // the user's devices.
+        // Sessions are keyed on device UUID, so clear every session for the user.
         clearSessionsWithUser(targetUserId)
 
         val msg = ClientMessage.newBuilder()

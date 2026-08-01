@@ -10,23 +10,12 @@ import org.junit.jupiter.api.Test
 import com.obscura.kit.stores.FriendStatus
 
 /**
- * The friend graph is the ONLY source of display names (SPEC §0.5, §0.10 rule 5), and Phase 3's
- * thin kit API puts that name on OS notifications. So a peer's ability to influence its own record
- * is a lock-screen spoofing surface, not a cosmetic bug.
+ * The friend graph is the only source of display names (SPEC §0.5, §0.10
+ * rule 5).
  *
- * Both tests below FAIL against the code as it stood on 2026-07-25, and both drive the attack
- * through the sender's genuine encryption path — no fabricated envelopes, no injected wire fields.
- * What they send is exactly what a malicious peer running a patched kit would send.
- *
- * Attack 1 — self-rename + status downgrade. `handleFriendRequest` called `friends.add()`
- * unconditionally and `Friend.sq` is `INSERT OR REPLACE`, so an ALREADY-ACCEPTED friend could
- * re-send a FriendRequest to rewrite their stored username and reset their status to
- * PENDING_RECEIVED — dropping themselves out of `getAccepted()` and out of fan-out on the way.
- *
- * Attack 2 — unsolicited acceptance. `handleFriendResponse` called `friends.add(..., ACCEPTED)`
- * whenever `accepted` was true, without checking that we had ever sent a request. Friendship is not
- * required to deliver a message — the server relays to any device of any user — so any
- * authenticated stranger could insert themselves as an ACCEPTED friend under a chosen name.
+ * These tests drive genuine encrypted messages and require that an established
+ * friend cannot rewrite its own record, and that a stranger cannot create an
+ * accepted friendship through an unsolicited response.
  */
 class FriendGraphIntegrityTests {
 
@@ -52,8 +41,8 @@ class FriendGraphIntegrityTests {
         assertEquals(FriendStatus.ACCEPTED, storedBefore!!.status, "precondition: accepted")
         val realName = storedBefore.username
 
-        // THE ATTACK: a second FriendRequest from an established friend, claiming a new name.
-        // Sent through Mallory's real session — this is a well-formed, authentic message.
+        // A well-formed second request from an established friend must not
+        // rewrite the recipient's trusted graph.
         val spoof = ClientMessage.newBuilder()
             .setTimestamp(System.currentTimeMillis())
             .setFriendRequest(obscura.client.v1.friendRequest { username = "Mum" })
@@ -74,7 +63,7 @@ class FriendGraphIntegrityTests {
         println("  stored name before='$realName' after='${after!!.username}' status=${after.status}")
 
         assertEquals(realName, after.username,
-            "a peer MUST NOT be able to rewrite its own display name — that name reaches the lock screen")
+            "a peer MUST NOT be able to rewrite its trusted display name")
         assertNotEquals("Mum", after.username, "the payload-supplied name must be ignored for a known peer")
         assertEquals(FriendStatus.ACCEPTED, after.status,
             "a peer MUST NOT be able to reset its own status — that silently removes it from fan-out")

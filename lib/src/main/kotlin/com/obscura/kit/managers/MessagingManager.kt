@@ -15,16 +15,8 @@ internal class MessagingManager(
     private val friends get() = ctx.friends
     private val devices get() = ctx.devices
     private val messageSender get() = ctx.messageSender
-    // `send(friendUsername, text)` is gone: the legacy TEXT sender, and with it the only local
-    // writer to `MessageDomain`. Its sole caller — `ObscuraClient.send(friendUsername, text)` — went
-    // with the ORM, because resolving a friend from a USERNAME is the kit deciding an audience from
-    // an application concept (SPEC §0.4).
-    //
-    // `MessageDomain` / the `conversations` StateFlow are now reachable only if a FOREIGN client
-    // (an old Swift kit, obscura-client-web) sends a TEXT or SENT_SYNC arm. obscura-pix reads
-    // neither. HISTORY.md lists them for deletion; doing it here would also remove `getMessages`,
-    // which several integration tests still call, so it is a follow-up rather than a silent
-    // half-removal.
+    // Compatibility TEXT and SENT_SYNC receive paths populate MessageDomain. New application sends
+    // use the explicit-recipient model path instead of resolving an audience from a username.
 
     suspend fun sendAttachment(friendUsername: String, attachmentId: String, contentKey: ByteArray, nonce: ByteArray, mimeType: String, sizeBytes: Long) {
         val friendData = friends.getAccepted().find { it.username == friendUsername }

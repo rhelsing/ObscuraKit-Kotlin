@@ -94,7 +94,7 @@ client.connect()      // WebSocket + decrypt/route/ACK loop + token refresh
 client.disconnect()
 ```
 
-`connect()` opens a WebSocket to the server, starts the envelope decryption loop, and begins automatic token refresh. Reconnection uses exponential backoff (3s → 6s → 12s → ... → 60s max).
+`connect()` opens a WebSocket to the server, starts the envelope decryption loop, and begins automatic token refresh. Reconnection uses exponential backoff (1s → 2s → 4s → 8s → 16s → 30s max).
 
 The developer doesn't manage the connection beyond calling `connect()` once. Offline messages are queued by the server and delivered on reconnect.
 

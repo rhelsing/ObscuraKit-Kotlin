@@ -256,9 +256,4 @@ class SignalStoreTests {
             "Alice's session should be untouched")
     }
 
-    // `getSubDeviceSessions returns non-primary devices` and `getAllSessionRegistrationIds returns
-    // all devices` were here. Both stored sessions at `bob.2`, `bob.3`, `bob.7` — addresses this kit
-    // can no longer produce: Phase 2 addressing pins every ProtocolAddress to `<deviceUuid>.1`
-    // (MessengerDomain.addressFor). They tested a shape the code cannot reach, which is why deleting
-    // the methods they covered was safe.
 }
