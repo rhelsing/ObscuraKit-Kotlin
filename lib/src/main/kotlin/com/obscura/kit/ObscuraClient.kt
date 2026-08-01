@@ -32,6 +32,7 @@ import obscura.client.v1.Client.ClientMessage
 import org.json.JSONObject
 import org.signal.libsignal.protocol.ecc.Curve
 import java.util.*
+import java.util.concurrent.atomic.AtomicLong
 
 data class ReceivedMessage(
     val type: String,
@@ -53,19 +54,6 @@ data class ReceivedMessage(
 enum class ConnectionState { DISCONNECTED, CONNECTING, RECONNECTING, CONNECTED }
 
 enum class AuthState { LOGGED_OUT, PENDING_APPROVAL, AUTHENTICATED }
-
-/**
- * Result of [ObscuraClient.processPendingMessages] — counts of envelopes drained, by model key.
- *
- * The bridge uses these to pick generic notification text ("New pix" / "New message").
- * [otherCount] is debug-only; the bridge ignores it. Shape matches Swift's ProcessedCounts
- * so both platforms implement identical notification logic.
- */
-data class ProcessedCounts(
-    val pixCount: Int = 0,
-    val messageCount: Int = 0,
-    val otherCount: Int = 0
-)
 
 /**
  * Create with default JVM in-memory driver (for tests).
@@ -205,6 +193,9 @@ class ObscuraClient(
     // the push path runs inside a tight OS budget (iOS gives an NSE ~30s), so a retry that costs
     // seconds is worse than no retry at all.
     private val PUSH_DRAIN_RECONNECT_RETRY_MS = 250L
+    private val pushDrainMutex = Mutex()
+    private val processedEnvelopeCount = AtomicLong()
+    private val lastProcessedEnvelopeAtMs = AtomicLong()
 
     // Prekey replenishment
     private val PREKEY_MIN_COUNT = 20L
@@ -655,23 +646,22 @@ class ObscuraClient(
 
     /**
      * Drain queued envelopes after a silent push wake. Connects if needed, waits up to
-     * [timeoutMs] ms (returning early when the queue stays empty for 500ms), categorizes
-     * by model key, and returns counts. Does NOT disconnect afterwards — the OS will
+     * [timeoutMs] ms (returning early when the receive path stays idle for 500ms), and returns
+     * the number of successfully processed envelopes. Does NOT disconnect afterwards — the OS will
      * freeze the app when done.
      *
-     * The bridge layer uses the returned counts to post a generic local notification
-     * ("New pix" / "New message"). Kit must NEVER post OS notifications itself.
-     *
-     * Categorization (per the locked cross-platform contract):
-     *   MODEL_SYNC with sync.model == "pix"           → pixCount
-     *   MODEL_SYNC with sync.model == "directMessage" → messageCount
-     *   Legacy TEXT / IMAGE ClientMessage              → messageCount
-     *   Everything else                                → otherCount (debug only)
+     * This observes successful receive-path persistence without consuming [incomingMessages].
+     * The app remains that channel's single consumer and owns all notification classification.
      */
-    suspend fun processPendingMessages(timeoutMs: Long): ProcessedCounts {
+    suspend fun processPendingMessages(timeoutMs: Long): Int =
+        pushDrainMutex.withLock { performPendingMessageDrain(timeoutMs) }
+
+    private suspend fun performPendingMessageDrain(timeoutMs: Long): Int {
+        val processedAtStart = processedEnvelopeCount.get()
+
         if (_connectionState.value != ConnectionState.CONNECTED) {
             // F10 (HISTORY.md). This used to be `try { connect() } catch (_: Exception) { return
-            // ProcessedCounts() }` — a failed connect returned all-zero counts, which is
+            // 0 }` — a failed connect returned zero, which is
             // indistinguishable from "connected fine, nothing waiting". On the PUSH-WAKE path that
             // means: woken by a push, silently report no messages, leave them on the server, no
             // error anywhere. It also made `PushTests` ~25% flaky (a failing run returned in ~0.1s,
@@ -691,52 +681,32 @@ class ObscuraClient(
                 try {
                     connect()
                 } catch (e2: Exception) {
-                    log("PUSH DRAIN connect attempt 2 failed — returning empty counts: ${e2.message}")
+                    log("PUSH DRAIN connect attempt 2 failed — returning zero: ${e2.message}")
                     logger.log("push drain ABORTED: could not connect after 2 attempts: ${e2.message}")
-                    return ProcessedCounts()
+                    return 0
                 }
             }
         }
 
-        var pix = 0
-        var message = 0
-        var other = 0
         val deadline = System.currentTimeMillis() + timeoutMs
         val idleThresholdMs = 500L
-        var lastEnvelopeAt = System.currentTimeMillis()
+        var lastActivityAt = System.currentTimeMillis()
 
         while (System.currentTimeMillis() < deadline) {
-            val received = incomingMessages.tryReceive().getOrNull()
-            if (received != null) {
-                classifyForPushCounts(received).let { (p, m, o) ->
-                    pix += p; message += m; other += o
-                }
-                lastEnvelopeAt = System.currentTimeMillis()
-            } else if (System.currentTimeMillis() - lastEnvelopeAt > idleThresholdMs) {
+            val observedAt = lastProcessedEnvelopeAtMs.get()
+            if (observedAt > lastActivityAt) {
+                lastActivityAt = observedAt
+            }
+            if (System.currentTimeMillis() - lastActivityAt > idleThresholdMs) {
                 break
             } else {
                 delay(50)
             }
         }
 
-        return ProcessedCounts(pixCount = pix, messageCount = message, otherCount = other)
-    }
-
-    /** Classify a single envelope into (pix, message, other) buckets. */
-    private fun classifyForPushCounts(msg: ReceivedMessage): Triple<Int, Int, Int> {
-        // MODEL_SYNC carries the app's model key — the authoritative categorization.
-        if (msg.type == "MODEL_SYNC" && msg.raw != null) {
-            val modelName = msg.raw.modelSync.model
-            when (modelName) {
-                "pix" -> return Triple(1, 0, 0)
-                "directMessage" -> return Triple(0, 1, 0)
-            }
-        }
-        // Legacy TEXT / IMAGE counts as message (unused by current app, but contract mandates)
-        if (msg.type == "TEXT" || msg.type == "IMAGE") {
-            return Triple(0, 1, 0)
-        }
-        return Triple(0, 0, 1)
+        val processed = (processedEnvelopeCount.get() - processedAtStart)
+            .coerceIn(0L, Int.MAX_VALUE.toLong())
+        return processed.toInt()
     }
 
     private var preKeyStatusJob: Job? = null
@@ -894,8 +864,9 @@ class ObscuraClient(
                     // We log a drop so it is observable and never silent.
                     //
                     // Skipped entirely for a redelivery (`isNew == false`). The app already has that
-                    // message; announcing it again inflates processPendingMessages' counts and makes
-                    // the bridge post a second "New pix" for it.
+                    // message; announcing it again can make the app post a duplicate notification.
+                    lastProcessedEnvelopeAtMs.set(System.currentTimeMillis())
+                    processedEnvelopeCount.incrementAndGet()
                     if (isNew && !incomingMessages.trySend(received).isSuccess) {
                         log("RECV NOTE incomingMessages full; dropped a wake-up (data already persisted)")
                     }
