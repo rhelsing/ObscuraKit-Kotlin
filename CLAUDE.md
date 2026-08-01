@@ -11,7 +11,8 @@ Read [`obscura-proto/SPEC.md` §0 — The kit boundary](../obscura-proto/SPEC.md
 **Where this kit is (2026-07-31): Phase 3 — the reset — has LANDED here (PR #56).** The `orm/`
 package is gone: Model, ModelConfig, ModelStore, MonotonicClock, OrmEntry, Query, QueryBuilder,
 Schema, SyncManager, TTLManager, TypedModel, crdt/GSet, crdt/LWWMap, plus `SchemaDomain`. What
-replaced them: `sendEntry(...)` for the outbox, `inbox` (peek/consume/discard/inboxDepth) for the
+replaced them: `ObscuraClient.send(recipientUserIds, modelKey, entryId, op, sentAt, payload)` for the
+outbox (`sendEntry` is MessagingManager's internal name for it), `inbox` (peek/consume/discard/depth) for the
 receive path, and `EntryStore` for storage. Merge and audience resolution live in obscura-pix now,
 once. `WireCodec.kt` and `SignalManager.kt` moved to `wire/` rather than dying — they were
 keep-forever code that happened to live in `orm/`.
@@ -56,17 +57,17 @@ then an index abstraction, then observation, and the deleted engine is back unde
 > target and **not** a normative implementation. Earlier versions of this file pointed agents at
 > it. That was a significant source of the mess.
 - **Build:** `JAVA_HOME=/path/to/jdk-21 ./gradlew :lib:test`
-- **Tests:** two source sets — `src/test` (216 unit tests, no network) and `src/integrationTest` (96 tests against a containerized/live `obscura-server`, all driving the `ObscuraClient` public API). Both counts dropped with the ORM deletion. Those are the counts **JUnit reports**, not `@Test` greps: `grep -o "@Test"` also matches `@TestFactory` and `@TestMethodOrder` and overcounts. Verify a suspicious count against `lib/build/test-results/*/TEST-*.xml` — that is how a test that had never executed was found. **A non-void `@Test` is silently ignored by JUnit 5** — this has now bitten twice, most recently on an `assertThrows(...)` whose returned `Throwable` made the method non-`Unit`; add a trailing `Unit`. The integration suite needs a *correctly configured* server: seed the MinIO `test-bucket` and raise the auth rate limit, or you get ~63 environmental failures (HTTP 429/500) that are not code failures — see `PLAN.md` 0.3.
+- **Tests:** two source sets — `src/test` (223 unit tests, no network) and `src/integrationTest` (96 tests against a containerized/live `obscura-server`, all driving the `ObscuraClient` public API). Both counts dropped with the ORM deletion. Those are the counts **JUnit reports**, not `@Test` greps: `grep -o "@Test"` also matches `@TestFactory` and `@TestMethodOrder` and overcounts. Verify a suspicious count against `lib/build/test-results/*/TEST-*.xml` — that is how a test that had never executed was found. **A non-void `@Test` is silently ignored by JUnit 5** — this has now bitten twice, most recently on an `assertThrows(...)` whose returned `Throwable` made the method non-`Unit`; add a trailing `Unit`. The integration suite needs a *correctly configured* server: seed the MinIO `test-bucket` and raise the auth rate limit, or you get ~63 environmental failures (HTTP 429/500) that are not code failures — see `PLAN.md` 0.3.
 
 ## Three-Level Architecture
 
 1. **Level 1 (Server Protocol):** `network/APIClient.kt`, `network/GatewayConnection.kt` — REST + WebSocket transport. Server is a dumb relay.
-2. **Level 2 (Client Protocol):** `stores/MessengerDomain.kt`, `crypto/SignalStore.kt` — Signal encrypt/decrypt, 20+ client-to-client message types. Server never sees contents.
+2. **Level 2 (Client Protocol):** `stores/MessengerDomain.kt`, `crypto/SignalStore.kt` — Signal encrypt/decrypt, the 18 client-to-client payload arms `client.proto` declares. Server never sees contents.
 3. **Level 3 (app data):** `stores/InboxDomain.kt` + `stores/EntryStore.kt` — a durable inbox of
    decrypted rows and a blind key/value store of application entries, both keyed on an **opaque**
    model name. Payload bytes are never parsed. `wire/WireCodec.kt` owns the wire↔app-facing
    mappings pinned by `conformance/wire.json`. This level used to be `orm/`, a CRDT engine and query
-   DSL; that is deleted (`RESET.md` §10 step 4).
+   DSL; that is deleted (`KIT_API.md` §10 step 4).
 
 `ObscuraClient.kt` is the facade that wires all three levels together and exposes StateFlows for Compose views.
 
@@ -74,7 +75,7 @@ then an index abstraction, then observation, and the deleted engine is back unde
 
 - **Confined coroutines:** Each domain class uses `Dispatchers.Default.limitedParallelism(1)` — Kotlin equivalent of Swift Actors
 - **Auto-session building:** `MessengerDomain.queueMessage()` fetches prekey bundles and builds Signal sessions on demand
-- **StateFlow for UI:** `connectionState`, `authState`, `friendList`, `pendingRequests`, `conversations`, `events`
+- **StateFlow for UI:** `connectionState`, `authState`, `friendList`, `pendingRequests`, `conversations`; plus the `typedEvents` SharedFlow for bridges. (`events`, a second deprecated `ReceivedMessage` stream, is deleted — it had no consumer anywhere and its `tryEmit` sat in the hot receive loop.)
 - **Channel for tests:** `incomingMessages` channel + `waitForMessage()` for synchronous test flow
 
 ## Server API Endpoints Used

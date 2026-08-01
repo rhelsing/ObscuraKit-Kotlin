@@ -14,10 +14,9 @@ import org.junit.jupiter.api.Test
  * faked: that a real MODEL_SYNC, sent by a real peer over a real Signal session and delivered by the
  * real gateway, arrives as an inbox row with the right authenticated identity on it.
  *
- * **The inbox runs alongside the ORM here on purpose** (`KIT_API.md` §10 step 2). obscura-pix still
- * reads through the ORM, so both are populated until pix switches and the ORM is deleted. Several
- * assertions below deliberately check both, because "the inbox filled" and "the old path still
- * works" are exactly the two things that must hold simultaneously during the migration.
+ * The ORM is gone (`KIT_API.md` §10 step 4), so the inbox is now the only receive path and these
+ * assertions have nothing to cross-check against. That is the intended end state: one durable store
+ * that commits before the ack, and an app that drains it.
  */
 class InboxTests {
 
@@ -87,8 +86,9 @@ class InboxTests {
      *
      * This property lost its only Kotlin coverage when the CRDT engine was deleted — `LWWMapTest`
      * held the clamp tests, and the surviving implementation is `ObscuraClient.clampFutureTimestamp`
-     * on the inbox path. `RESET.md` explicitly says to KEEP §2.4, so it needs a test that outlives
-     * the engine.
+     * on the inbox path. §2.4 is explicitly on the keep list, so it needs a test that outlives the
+     * engine. (`ReceivePathTest` covers the function directly now, including the negative-`uint64`
+     * branch; this test proves the clamp is actually reached on the wire path.)
      *
      * Without the clamp a peer sets `sentAt` far in the future and wins every REPLACE conflict
      * forever: the tie-break can only order writes it can compare honestly.

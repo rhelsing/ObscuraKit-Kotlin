@@ -1,104 +1,46 @@
-# Friend Codes — Implementation Notes
+# Friend codes
 
-## Format (from JS web client, now shared across all clients)
-
-A friend code is **base64-encoded JSON** containing userId and username:
+A friend code is **base64-encoded JSON** carrying a userId and a username:
 
 ```
-Base64(JSON.stringify({ u: userId, n: username }))
+Base64({"u": "<userId>", "n": "<username>"})
 ```
 
 Example: `eyJ1IjoiYWJjMTIzIiwibiI6ImFsaWNlIn0=` → `{"u":"abc123","n":"alice"}`
 
-This string gets QR-encoded or shared as text.
+The keys are one character each to keep the QR code small — fewer modules is easier to scan. The
+string is QR-encoded or shared as text.
 
-## Implementation
+## API
 
-Add `lib/src/main/kotlin/com/obscura/kit/FriendCode.kt`:
+`FriendCode` (`lib/src/main/kotlin/com/obscura/kit/FriendCode.kt`) is the codec, and the facade
+delegates to it:
 
 ```kotlin
-package com.obscura.kit
-
-import org.json.JSONObject
-import java.util.Base64
-
-/**
- * Friend code: base64-encoded JSON containing userId + username.
- * Matches the JS web client and iOS client format.
- * Can be QR-encoded or shared as text.
- *
- * Format: Base64({"u":"<userId>","n":"<username>"})
- */
-object FriendCode {
-    data class Decoded(val userId: String, val username: String)
-
-    fun encode(userId: String, username: String): String {
-        val json = JSONObject().apply {
-            put("n", username)
-            put("u", userId)
-        }
-        return Base64.getEncoder().encodeToString(json.toString().toByteArray())
-    }
-
-    fun decode(code: String): Decoded {
-        val trimmed = code.trim()
-            .replace('-', '+')
-            .replace('_', '/')
-        val bytes = Base64.getDecoder().decode(trimmed)
-        val json = JSONObject(String(bytes))
-        val userId = json.optString("u", "")
-        val username = json.optString("n", "")
-        require(userId.isNotEmpty() && username.isNotEmpty()) { "Invalid friend code" }
-        return Decoded(userId, username)
-    }
-}
+val myCode = client.friendCode()         // FriendCode.encode(userId, username)
+client.addFriendByCode(scannedOrPasted)  // FriendCode.decode(...) then befriend(...)
 ```
 
-## Usage in Android app
+`addFriendByCode` additionally strips whitespace and soft hyphens (`U+00AD`), which survive a copy
+out of an iOS share sheet.
 
-### Generate (show your code)
-```kotlin
-val myCode = FriendCode.encode(client.userId!!, client.username!!)
-// Display as text + QR code
-```
+`decode` maps `-`→`+` and `_`→`/` before decoding, because some QR scanners hand back the URL-safe
+alphabet, and rejects a payload with an empty `u` or `n`. Both behaviours are pinned by
+`FriendCodeTest`.
 
-### QR generation
-Use `com.google.zxing:core`:
-```kotlin
-val writer = MultiFormatWriter()
-val matrix = writer.encode(myCode, BarcodeFormat.QR_CODE, 512, 512)
-val bitmap = MatrixToImageWriter.toBufferedImage(matrix)
-```
-
-Or Jetpack Compose:
-```kotlin
-// com.lightspark:compose-qr-code
-QrCodeView(data = myCode, modifier = Modifier.size(200.dp))
-```
-
-### Scan
-Use ML Kit:
-```kotlin
-val scanner = BarcodeScanning.getClient()
-// ... camera preview → scanner.process(inputImage) → barcode.rawValue
-val decoded = FriendCode.decode(barcode.rawValue!!)
-client.befriend(decoded.userId, decoded.username)
-```
-
-### Paste
-```kotlin
-val decoded = FriendCode.decode(pastedText)
-client.befriend(decoded.userId, decoded.username)
-```
+> Until 2026-08-01 `ObscuraClient.friendCode()` and `addFriendByCode()` each inlined their own copy
+> of this codec, and the copies had drifted from the tested one: the inline decode did neither the
+> URL-safe mapping nor the empty-field check, so a code decoding to `{}` befriended the
+> empty-string user. The seven tests in `FriendCodeTest` covered only the object nobody called.
 
 ## Cross-client compatibility
 
-All three clients (JS, iOS, Kotlin) use identical encoding:
-- `{"n":"username","u":"userId"}` → base64
-- Keys are `u` (userId) and `n` (username) — short to keep QR codes small
-- Standard base64 encoding (not URL-safe)
-- Decoder handles both standard and URL-safe base64 for robustness
+All clients use the same encoding: `{"u": userId, "n": username}`, standard base64 on the way out,
+tolerant of the URL-safe alphabet on the way in.
 
 ## Security
 
-The friend code is NOT secret. It contains only the userId and username — both are visible to the server anyway. The actual key exchange happens via Signal protocol when `befriend()` is called. Intercepting a friend code doesn't compromise message confidentiality.
+**The code is not secret.** It carries only a userId and a username, both of which the server sees
+anyway. It is a pointer: the actual key exchange happens over Signal when `befriend()` runs, and the
+recipient's session pins the sender's identity key on first contact (TOFU). Intercepting a friend
+code does not compromise message confidentiality.

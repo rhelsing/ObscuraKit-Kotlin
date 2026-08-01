@@ -28,9 +28,9 @@ import org.junit.jupiter.api.Test
  */
 class SignalAudienceTests {
 
-    // No `orm.define` anywhere in this file, deliberately. Signals do not need a schema — `modelKey`
-    // is an opaque namespace string, exactly as it is on the inbox and the entry store — and proving
-    // that here is what shows signals survive §10 step 4, when the ORM and its schema go.
+    // Signals need no schema — `modelKey` is an opaque namespace string, exactly as it is on the
+    // inbox and the entry store. This file proved that before §10 step 4 and is why signals survived
+    // the ORM and its schema going.
 
     @Test
     fun `typing reaches the conversation peer and NOT an uninvolved friend`() = runBlocking {

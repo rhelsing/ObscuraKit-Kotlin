@@ -94,13 +94,19 @@ class EntryStore internal constructor(private val db: ObscuraDatabase) {
     }
 
     /**
-     * Remove an entry outright.
+     * Remove an entry.
      *
-     * A hard delete, not a tombstone. `RESET.md` establishes that the app never deletes an entry
-     * today — `deleteEntry` is on the bridge with zero callers — and that the whole tombstone
+     * A **soft** delete: this sets `ModelEntry.deleted = 1`, which `selectByModel` filters on, so
+     * the row stays on disk and stops appearing in [all]. That is the same observable behaviour a
+     * hard delete would give through the bridge, and it is what `ModelEntry.sq` documents. (The
+     * comment here used to claim a hard delete, which was simply false — the call below has always
+     * been `markDeleted`. ObscuraKit-swift does hard-delete the row; the difference is invisible to
+     * the app.)
+     *
+     * Not a tombstone either: the flag is local and is never synced. The app never deletes an entry
+     * today — `deleteEntry` is on the bridge with zero callers — and the whole distributed-delete
      * ordering design was dead on arrival. This exists so "the app can remove something" is possible
-     * at all; if distributed deletes are ever wanted, that is a design with a `SPEC` change, not a
-     * flag added here.
+     * at all; distributed deletes would be a design with a `SPEC` change, not a flag added here.
      */
     suspend fun delete(model: String, id: String) = withContext(dispatcher) {
         db.modelEntryQueries.markDeleted(System.currentTimeMillis(), model, id)

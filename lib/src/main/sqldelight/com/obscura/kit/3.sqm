@@ -1,4 +1,4 @@
--- Migration 3 -> 4: the ORM's storage residue (`obscura-proto/RESET.md` §10 step 4).
+-- Migration 3 -> 4: the ORM's storage residue (`obscura-proto/KIT_API.md` §10 step 4).
 --
 -- PR #56 deleted the engine — Model, ModelStore, the CRDT layer, the query DSL, the schema parser,
 -- TTLManager — but left its tables standing, because deleting a table needs a migration and the

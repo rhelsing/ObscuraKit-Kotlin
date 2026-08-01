@@ -1,6 +1,6 @@
 -- The app's entry store (`obscura-proto/KIT_API.md` §8.1). Read and written by `EntryStore.kt`.
 --
--- The ORM engine that used to sit on this table is deleted (`RESET.md` §10 step 4). The table is
+-- The ORM engine that used to sit on this table is deleted (`KIT_API.md` §10 step 4). The table is
 -- not: RESET.md is explicit that the engine dies and the table does not. What went with the engine
 -- was `ModelAssociation` (relationships, never bridged, zero callers) and six queries that only the
 -- query DSL and `TTLManager` ever called — `selectByModelAndId`, `selectByModelWhere` (the `LIKE`

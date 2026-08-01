@@ -8,7 +8,7 @@ client.register("alice", "mypassword123!")  // 12+ character password
 client.connect()
 ```
 
-`register()` creates the user account on the server, generates a Signal Protocol identity (keypair + 100 one-time prekeys), provisions the device, and authenticates. After this call, `authState` is `AUTHENTICATED` and you can start using the ORM, sending messages, and befriending other users.
+`register()` creates the user account on the server, generates a Signal Protocol identity (keypair + 100 one-time prekeys), provisions the device, and authenticates. After this call, `authState` is `AUTHENTICATED` and you can start sending entries, draining the inbox, and befriending other users.
 
 `login()` restores an existing session on the same device:
 
@@ -58,7 +58,7 @@ When the new device receives `DEVICE_LINK_APPROVAL`:
 3. Friend data is imported
 4. Auth state transitions to `AUTHENTICATED`
 
-After this, the new device can use the full API — ORM, messaging, everything.
+After this, the new device can use the full API — send, inbox, entries, messaging, everything.
 
 ### Auth states
 
@@ -115,7 +115,7 @@ client.restoreSession(
 client.connect()
 ```
 
-Signal keys, friend lists, and ORM data persist in the database. The session restore just re-establishes the network identity.
+Signal keys, friend lists, inbox rows and stored entries persist in the database. The session restore just re-establishes the network identity.
 
 ## Recovery Phrase (Optional)
 
