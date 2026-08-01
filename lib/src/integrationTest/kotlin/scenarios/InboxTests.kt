@@ -14,14 +14,11 @@ import org.junit.jupiter.api.Test
  * faked: that a real MODEL_SYNC, sent by a real peer over a real Signal session and delivered by the
  * real gateway, arrives as an inbox row with the right authenticated identity on it.
  *
- * The ORM is gone (`KIT_API.md` §10 step 4), so the inbox is now the only receive path and these
- * assertions have nothing to cross-check against. That is the intended end state: one durable store
- * that commits before the ack, and an app that drains it.
+ * The inbox is the durable receive path: it commits before acknowledgement and the app drains it.
  */
 class InboxTests {
 
-    // No schema is defined anywhere in this file. The inbox does not need one — `modelKey` is an
-    // opaque namespace string — and after §10 step 4 there is nothing to define it with.
+    // The inbox needs no schema; modelKey is an opaque namespace string.
 
     /** Send an entry the way obscura-pix does: the caller names the recipient (SPEC §0.4). */
     private suspend fun sendStory(from: ObscuraClient, to: ObscuraClient, entryId: String, content: String) =
@@ -51,10 +48,7 @@ class InboxTests {
 
         assertEquals("MODEL_SYNC", row.kind)
         assertEquals("story", row.modelKey, "modelKey is carried opaquely so the app can merge")
-        // The APP-FACING spelling (KIT_API.md §3.1), not the proto's `OP_CREATE`. This assertion
-        // exists because the first version of this code stored `sync.op.name` and nothing caught it
-        // until the Swift port was written — the app reads one `op` across a bridge from two kits,
-        // so `CREATE` here and `opCreate` there is a bug the app discovers, not the kits.
+        // The app-facing spelling is shared by both bridges, not the proto's OP_CREATE spelling.
         assertEquals("CREATE", row.op)
         // Identity comes from the envelope and the Signal session, never from the payload
         // (SPEC §0.5, §0.10). This is the assertion a unit test cannot make honestly.
@@ -69,26 +63,10 @@ class InboxTests {
     }
 
     /**
-     * **Removed 2026-07-29: "the ORM still receives the same entry while the inbox runs alongside".**
-     *
-     * That test pinned the dual write, and the dual write is now deliberately gone — keeping it
-     * would assert the bug it was written to protect. The ORM's parallel write did not merely
-     * duplicate: it wrote `sync.authorDeviceId` (peer-asserted, wire field 7) and an unclamped
-     * timestamp, and APPEND first-write-wins meant the app kept THAT row instead of the one carrying
-     * the authenticated `senderDeviceId`. See `ObscuraClient.inboxMessage`.
-     *
-     * The invariant it was protecting — "adding the inbox must not take anything away" — held, and
-     * is now covered by the fact that obscura-pix reads only the entry store.
-     */
-
-    /**
      * **SPEC §2.4: a peer-supplied timestamp is clamped BEFORE it is stored.**
      *
-     * This property lost its only Kotlin coverage when the CRDT engine was deleted — `LWWMapTest`
-     * held the clamp tests, and the surviving implementation is `ObscuraClient.clampFutureTimestamp`
-     * on the inbox path. §2.4 is explicitly on the keep list, so it needs a test that outlives the
-     * engine. (`ReceivePathTest` covers the function directly now, including the negative-`uint64`
-     * branch; this test proves the clamp is actually reached on the wire path.)
+     * `ReceivePathTest` covers the function directly, including negative protobuf `uint64` values;
+     * this test proves the clamp is reached on the wire path.
      *
      * Without the clamp a peer sets `sentAt` far in the future and wins every REPLACE conflict
      * forever: the tie-break can only order writes it can compare honestly.
@@ -198,21 +176,12 @@ class InboxTests {
     }
 
     /**
-     * **Deliberately absent: an end-to-end redelivery test.**
-     *
-     * There was one here, and it could not fail. It sent one entry, let the kit persist AND ACK it,
-     * then reconnected and asserted `depth() == 1`. But the ack had already told the server to
-     * delete its copy, so the reconnect redelivered nothing — the assertion held trivially, and it
-     * held just as well with `INSERT OR IGNORE` replaced by `INSERT` and the UNIQUE constraint
-     * dropped. It named §3.3 rule 8 without exercising it.
-     *
-     * Producing a genuine redelivery needs the ack suppressed for the first delivery, which needs a
-     * seam in `GatewayConnection` that does not exist. Rather than keep a green tick over nothing,
-     * the property is covered where it can actually be exercised:
+     * **No end-to-end redelivery test:** producing a genuine redelivery requires
+     * suppressing the first ACK, and `GatewayConnection` has no such seam.
+     * The deduplication property is covered at the storage boundary:
      * `InboxDomainTest.a redelivered envelope does not create a second row` calls `put` twice with
-     * one envelope id and asserts one row — a real test of the real constraint.
+     * one envelope id and asserts one row.
      *
-     * Add the seam and the test together if this ever needs end-to-end coverage. Do not add the test
-     * back without it.
+     * Add the seam and test together if end-to-end coverage is required.
      */
 }

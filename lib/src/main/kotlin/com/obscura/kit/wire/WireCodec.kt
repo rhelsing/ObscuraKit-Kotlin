@@ -4,8 +4,7 @@ import obscura.client.v1.Client
 
 /**
  * Internal operation kind for a [ModelSyncData], decoupled from the wire enum
- * so the rest of the kit never touches the proto `OP_*` constants (or the old
- * magic-int convention) directly.
+ * so the rest of the kit never touches proto `OP_*` constants directly.
  */
 enum class ModelOp {
     CREATE,
@@ -26,12 +25,8 @@ enum class ModelOp {
  * Single source of truth for translating between the v2 `client.proto` wire
  * enums and the kit's app-facing forms.
  *
- * Extracted so these mappings live in exactly ONE place. They were previously
- * duplicated across five call sites (op encode/decode, the string-op parse in
- * MessagingManager, the two `TYPE_`-strip sites, and signal-kind encode/decode),
- * which is a drift hazard: the v2 renumbering (`TYPE_`/`OP_` prefixes, moving
- * TEXT/CREATE off wire-0) means a single mis-copied `when` silently breaks
- * cross-platform interop. Pinned by `obscura-proto/conformance/wire.json`
+ * Keeping every mapping here prevents call-site drift. The shared
+ * `obscura-proto/conformance/wire.json` vectors pin cross-platform behavior
  * (SPEC §3).
  */
 object WireCodec {

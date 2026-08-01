@@ -47,12 +47,4 @@ internal class FriendshipManager(
         friends.add(targetUserId, targetUsername, FriendStatus.ACCEPTED, messenger.knownDevicesFor(targetUserId))
     }
 
-    // `syncFriendToOwnDevices` was here and is deleted along with the whole FRIEND_SYNC arm — see
-    // the note at the deleted `handleFriendSync` in ObscuraClient.kt. In short: `FriendSync` has no
-    // `user_id` field, so the receiver could only key the record on `sourceUserId`, which its own
-    // guard proves is the RECEIVER's own id — every call here wrote a Friend row on the other
-    // device naming the user as their own friend.
-    //
-    // Consequence: a second device no longer learns about friends added after it was linked.
-    // DEVICE_LINK_APPROVAL still ships the whole friends export at link time.
 }

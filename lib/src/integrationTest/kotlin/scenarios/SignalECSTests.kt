@@ -116,11 +116,7 @@ class SignalECSTests {
         // Alice starts typing
         alice.sendTyping("directMessage", convId)
 
-        // Bob receives the typed MODEL_SIGNAL over the wire and surfaces it as a
-        // typing indicator. Signals no longer carry a JSON payload in the text
-        // field — the payload is the typed ModelSignal message (obscura-proto
-        // client.proto) — so assert the app-facing contract directly: Bob
-        // observes Alice typing in this conversation.
+        // Bob receives MODEL_SIGNAL and surfaces the app-facing typing state.
         val aliceName = alice.username!!
         val typers = withTimeout(15_000) {
             bob.observeTyping("directMessage", convId)

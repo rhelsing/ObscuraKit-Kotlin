@@ -42,19 +42,11 @@ class PayloadClassTest {
     )
 
     /**
-     * **The load-bearing test.** A new arm in `client.proto` must fail here rather than be discovered
+     * A new arm in `client.proto` must fail here rather than be discovered
      * later as a message that quietly vanished.
      *
-     * > **This replaces a version that could not fail** (2026-07-28). It asserted
-     * > `runCatching { classify(it) }.isFailure` was empty for every arm — but `classify` is TOTAL:
-     * > it ends in `else -> INBOXED`, so nothing ever throws and the assertion was vacuous. A new
-     * > proto arm would have fallen into that `else` with all four tests still green, which is
-     * > precisely the outcome the doc comment claimed it prevented. Verified by mutating `classify`
-     * > to a constant: this test kept passing.
-     * >
-     * > Kotlin has no compiler backstop here — `classify` needs its `else`, and `WireCodec.decodeType`
-     * > uses `payloadCase.name` — so an explicit table is the only thing that can catch it. (Swift is
-     * > protected by an exhaustive switch, by accident rather than by its test.)
+     * Kotlin has no exhaustive-switch backstop because `classify` needs its
+     * fallback. This explicit table requires a deliberate policy for every arm.
      */
     @Test
     fun `every payload arm in the proto has an expected class, and every expectation is a real arm`() {
@@ -89,13 +81,7 @@ class PayloadClassTest {
         assertEquals(PayloadClass.INBOXED, classify(PayloadCase.MODEL_SYNC))
     }
 
-    /**
-     * Attachment references follow §4's normative table rather than §4.3's deletion plan, because
-     * the deletion has not happened: `ObscuraClient.sendEncryptedAttachment` is still public and
-     * still ships an AES key over Signal. Dropping the arm would have the receiver ack and destroy
-     * that key. Inboxing an arm nobody sends costs nothing; dropping one somebody CAN send costs the
-     * message.
-     */
+    /** Attachment references contain app-owned key material and must be inboxed. */
     @Test
     fun `attachment references are inboxed while a public sender still exists`() {
         assertEquals(PayloadClass.INBOXED, classify(PayloadCase.CONTENT_REFERENCE))
@@ -125,10 +111,8 @@ class PayloadClassTest {
             PayloadCase.DEVICE_RECOVERY_ANNOUNCE,
             PayloadCase.HISTORY_CHUNK,
             PayloadCase.SYNC_REQUEST,
-            // FRIEND_SYNC joined this list when its handler was deleted: the message carries no
-            // `user_id`, so the handler could only key the friend record on `sourceUserId` — which
-            // its own guard had proven was the RECEIVER's own id, putting the user in their own
-            // friends list and therefore in every fan-out.
+            // FRIEND_SYNC carries no `user_id`, so it cannot safely identify
+            // the friend record to update.
             PayloadCase.FRIEND_SYNC,
             PayloadCase.SETTINGS_SYNC,
             PayloadCase.READ_SYNC,

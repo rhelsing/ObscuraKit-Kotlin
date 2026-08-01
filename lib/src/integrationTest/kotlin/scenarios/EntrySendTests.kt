@@ -7,17 +7,10 @@ import org.junit.jupiter.api.Assumptions.assumeTrue
 import org.junit.jupiter.api.Test
 
 /**
- * `send` — the outbox half of the thin kit (`obscura-proto/KIT_API.md` §5).
- *
- * §5 names two properties and says to **prove them with a test before building on this**, which is
- * why they are the first two here rather than an afterthought:
+ * `send` — the kit's explicit-audience send (`obscura-proto/KIT_API.md` §5).
  *
  * 1. the sending device must be excluded from its own fan-out;
  * 2. the sender gets no inbox row, so the app must write its own outgoing entry.
- *
- * Both are load-bearing for obscura-pix's switch (§10 step 3): (1) decides whether the app has to
- * dedupe its own writes, and (2) decides whether "I sent it" and "it arrived" are one code path or
- * two.
  */
 class EntrySendTests {
 

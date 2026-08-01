@@ -158,11 +158,8 @@ class SignalStore(
         }
     }
 
-    // Phase 2 addressing makes both of these dead BY CONSTRUCTION, not merely uncalled: every
-    // address this kit can now produce is `<deviceUuid>.1` (MessengerDomain.addressFor pins the
-    // deviceId slot to the constant 1), so "sub-device sessions" — sessions whose trailing int is
-    // anything but 1 — is an empty set no matter what is stored. libsignal's interface requires
-    // getSubDeviceSessions, so it stays as the shortest honest implementation.
+    // MessengerDomain pins every address to `<deviceUuid>.1`, so this kit has no sub-device
+    // sessions. libsignal still requires the method.
     override fun getSubDeviceSessions(name: String): List<Int> = emptyList()
 
     override fun storeSession(address: SignalProtocolAddress, record: SessionRecord) {

@@ -13,9 +13,8 @@ import org.junit.jupiter.api.Assertions.*
 /**
  * The human-readable content of a received message, wherever it actually lives.
  *
- * `ReceivedMessage.text` is the legacy TEXT arm's field and is empty for a MODEL_SYNC — the content
- * is inside the opaque payload, which only the APP knows how to read. Tests that used to assert
- * `msg.text` are asserting on app data, so they go through here.
+ * `ReceivedMessage.text` belongs to the compatibility TEXT arm. MODEL_SYNC
+ * content is application-owned opaque payload data.
  */
 fun ReceivedMessage.content(): String =
     if (type == "MODEL_SYNC") {
@@ -27,11 +26,8 @@ fun ReceivedMessage.content(): String =
 /**
  * Wait for the next message OF A PARTICULAR KIND, skipping anything else already queued.
  *
- * `waitForMessage` takes whatever is at the head of `incomingMessages`, which was fine when
- * `sendAndVerify` consumed its own notification. It no longer does — it asserts on the inbox row
- * instead, because the row is the delivery path and the notification is droppable (SPEC §0.9
- * rule 4). So a test that sends a message and then waits for a SESSION_RESET now finds the earlier
- * MODEL_SYNC notification sitting in front of it.
+ * `waitForMessage` takes the head of `incomingMessages`. Tests that need a
+ * specific control message skip unrelated droppable notifications explicitly.
  *
  * Skipping by kind is more honest than draining: the test says which message it is waiting for.
  */
@@ -125,13 +121,8 @@ suspend fun becomeFriends(a: ObscuraClient, b: ObscuraClient) {
 /**
  * Send a message the way obscura-pix does, and assert it arrived.
  *
- * This used to call `sender.send(receiver.username, text)` — the kit resolving a friend from a
- * USERNAME and creating an ORM entry. That is gone (SPEC §0.4: the caller names the recipients), so
- * the helper now does what the app does: name the recipient by userId, carry a canonical
- * conversation id in the payload, and read the result out of the receiver's INBOX.
- *
- * Keeping the helper rather than rewriting 25 call sites is deliberate — those tests are about
- * transport, acking and identity, not about how a send is addressed.
+ * The helper names the recipient by userId, carries a canonical conversation
+ * id, and reads delivery from the receiver's inbox (SPEC §0.4).
  */
 /**
  * Send without asserting delivery — for tests where the receiver is deliberately OFFLINE and the
@@ -141,9 +132,8 @@ suspend fun becomeFriends(a: ObscuraClient, b: ObscuraClient) {
 /**
  * Whether [client] has received an entry whose payload carries [content].
  *
- * Replaces `getMessages(...).any { it.content == ... }`. `MessageDomain` is populated only by the
- * legacy TEXT arm and SENT_SYNC, so a MODEL_SYNC never reaches it — received app data lives in the
- * INBOX now, and `MessageDomain` is itself on HISTORY.md's deletion list.
+ * MODEL_SYNC application data lives in the inbox; `MessageDomain` contains only
+ * compatibility TEXT and SENT_SYNC data.
  */
 suspend fun ObscuraClient.hasReceived(content: String, timeoutMs: Long = 10_000): Boolean {
     val deadline = System.currentTimeMillis() + timeoutMs
@@ -192,8 +182,8 @@ suspend fun sendAndVerify(sender: ObscuraClient, receiver: ObscuraClient, text: 
     //
     // That is not a style choice. The channel is a droppable wake-up (SPEC §0.9 rule 4) and the ROW
     // is the delivery path — so asserting on the row is what the architecture says to do. It also
-    // fixes a real breakage: consuming a channel item here stole it from callers that do their own
-    // `waitForMessage` afterwards, which timed out 10 integration tests.
+    // Consuming a channel item here would also steal it from callers that wait
+    // for a specific notification afterwards.
     val deadline = System.currentTimeMillis() + timeoutMs
     var row: com.obscura.kit.stores.InboxRecord? = null
     while (System.currentTimeMillis() < deadline && row == null) {

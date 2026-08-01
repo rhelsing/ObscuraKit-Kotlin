@@ -19,8 +19,6 @@ import java.util.UUID
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Phase 0 task 0.2 (`git show bb9259c:PLAN.md`) — the ack-semantics test. Proves finding F2.
- *
  * On the server an ACK is a DELETE: gateway AckBatcher -> message_service.delete_batch ->
  * `DELETE FROM messages WHERE id = ANY($1) AND device_id = $2` (message_repo.rs:155). No
  * tombstone. And the MessagePump keeps a per-connection monotonic cursor
@@ -33,18 +31,10 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * Reconnect-then-observe-redelivery is thus an exact probe for "is it still on the server?".
  *
- * F2 says Kotlin acks even when decrypt throws: `ObscuraClient.startEnvelopeLoop` runs
- * `gateway.ack(...)` OUTSIDE the try/catch that wraps `messenger.decrypt` (ObscuraClient.kt:868
- * vs the catch at :862). So a message that fails to decrypt is acked anyway, the server deletes
- * it, and it is gone forever.
- *
  * The test delivers Alice a genuinely undecryptable envelope — a real Signal ciphertext with a
  * corrupted MAC, so it parses as a valid EncryptedMessage and fails specifically at the
  * cryptographic decrypt step, not earlier — confirms the decrypt failed, then reconnects Alice
  * and asserts the envelope is redelivered (i.e. still on the server).
- *
- * Expected on Kotlin: the redelivery assertion FAILS, because Kotlin acked the failure and the
- * server deleted it. That failure is the proof of F2.
  */
 class AckSemanticsTests {
 
@@ -74,12 +64,11 @@ class AckSemanticsTests {
      * Build a genuinely undecryptable submission from Bob to Alice: a real Signal ciphertext
      * for Alice's device with its MAC byte flipped. This is an authentic "cannot decrypt" case
      * — the outer EncryptedMessage proto is well-formed, so the failure lands at the Signal
-     * decrypt step (bad MAC), exactly the path F2 is about.
+     * decrypt step (bad MAC).
      */
     private fun sendCorruptCiphertext(bob: ObscuraClient, aliceUserId: String, aliceDeviceId: String) {
-        // Phase 2: Signal sessions are keyed on the peer's DEVICE UUID, so Bob's session with
-        // Alice's device lives at (aliceDeviceId, 1) — the same address production encrypts under
-        // (MessengerDomain.addressFor). Encrypt a real ciphertext here, then flip its MAC.
+        // Signal sessions are keyed by device UUID at address
+        // `(aliceDeviceId, 1)`, matching production encryption.
         val addr = SignalProtocolAddress(aliceDeviceId, 1)
         require(bob.signalStore.containsSession(addr)) {
             "bob has no Signal session at $addr — send a warmup message first"
@@ -115,7 +104,7 @@ class AckSemanticsTests {
     }
 
     @Test
-    fun `F2 - a decrypt failure must NOT be acked, so the server still holds it on reconnect`() = runBlocking {
+    fun `a decrypt failure is not acked and redelivers after reconnect`() = runBlocking {
         need()
 
         val aliceLogger = CountingLogger()
@@ -156,7 +145,7 @@ class AckSemanticsTests {
 
         // Reconnect Alice. A fresh MessagePump starts its cursor at None and re-fetches every row
         // still in the messages table. If the poison envelope was NOT acked, it is still there and
-        // Alice will fail to decrypt it a SECOND time. If Kotlin acked the failure (F2), the row
+        // Alice will fail to decrypt it a SECOND time. If the kit acked the failure, the row
         // was deleted and nothing comes back.
         val failsBeforeReconnect = aliceLogger.decryptFailures.get()
         alice.disconnect()
@@ -178,7 +167,7 @@ class AckSemanticsTests {
 
         assertTrue(
             redelivered,
-            "F2: the undecryptable message must STILL be on the server after a decrypt failure — " +
+            "the undecryptable message must remain on the server after a decrypt failure — " +
                 "it should redeliver on reconnect and fail to decrypt again. It did not, which means " +
                 "Kotlin acked (=DELETEd) a message it never decrypted. Data loss."
         )

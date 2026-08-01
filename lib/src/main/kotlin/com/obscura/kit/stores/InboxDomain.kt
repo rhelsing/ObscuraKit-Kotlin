@@ -48,17 +48,15 @@ data class InboxRecord(
  *
  * ## Why an inbox and not an event stream
  *
- * The reset takes application data away from the kit. If the thin kit instead handed each payload to
- * the app — an event, a callback, a bridge emit — and then acked, the ordering becomes:
+ * Handing a payload to the app and then acknowledging it would make an asynchronous event the only
+ * copy:
  *
  * ```
  * decrypt → emit to app → ACK (server DELETEs) → ...app writes to its store, maybe, later
  * ```
  *
- * That is the Phase 1 data-loss bug rebuilt across a process boundary, in both kits at once, on a
- * path where the app may not be running. The React Native bridge is asynchronous and lossy under
- * backpressure, and the iOS push path has no JS runtime at all. **So the kit must persist before it
- * acks, and therefore needs somewhere durable to put bytes it does not understand.**
+ * The bridge may be backpressured and the app may not be running. The kit therefore persists bytes
+ * it does not understand before acknowledging the server copy.
  *
  * ## The API is four methods, and there is no fifth
  *
@@ -92,15 +90,8 @@ class InboxDomain internal constructor(private val db: ObscuraDatabase) {
 
         // Assert the postcondition the ack depends on, rather than inferring it from a row count.
         //
-        // The obvious implementations answer a different question than the caller asks. `changes()`,
-        // or comparing depth before and after, tells you "did INSERT OR IGNORE suppress something" —
-        // and OR IGNORE suppresses EVERY constraint, not just the `envelope_id UNIQUE` it is
-        // documented against. A NOT NULL or CHECK violation reports exactly like a redelivery, and
-        // the caller ACKS on a redelivery, so the server would delete a message that was never
-        // stored. Asking "is this envelope in the table" cannot be confused that way.
-        //
-        // (Two indexed lookups on a unique key also replace two `COUNT(*)` full scans per received
-        // message, which was O(n) in the size of the backlog — worst exactly when a backlog exists.)
+        // `changes()` cannot distinguish an envelope-id duplicate from another ignored constraint
+        // violation. Check the required row directly before allowing the caller to acknowledge it.
         if (!db.inboxQueries.existsByEnvelopeId(record.envelopeId).executeAsOne()) {
             throw IllegalStateException(
                 "inbox row for envelope ${record.envelopeId} is absent after insert; refusing to " +
@@ -175,11 +166,8 @@ class InboxDomain internal constructor(private val db: ObscuraDatabase) {
     /**
      * How many rows are waiting.
      *
-     * Exposed because it MUST be (§3.3 rule 7): unbounded growth means the app has stopped draining.
-     * §3.5 traces where that ends — inbox grows, disk pressure, the durable write throws, the kit
-     * correctly refuses to ack, the message stays on the server, the *server's* queue hits 1000, and
-     * it evicts oldest-first and silently. **A number nobody reads is not observability**: the app
-     * is expected to surface this past a threshold, not merely be able to ask.
+     * Unbounded growth means the app has stopped draining. The app must surface abnormal depth
+     * before disk pressure prevents persistence and moves the backlog to the bounded server queue.
      */
     suspend fun depth(): Long = withContext(dispatcher) {
         db.inboxQueries.depth().executeAsOne()

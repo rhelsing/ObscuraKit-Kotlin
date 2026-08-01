@@ -12,10 +12,6 @@ import org.junit.jupiter.api.Test
  * exercise the JSON-encoded `devices` blob through the public API to catch silent parse failures
  * (`parseDevices` swallows errors and returns emptyList — the kind of failure that breaks message
  * delivery without throwing).
- *
- * The read-back here is `get(userId)` rather than the `getAll()` this file used to lean on:
- * `getAll`, `getPending`, `getFanOutTargets` and `getAllFriendDeviceTargets` were only ever called
- * by these tests, so they were four public methods whose entire purpose was to be tested.
  */
 class FriendDomainTest {
 
@@ -115,10 +111,8 @@ class FriendDomainTest {
     }
 
     /**
-     * The reason `updateStatus` and `updateDevices` are UPDATEs rather than the INSERT OR REPLACE
-     * they used to route through. REPLACE deletes the row and re-inserts it, resetting every column
-     * the caller did not name — so a peer able to trigger either one could clear its own pin and
-     * then re-pin a key of its choosing, which is the whole guarantee gone.
+     * `updateStatus` and `updateDevices` must preserve the pinned recovery key.
+     * SQL REPLACE would delete and reinsert the row, clearing unnamed columns.
      */
     @Test
     fun `a pinned recovery key survives a device and status update`() = runTest {

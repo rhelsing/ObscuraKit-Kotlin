@@ -73,8 +73,7 @@ internal class AuthManager(
             token = deviceToken
         ))
 
-        // F9: record THIS device in the own-device registry so DeviceAnnounce / approveLink can
-        // ship a real device list. Without this the registry stays empty and propagation is inert.
+        // DeviceAnnounce and link approval require a complete own-device registry.
         devices.addOwnDevice(OwnDeviceData(
             deviceId = requireNotNull(session.deviceId),
             deviceName = config.deviceName,
@@ -198,8 +197,7 @@ internal class AuthManager(
             token = deviceToken
         ))
 
-        // F9: record THIS (as-yet-unapproved) device so it knows itself. The approving device
-        // ships the full account device list, which setOwnDevices() then reconciles on approval.
+        // Record the pending device locally; approval later reconciles the full account list.
         devices.addOwnDevice(OwnDeviceData(
             deviceId = requireNotNull(session.deviceId),
             deviceName = deviceName,

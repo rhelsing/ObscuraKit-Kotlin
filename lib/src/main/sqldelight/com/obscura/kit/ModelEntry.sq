@@ -1,16 +1,7 @@
 -- The app's entry store (`obscura-proto/KIT_API.md` §8.1). Read and written by `EntryStore.kt`.
 --
--- The ORM engine that used to sit on this table is deleted (`KIT_API.md` §10 step 4). The table is
--- not: HISTORY.md is explicit that the engine dies and the table does not. What went with the engine
--- was `ModelAssociation` (relationships, never bridged, zero callers) and six queries that only the
--- query DSL and `TTLManager` ever called — `selectByModelAndId`, `selectByModelWhere` (the `LIKE`
--- the DSL compiled to), `selectExpired`, `deleteExpired`, `selectAssociations`, `insertAssociation`.
---
--- ## Why `ttl_expires_at` is still here
---
--- It is dead — nothing reads it, and `EntryStore.put` writes `null` — and `HISTORY.md` lists it for a
--- later migration. It stays because dropping it costs more than it saves, in two ways worth writing
--- down so nobody "finishes the job" and breaks something:
+-- `ttl_expires_at` is unused: EntryStore writes null and no query reads it. It remains for two
+-- platform constraints:
 --
 --   1. `ALTER TABLE ... DROP COLUMN` needs SQLite 3.35+. obscura-pix runs `AndroidSqliteDriver`
 --      against the SYSTEM SQLite with `minSdk 24`, and Android did not reach 3.35 until API 34
@@ -21,14 +12,11 @@
 --      a freshly created one` compares exactly that text and would fail. (Checked against SQLite
 --      3.50: `DROP COLUMN` is byte-identical to a fresh create, the rebuild is not.)
 --
--- ObscuraKit-swift's `ObscuraSchema` v2 *does* rebuild its equivalent table, and that is not a
--- divergence in judgement: iOS ships its own SQLite inside GRDB's SQLCipher, so reason 1 does not
--- apply, and its `SchemaTests` compares table NAMES rather than CREATE text, so reason 2 does not
--- either. Different constraints, not different opinions.
+-- Swift can rebuild its equivalent table because it ships SQLite with GRDB/SQLCipher and compares
+-- schema object names rather than raw CREATE text.
 --
--- `deleted` is NOT dead — `delete` soft-deletes and `selectByModel` filters on it. That is a
--- deliberate difference from the Swift kit, which hard-deletes; the observable behaviour through
--- the bridge is identical, because both make the entry stop appearing in `all`.
+-- `deleted` is active: EntryStore.delete sets it and selectByModel filters it. Swift hard-deletes;
+-- both implementations make the entry disappear from `all`.
 CREATE TABLE IF NOT EXISTS ModelEntry (
     model_name TEXT NOT NULL,
     entry_id TEXT NOT NULL,

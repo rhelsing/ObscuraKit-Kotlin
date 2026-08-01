@@ -11,8 +11,8 @@ import org.junit.jupiter.api.Test
 import org.junit.jupiter.api.TestMethodOrder
 
 /**
- * Device takeover: replace identity key, verify registrationId changed,
- * then verify messaging works with new keys.
+ * Device takeover replaces the current device's key material while preserving
+ * its server device record.
  * Uses only public API + shared helpers.
  */
 @TestMethodOrder(MethodOrderer.OrderAnnotation::class)
@@ -46,7 +46,7 @@ class DeviceTakeoverTests {
     }
 
     @Test @Order(2)
-    fun `Full lifecycle - befriend, takeover, then message`() = runBlocking {
+    fun `Takeover after friendship replaces local keys`() = runBlocking {
         need()
         val alice = registerAndConnect("tko_alice")
         val bob = registerAndConnect("tko_bob")
@@ -65,9 +65,9 @@ class DeviceTakeoverTests {
         // in production, Alice would announce the key change via DEVICE_ANNOUNCE first.
         // Bob would then update his trust store and accept the new key.
         //
-        // For now, verify takeover succeeded (new regId, server updated) and
-        // that the old sessions were cleared on Alice's side.
-        // Full post-takeover messaging requires the key change announcement protocol.
+        // This verifies only the changed local registration state. It does not
+        // cover local session clearing or post-takeover messaging; those require
+        // the key-change announcement protocol.
 
         alice.disconnect(); bob.disconnect()
     }

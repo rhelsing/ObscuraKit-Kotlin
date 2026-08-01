@@ -97,10 +97,8 @@ internal class DeviceManager(
     suspend fun approveLink(newDeviceId: String, challengeResponse: ByteArray) {
         val identity = devices.getIdentity()
 
-        // F9: the approver must ship the REAL own-device list, including the device it is approving
-        // right now — otherwise the approvee's setOwnDevices() writes a list missing itself (or,
-        // before this fix, an empty list). Record the new device in our own registry (resolving its
-        // human name from the server device list), then ship the full list.
+        // Include the device being approved so the recipient can persist a complete own-device
+        // registry. Resolve its human name from the server before shipping the list.
         val newDeviceName = try {
             val serverDevices = api.listDevices()
             (0 until serverDevices.length())
@@ -164,9 +162,8 @@ internal class DeviceManager(
             oneTimePreKeys = oneTimePreKeys.toApiJson()
         ))
 
-        // Clear all old sessions — identity key changed, old sessions are invalid.
-        // Next send will do a fresh PreKey exchange with the new identity. Sessions are keyed on
-        // the DEVICE UUID (Phase 2), so delete per friend device.
+        // The identity key changed, so clear every device-UUID session and force fresh prekey
+        // exchanges on the next send.
         for (friend in friends.getAccepted()) {
             messenger.getDeviceIdsForUser(friend.userId).forEach { signalStore.deleteAllSessions(it) }
         }

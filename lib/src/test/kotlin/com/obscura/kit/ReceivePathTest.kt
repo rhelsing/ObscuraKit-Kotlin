@@ -253,11 +253,7 @@ class ReceivePathTest {
         )
     }
 
-    /**
-     * The finding this whole change exists for: the old code verified `announce.signature` with
-     * `announce.recoveryPublicKey` — both peer-supplied — so generating a keypair and signing was
-     * enough to pass. Here the attacker does exactly that, with a key we have not pinned.
-     */
+    /** Peer-supplied key material must not override a pinned recovery key. */
     @Test
     fun `a self-consistent announce under a different key is rejected once one is pinned`() = runBlocking {
         val c = newClient()
@@ -282,10 +278,7 @@ class ReceivePathTest {
         )
     }
 
-    /**
-     * Closing the other half of the old bug: the `&&` meant that omitting the key skipped
-     * verification entirely, so an unsigned revocation was applied unchecked.
-     */
+    /** A revocation cannot be verified when no recovery key is pinned. */
     @Test
     fun `a revocation with nothing pinned to check it against is rejected`() = runBlocking {
         val c = newClient()

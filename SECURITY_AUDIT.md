@@ -1,5 +1,11 @@
 # ObscuraKit Kotlin — Security Audit
 
+> **Archived, non-normative snapshot (2026-03-28).** This audit describes an
+> earlier architecture. Its line references, finding counts, and status labels
+> are not current, and the ORM/TTL layers discussed below have since been
+> removed. Use `README.md`, `CLAUDE.md`, the pinned protocol contract, and the
+> current code for present behavior and security status.
+
 **Date:** 2026-03-28
 **Scope:** Full codebase — crypto, network, storage, facade, tests
 **Cross-referenced against:** Swift iOS audit (49 findings), JS web client patterns
