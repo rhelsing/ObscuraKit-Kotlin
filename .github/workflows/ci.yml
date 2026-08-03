@@ -26,7 +26,7 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@v6.2.0
 
       - name: Unit tests
         run: ./gradlew :lib:test --no-daemon
@@ -80,7 +80,7 @@ jobs:
           distribution: 'temurin'
           java-version: '21'
 
-      - uses: gradle/actions/setup-gradle@v6
+      - uses: gradle/actions/setup-gradle@v6.2.0
 
       - name: Start obscura-server (latest prebuilt image)
         run: |
